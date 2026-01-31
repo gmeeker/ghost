@@ -21,6 +21,7 @@
 #include <ghost/digest.h>
 #include <ghost/function.h>
 #include <ghost/io.h>
+#include <string.h>
 
 #include <fstream>
 #include <vector>
@@ -51,7 +52,7 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
       case Attribute::Type_Buffer: {
         auto cuda = static_cast<implementation::BufferCUDA*>(
             i->asBuffer()->impl().get());
-        params.push(&cuda->mem.value);
+        params.push_back(&cuda->mem.value);
         break;
       }
       case Attribute::Type_Image: {

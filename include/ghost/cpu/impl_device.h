@@ -32,6 +32,7 @@
 #if GHOST_USE_STD_THREAD
 #include <condition_variable>
 #include <mutex>
+#include <queue>
 #include <thread>
 #endif
 

@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.5)
-project(Ghost VERSION 0.1 LANGUAGES C CXX OBJC OBJCXX)
+project(Ghost VERSION 0.1 LANGUAGES C CXX)
+if(APPLE)
+    enable_language(OBJC OBJCXX)
+endif()
 
 include(CTest)
 
@@ -82,6 +85,15 @@ set(GHOST_PUBLIC_HEADERS
     include/ghost/implementation/impl_function.h
   )
 
+if(APPLE)
+    set(GHOST_OBJC_SOURCES
+        src/metal/metal_device.mm
+        src/metal/metal_function.mm
+      )
+else()
+    set(GHOST_OBJC_SOURCES )
+endif()
+
 set(GHOST_SOURCES
     src/binary_cache.cpp
     src/device.cpp
@@ -99,9 +111,8 @@ set(GHOST_SOURCES
     src/opencl/opencl_device.cpp
     src/opencl/opencl_exception.cpp
     src/opencl/opencl_function.cpp
-    src/metal/metal_device.mm
-    src/metal/metal_function.mm
     src/vulkan/vulkan_device.cpp
+    ${GHOST_OBJC_SOURCES}
   )
 
 add_library(${PROJECT_NAME}

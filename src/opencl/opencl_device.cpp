@@ -18,6 +18,7 @@
 #include <ghost/opencl/exception.h>
 #include <ghost/opencl/impl_device.h>
 #include <ghost/opencl/impl_function.h>
+#include <string.h>
 
 namespace ghost {
 namespace implementation {

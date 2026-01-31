@@ -15,6 +15,7 @@
 #include <ghost/cpu/device.h>
 #include <ghost/cpu/impl_device.h>
 #include <ghost/cpu/impl_function.h>
+#include <string.h>
 
 namespace ghost {
 namespace implementation {

@@ -16,7 +16,6 @@ class GhostConan(ConanFile):
     description = "Compute engine"
     topics = ("GPU", "computing")
 
-    generators = "CMakeToolchain", "CMakeDeps"
     exports_sources = "conanfile.py", "CMakeLists.txt", "src/**", "include/**", "test_package"
     settings = "os", "arch", "compiler", "build_type", "cuda"
     options = {"shared": [True, False],
@@ -67,7 +66,7 @@ class GhostConan(ConanFile):
             self.options.rm_safe("with_opencl")
 
     def layout(self):
-        cmake_layout(self, src_folder="src")
+        cmake_layout(self)
 
     def requirements(self):
         if self.options.get_safe("with_opencl", False):
@@ -84,19 +83,19 @@ class GhostConan(ConanFile):
         tc = CMakeToolchain(self)
 
         if self.options.get_safe("with_cuda", False):
-            tc.variables['USE_CUDA'] = 'ON'
-            tc.variables['USE_CUDA_DRIVER'] = 'ON'
+            tc.variables['WITH_CUDA'] = 'ON'
+            tc.variables['WITH_CUDA_DRIVER'] = 'ON'
         if self.options.get_safe("with_directx", False):
-            tc.variables['USE_DIRECTX'] = 'ON'
+            tc.variables['WITH_DIRECTX'] = 'ON'
         if self.options.get_safe("with_opencl", False):
-            tc.variables['USE_OPENCL'] = 'ON'
+            tc.variables['WITH_OPENCL'] = 'ON'
         if self.options.get_safe("with_metal", False):
-            tc.variables['USE_METAL'] = 'ON'
+            tc.variables['WITH_METAL'] = 'ON'
         if self.options.get_safe("with_vulkan", False):
             if self.settings.os == "Macos":
-                tc.variables['USE_VULKAN'] = self.deps_cpp_info["moltenvk"].rootpath
+                tc.variables['WITH_VULKAN'] = self.deps_cpp_info["moltenvk"].rootpath
             else:
-                tc.variables['USE_VULKAN'] = self.deps_cpp_info["vulkan-headers"].rootpath
+                tc.variables['WITH_VULKAN'] = self.deps_cpp_info["vulkan-headers"].rootpath
         tc.generate()
         cd = CMakeDeps(self)
         cd.generate()

@@ -155,7 +155,7 @@ void LibraryOpenCL::loadFromData(const void* data, size_t len,
   checkError(CL_COMPILER_NOT_AVAILABLE);
 #else
   opencl::ptr<cl_context> context = _dev.context;
-  if (!context.checkExtension("cl_khr_spir"))
+  if (!_dev.checkExtension("cl_khr_spir"))
     checkError(CL_COMPILER_NOT_AVAILABLE);
   cl_int err;
   try {
@@ -163,8 +163,8 @@ void LibraryOpenCL::loadFromData(const void* data, size_t len,
   } catch (...) {
   }
   if (program.get() != nullptr) return;
-  program = opencl::ptr<cl_program>(
-      clCreateProgramWithIL(context, 1, data, len, &err));
+  program =
+      opencl::ptr<cl_program>(clCreateProgramWithIL(context, data, len, &err));
   checkError(err);
   err = clBuildProgram(program, 0, nullptr, options.c_str(), nullptr, nullptr);
   checkBuildLog(err);

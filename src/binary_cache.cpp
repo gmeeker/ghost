@@ -16,6 +16,7 @@
 #include <ghost/device.h>
 #include <ghost/digest.h>
 #include <ghost/io.h>
+#include <string.h>
 #include <time.h>
 
 #if WIN32

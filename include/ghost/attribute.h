@@ -15,6 +15,8 @@
 #ifndef GHOST_ATTRIBUTE_H
 #define GHOST_ATTRIBUTE_H
 
+#include <stdint.h>
+
 #include <string>
 
 namespace ghost {
