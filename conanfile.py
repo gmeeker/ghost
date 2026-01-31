@@ -9,9 +9,9 @@ required_conan_version = ">=1.54.0"
 
 
 class GhostConan(ConanFile):
-    name = "crosscompute"
-    version = "1.0"
-    license = "Commercial"
+    name = "ghost"
+    version = "0.1"
+    license = "BSD-3-Clause"
     author = "Digital Anarchy"
     description = "Compute engine"
     topics = ("GPU", "computing")
