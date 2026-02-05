@@ -24,9 +24,10 @@ runtime_error::runtime_error(int err)
 
 int32_t runtime_error::error() const noexcept { return _err; }
 
-static const char* errorString(int32_t err) {
+const char* runtime_error::errorString(int32_t err) {
   const char* str;
-  if (cuGetErrorString(err, &str) == CUDA_SUCCESS) return str;
+  if (err == CUDA_SUCCESS) return nullptr;
+  if (cuGetErrorString((CUresult)err, &str) == CUDA_SUCCESS) return str;
   return "Unknown error";
 }
 }  // namespace cu

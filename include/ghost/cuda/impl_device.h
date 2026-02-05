@@ -29,6 +29,8 @@ class StreamCUDA : public Stream {
 
   StreamCUDA(cu::ptr<CUstream> queue_);
   StreamCUDA(CUcontext dev);
+
+  void sync();
 };
 
 class BufferCUDA : public Buffer {
@@ -51,7 +53,7 @@ class MappedBufferCUDA : public BufferCUDA {
  public:
   cu::ptr<void*> ptr;
 
-  MappedBufferCUDA(cu::ptr<CUdeviceptr> mem_);
+  MappedBufferCUDA(cu::ptr<void*> mem_);
   MappedBufferCUDA(const DeviceCUDA& dev, size_t bytes,
                    Access access = Access_ReadWrite);
 
@@ -62,10 +64,10 @@ class MappedBufferCUDA : public BufferCUDA {
 
 class ImageCUDA : public Image {
  public:
-  cu::ptr<void*> mem;
+  cu::ptr<CUdeviceptr> mem;
   ImageDescription descr;
 
-  ImageCUDA(cu::ptr<void*> mem_, const ImageDescription& descr_);
+  ImageCUDA(cu::ptr<CUdeviceptr> mem_, const ImageDescription& descr_);
   ImageCUDA(const DeviceCUDA& dev, const ImageDescription& descr_);
   ImageCUDA(const DeviceCUDA& dev, const ImageDescription& descr_,
             BufferCUDA& buffer);
@@ -87,10 +89,11 @@ class DeviceCUDA : public Device {
  public:
   cu::ptr<CUcontext> context;
   cu::ptr<CUstream> queue;
+  CUdevice device;
 
-  struct computeCapability {
+  struct ComputeCapability {
     int major, minor;
-  };
+  } computeCapability;
 
   DeviceCUDA(const SharedContext& share);
 

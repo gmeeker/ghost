@@ -79,8 +79,8 @@ class ImageDescription {
         stride(stride_),
         access(access_) {}
 
-  size_t dataSize();
-  size_t pixelSize();
+  size_t dataSize() const;
+  size_t pixelSize() const;
 };
 }  // namespace ghost
 

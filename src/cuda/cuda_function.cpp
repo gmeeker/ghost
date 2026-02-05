@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include <fstream>
+#include <list>
 #include <vector>
 
 namespace ghost {
@@ -37,6 +38,8 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
   CUresult err;
   size_t local_mem;
   std::vector<void*> params;
+  std::list<ptr<CUtexObject>> textures;
+
   for (auto i = args.begin(); i != args.end(); ++i) {
     switch (i->type()) {
       case Attribute::Type_Float: {
@@ -68,24 +71,24 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
         memset(&texDesc, 0, sizeof(texDesc));
 
         CUarray_format f;
-        switch (buffer.datatype()) {
+        switch (cuda->descr.type) {
           default:
-          case DA::GPGPU::DataType_UInt8:
+          case DataType_UInt8:
             f = CU_AD_FORMAT_UNSIGNED_INT8;
             break;
-          case DA::GPGPU::DataType_UInt16:
+          case DataType_UInt16:
             f = CU_AD_FORMAT_UNSIGNED_INT16;
             break;
-          case DA::GPGPU::DataType_SInt8:
+          case DataType_Int8:
             f = CU_AD_FORMAT_SIGNED_INT8;
             break;
-          case DA::GPGPU::DataType_SInt16:
+          case DataType_Int16:
             f = CU_AD_FORMAT_SIGNED_INT16;
             break;
-          case DA::GPGPU::DataType_Half:
+          case DataType_Float16:
             f = CU_AD_FORMAT_HALF;
             break;
-          case DA::GPGPU::DataType_Float:
+          case DataType_Float:
             f = CU_AD_FORMAT_FLOAT;
             break;
         };
@@ -97,15 +100,17 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
         }
 
         resDesc.resType = CU_RESOURCE_TYPE_PITCH2D;
-        resDesc.res.pitch2D.devPtr = buffer.cudaPtr;
+        resDesc.res.pitch2D.devPtr = cuda->mem.get();
         resDesc.res.pitch2D.format = f;
-        resDesc.res.pitch2D.numChannels = (unsigned int)buffer.channels();
-        resDesc.res.pitch2D.width = buffer.rect.width();
-        resDesc.res.pitch2D.height = buffer.rect.height();
-        resDesc.res.pitch2D.pitchInBytes = buffer.rowbytes;
+        resDesc.res.pitch2D.numChannels = (unsigned int)cuda->descr.channels;
+        resDesc.res.pitch2D.width = cuda->descr.size.x;
+        resDesc.res.pitch2D.height = cuda->descr.size.y;
+        resDesc.res.pitch2D.pitchInBytes = cuda->descr.stride.x;
 
+        ptr<CUtexObject> texObj;
         checkError(cuTexObjectCreate(&texObj, &resDesc, &texDesc, nullptr));
-        params.push(&cuda->mem.value);
+        textures.push_back(texObj);
+        params.push_back(&texObj.value);
         break;
       }
       case Attribute::Type_LocalMem:
@@ -116,28 +121,31 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
     }
   }
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
-  err = cuLaunchKernel(
-      kernel, (unsigned int)global_work_size[0],
-      (unsigned int)global_work_size[1], (unsigned int)global_work_size[2],
-      (unsigned int)local_work_size[0], (unsigned int)local_work_size[1],
-      (unsigned int)local_work_size[2], (unsigned int)local_mem,
-      stream_impl->stream, &params[0], nullptr);
+  unsigned int global_size[3];
+  unsigned int local_size[3];
+  for (size_t i = 0; i < 3; i++) {
+    global_size[i] = launchArgs.global_size()[i];
+    local_size[i] = launchArgs.local_size()[i];
+  }
+  err = cuLaunchKernel(kernel, global_size[0], global_size[1], global_size[2],
+                       local_size[0], local_size[1], local_size[2], local_mem,
+                       stream_impl->queue, &params[0], nullptr);
   checkError(err);
 }
 
 LibraryCUDA::LibraryCUDA(const DeviceCUDA& dev) : program(0), _dev(dev) {}
 
-void LibraryCUDA::loadFromText((const std::string &, const std::string &) {}
+void LibraryCUDA::loadFromText(const std::string&, const std::string&) {}
 
 void LibraryCUDA::loadFromData(const void* data, size_t len,
-                                 const std::string& options) {
+                               const std::string& options_) {
   CUjitInputType inputType = CU_JIT_INPUT_FATBINARY;
   if (len == 0) {
     len = strlen(reinterpret_cast<const char*>(data));
     inputType = CU_JIT_INPUT_PTX;
   }
   try {
-    loadFromCache(data, len, options);
+    loadFromCache(data, len, options_);
   } catch (...) {
   }
   if (program.get() != nullptr) return;
@@ -180,7 +188,8 @@ void LibraryCUDA::loadFromData(const void* data, size_t len,
                         0, 0);
 
   if (myErr != CUDA_SUCCESS) {
-    throw Exception("CUDA linker error", error_log);
+    throw std::runtime_error("CUDA linker error: " +
+                             std::string(&error_log[0]));
   }
 
   checkError(cuLinkComplete(lState, &cuOut, &outSize));
@@ -193,22 +202,19 @@ void LibraryCUDA::loadFromData(const void* data, size_t len,
   loadFromBinary(cuOut);
 
   try {
-    saveToCache(data, len, options);
+    saveToCache(cuOut, outSize, data, len, options_);
   } catch (...) {
   }
 }
 
 void LibraryCUDA::loadFromBinary(void* binary) {
   CUresult err;
-  program.reset();
-  CUmodule m;
-  err = cuModuleLoadData(&m, binary);
-  checkErrors(err);
-  program->reset(m);
+  err = cuModuleLoadData(&program, binary);
+  checkError(err);
 }
 
 void LibraryCUDA::loadFromCache(const void* data, size_t length,
-                                  const std::string& options) {
+                                const std::string& options) {
   std::vector<std::vector<unsigned char>> binaries;
   std::vector<size_t> sizes;
   if (_dev.binaryCache().loadBinaries(binaries, sizes, _dev, data, length,
@@ -217,12 +223,12 @@ void LibraryCUDA::loadFromCache(const void* data, size_t length,
   }
 }
 
-void LibraryCUDA::saveToCache(  void* binary, size_t binarySize, const void* data, size_t length,
-                                const std::string& options) const {
+void LibraryCUDA::saveToCache(void* binary, size_t binarySize, const void* data,
+                              size_t length, const std::string& options) const {
   if (!_dev.binaryCache().isEnabled()) return;
-  std::vector<size_t> sizes = {outSize};
+  std::vector<size_t> sizes = {binarySize};
   std::vector<unsigned char*> binaries = {
-    reinterpret_cast<unsigned char*>(cuOut); };
+      reinterpret_cast<unsigned char*>(binary)};
 
   _dev.binaryCache().saveBinaries(_dev, binaries, sizes, data, length, options);
 }

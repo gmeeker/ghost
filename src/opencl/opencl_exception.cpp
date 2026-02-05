@@ -129,7 +129,7 @@ const char* runtime_error::errorString(int32_t err) {
     ERR(CL_INVALID_PARTITION_NAME_EXT);
 #endif
     case CL_SUCCESS:
-      return NULL;
+      return nullptr;
     default:
       return "Unknown";
   }

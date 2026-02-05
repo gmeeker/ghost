@@ -27,6 +27,9 @@
 #include <dlfcn.h>
 #endif
 
+#ifdef DEBUG
+#include <iostream>
+#endif
 #include <vector>
 
 // Expand CUDA's #define functions.
@@ -739,7 +742,11 @@ class LibCUDAWrapper {
 #endif
       if (m_libHandler != nullptr) return;
     }
-    ICHECK(m_libHandler != nullptr) << "Error! Cannot open libcuda!";
+#ifdef DEBUG
+    if (m_libHandler == nullptr) {
+      std::cerr << "Error! Cannot open libcuda!";
+    }
+#endif
   }
 
   void loadCUDAFunctions() {

@@ -93,13 +93,15 @@ class ptr {
     value = (TYPE)0;
   }
 
+  void reset() { destroy(); }
+
   TYPE release() {
     TYPE v = value;
     _owned = false;
     return v;
   }
 
-  void reset() { destroy(); }
+  TYPE get() const { return value; }
 
   operator TYPE() const { return value; }
 
