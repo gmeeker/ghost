@@ -583,6 +583,8 @@ Attribute DeviceOpenCL::getAttribute(DeviceAttributeId what) const {
       return Attribute((int32_t)getDevices().size());
     case kDeviceSupportsMappedBuffer:
       return Attribute(true);
+    case kDeviceSupportsProgramConstants:
+      return Attribute(false);
     default:
       return Attribute();
   }

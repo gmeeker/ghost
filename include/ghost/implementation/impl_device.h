@@ -32,6 +32,7 @@ enum DeviceAttributeId {
   kDeviceDriverVersion,
   kDeviceCount,
   kDeviceSupportsMappedBuffer,
+  kDeviceSupportsProgramConstants,
 };
 
 class SharedContext {

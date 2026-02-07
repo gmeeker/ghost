@@ -29,6 +29,8 @@ class FunctionMetal : public Function {
   objc::ptr<id<MTLComputePipelineState>> pipeline;
 
   FunctionMetal(id<MTLLibrary> library, const std::string& name);
+  FunctionMetal(id<MTLLibrary> library, const std::string& name,
+                const std::vector<Attribute>& args);
 
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
@@ -44,6 +46,9 @@ class LibraryMetal : public Library {
   void loadFromData(const void* data, size_t len, const std::string& options);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
+  virtual ghost::Function specializeFunction(
+      const std::string& name,
+      const std::vector<Attribute>& args) const override;
 
  private:
   const DeviceMetal& _dev;

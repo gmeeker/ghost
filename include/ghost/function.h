@@ -128,6 +128,18 @@ class Library {
 
   Function lookupFunction(const std::string& name) const;
 
+  template <typename... ARGS>
+  Function lookupFunction(const std::string& name, ARGS&&... args) {
+    return _impl->lookupFunction(name, std::forward<ARGS>(args)...);
+  }
+
+  template <typename... ARGS>
+  Function lookupSpecializedFunction(const std::string& name, ARGS&&... tail) {
+    std::vector<Attribute> args;
+    implementation::Function::addArgs(args, std::forward<ARGS>(tail)...);
+    return _impl->specializeFunction(name, args);
+  }
+
  protected:
   std::shared_ptr<implementation::Library> impl() const { return _impl; }
 

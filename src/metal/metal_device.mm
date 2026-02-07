@@ -535,6 +535,8 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
     return Attribute(1);
   case kDeviceSupportsMappedBuffer:
     return Attribute(true);
+  case kDeviceSupportsProgramConstants:
+    return Attribute(true);
   default:
     return Attribute();
   }

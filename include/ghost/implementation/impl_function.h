@@ -16,6 +16,7 @@
 #define GHOST_IMPL_FUNCTION_H
 
 #include <ghost/attribute.h>
+#include <ghost/exception.h>
 #include <stdlib.h>
 
 #include <memory>
@@ -44,15 +45,16 @@ class Function {
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) = 0;
 
-  void addArgs(std::vector<Attribute>&) {}
+  static void addArgs(std::vector<Attribute>&) {}
 
   template <typename ARG>
-  void addArgs(std::vector<Attribute>& args, ARG&& head) {
+  static void addArgs(std::vector<Attribute>& args, ARG&& head) {
     args.push_back(std::forward<ARG>(head));
   }
 
   template <typename ARG, typename... ARGS>
-  void addArgs(std::vector<Attribute>& args, ARG&& head, ARGS&&... tail) {
+  static void addArgs(std::vector<Attribute>& args, ARG&& head,
+                      ARGS&&... tail) {
     args.push_back(std::forward<ARG>(head));
     addArgs(args, std::forward<ARGS>(tail)...);
   }
@@ -77,6 +79,8 @@ class Library {
   Library& operator=(const Library& rhs) = delete;
 
   virtual ghost::Function lookupFunction(const std::string& name) const = 0;
+  virtual ghost::Function specializeFunction(
+      const std::string& name, const std::vector<Attribute>& args) const;
 };
 }  // namespace implementation
 }  // namespace ghost

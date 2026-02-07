@@ -52,6 +52,11 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
         params.push_back(const_cast<int32_t*>(v));
         break;
       }
+      case Attribute::Type_Bool: {
+        const bool* v = i->boolArray();
+        params.push_back(const_cast<int32_t*>(v));
+        break;
+      }
       case Attribute::Type_Buffer: {
         auto cuda = static_cast<implementation::BufferCUDA*>(
             i->asBuffer()->impl().get());

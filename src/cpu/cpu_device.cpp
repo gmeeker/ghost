@@ -240,6 +240,8 @@ Attribute DeviceCPU::getAttribute(DeviceAttributeId what) const {
       return Attribute(1);
     case kDeviceSupportsMappedBuffer:
       return Attribute(false);
+    case kDeviceSupportsProgramConstants:
+      return Attribute(false);
     default:
       return Attribute();
   }

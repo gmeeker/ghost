@@ -538,6 +538,8 @@ Attribute DeviceCUDA::getAttribute(DeviceAttributeId what) const {
           &canMap, CU_DEVICE_ATTRIBUTE_CAN_MAP_HOST_MEMORY, device));
       return Attribute(canMap != 0);
     }
+    case kDeviceSupportsProgramConstants:
+      return Attribute(false);
     default:
       return Attribute();
   }

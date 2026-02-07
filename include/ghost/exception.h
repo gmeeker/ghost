@@ -12,26 +12,16 @@
 // License for the specific language governing permissions and limitations under
 // the License.
 
-#include <ghost/exception.h>
-#include <ghost/function.h>
+#ifndef GHOST_EXCEPTION_H
+#define GHOST_EXCEPTION_H
 
-#include <memory>
-#include <string>
+#include <stdexcept>
 
 namespace ghost {
-namespace implementation {
-ghost::Function Library::specializeFunction(
-    const std::string& name, const std::vector<Attribute>& args) const {
-  throw ghost::unsupported_error();
-}
-}  // namespace implementation
-
-Function::Function(std::shared_ptr<implementation::Function> impl)
-    : _impl(impl) {}
-
-Library::Library(std::shared_ptr<implementation::Library> impl) : _impl(impl) {}
-
-Function Library::lookupFunction(const std::string& name) const {
-  return _impl->lookupFunction(name);
-}
+class unsupported_error : public std::runtime_error {
+ public:
+  unsupported_error() : std::runtime_error("unsupported") {}
+};
 }  // namespace ghost
+
+#endif

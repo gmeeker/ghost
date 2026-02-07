@@ -52,6 +52,34 @@ FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name) {
                                                            error:&error];
 }
 
+FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name,
+                             const std::vector<Attribute> &args) {
+  NSError *error;
+  MTLFunctionConstantValues *constantValues = [MTLFunctionConstantValues new];
+  size_t j = 0;
+  for (auto arg : args) {
+    if (arg.type() == Attribute::Type_Bool)
+      [constantValues setConstantValue:arg.boolArray()
+                                  type:MTLDataTypeBool
+                               atIndex:j++];
+    else if (arg.type() == Attribute::Type_Int)
+      [constantValues setConstantValue:arg.intArray()
+                                  type:MTLDataTypeInt
+                               atIndex:j++];
+    else if (arg.type() == Attribute::Type_Float)
+      [constantValues setConstantValue:arg.floatArray()
+                                  type:MTLDataTypeFloat
+                               atIndex:j++];
+  }
+  function =
+      [library newFunctionWithName:[NSString stringWithUTF8String:name.c_str()]
+                    constantValues:constantValues
+                             error:&error];
+  pipeline = [library.device newComputePipelineStateWithFunction:function.get()
+
+                                                           error:&error];
+}
+
 void FunctionMetal::execute(const ghost::Stream &s,
                             const LaunchArgs &launchArgs,
                             const std::vector<Attribute> &args) {
@@ -82,6 +110,12 @@ void FunctionMetal::execute(const ghost::Stream &s,
     }
     case Attribute::Type_Int: {
       const int32_t *v = i->intArray();
+      size_t count = i->count();
+      params.push_back(v, count);
+      break;
+    }
+    case Attribute::Type_Bool: {
+      const bool *v = i->boolArray();
       size_t count = i->count();
       params.push_back(v, count);
       break;
@@ -159,6 +193,13 @@ void LibraryMetal::loadFromData(const void *data, size_t len,
 
 ghost::Function LibraryMetal::lookupFunction(const std::string &name) const {
   auto f = std::make_shared<FunctionMetal>(library.get(), name);
+  return ghost::Function(f);
+}
+
+ghost::Function
+LibraryMetal::specializeFunction(const std::string &name,
+                                 const std::vector<Attribute> &args) const {
+  auto f = std::make_shared<FunctionMetal>(library.get(), name, args);
   return ghost::Function(f);
 }
 } // namespace implementation

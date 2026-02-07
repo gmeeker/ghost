@@ -81,11 +81,6 @@ class Image {
   std::shared_ptr<implementation::Image> _impl;
 };
 
-class unsupported_error : public std::runtime_error {
- public:
-  unsupported_error() : std::runtime_error("unsupported") {}
-};
-
 class Device {
  protected:
   Device(std::shared_ptr<implementation::Device> impl);

@@ -61,6 +61,7 @@ set(GHOST_PUBLIC_HEADERS
     include/ghost/attribute.h
     include/ghost/binary_cache.h
     include/ghost/device.h
+    include/ghost/exception.h
     include/ghost/function.h
     include/ghost/io.h
     include/ghost/cpu/device.h

@@ -30,6 +30,7 @@ class Attribute {
     Type_String,
     Type_Float,
     Type_Int,
+    Type_Bool,
     Type_Buffer,
     Type_Image,
     Type_LocalMem
@@ -43,6 +44,7 @@ class Attribute {
     float f[4];
     int32_t i[4];
     uint32_t u[4];
+    bool b[4];
     Buffer* buffer;
     Image* image;
   } _u;
@@ -128,7 +130,85 @@ class Attribute {
       _u.i[idx] = i[idx];
     }
     for (; idx < 4; idx++) {
-      _u.i[idx] = 0.f;
+      _u.i[idx] = 0;
+    }
+  }
+
+  Attribute(uint32_t i) : _type(Type_Int), _count(1) {
+    _u.u[0] = i;
+    _u.u[1] = 0;
+    _u.u[2] = 0;
+    _u.u[3] = 0;
+  }
+
+  Attribute(uint32_t i0, uint32_t i1) : _type(Type_Int), _count(2) {
+    _u.u[0] = i0;
+    _u.u[1] = i1;
+    _u.u[2] = 0;
+    _u.u[3] = 0;
+  }
+
+  Attribute(uint32_t i0, uint32_t i1, uint32_t i2)
+      : _type(Type_Int), _count(3) {
+    _u.u[0] = i0;
+    _u.u[0] = i1;
+    _u.u[2] = i2;
+    _u.u[3] = 0;
+  }
+
+  Attribute(uint32_t i0, uint32_t i1, uint32_t i2, uint32_t i3)
+      : _type(Type_Int), _count(4) {
+    _u.u[0] = i0;
+    _u.u[0] = i1;
+    _u.u[2] = i2;
+    _u.u[3] = i3;
+  }
+
+  Attribute(const uint32_t* i, size_t num) : _type(Type_Int), _count(num) {
+    size_t idx;
+    for (idx = 0; idx < num; idx++) {
+      _u.u[idx] = i[idx];
+    }
+    for (; idx < 4; idx++) {
+      _u.u[idx] = 0;
+    }
+  }
+
+  Attribute(bool i) : _type(Type_Bool), _count(1) {
+    _u.b[0] = i;
+    _u.b[1] = false;
+    _u.b[2] = false;
+    _u.b[3] = false;
+  }
+
+  Attribute(bool i0, bool i1) : _type(Type_Bool), _count(2) {
+    _u.b[0] = i0;
+    _u.b[1] = i1;
+    _u.b[2] = false;
+    _u.b[3] = false;
+  }
+
+  Attribute(bool i0, bool i1, bool i2) : _type(Type_Bool), _count(3) {
+    _u.b[0] = i0;
+    _u.b[0] = i1;
+    _u.b[2] = i2;
+    _u.b[3] = false;
+  }
+
+  Attribute(bool i0, bool i1, bool i2, bool i3) : _type(Type_Bool), _count(4) {
+    _u.b[0] = i0;
+    _u.b[0] = i1;
+    _u.b[2] = i2;
+    _u.b[3] = i3;
+  }
+
+  Attribute(const bool* i, size_t num) : _type(Type_Bool), _count(num) {
+    size_t idx;
+    for (idx = 0; idx < num; idx++) {
+      _u.b[idx] = i[idx];
+    }
+    for (; idx < 4; idx++) {
+      _u.b[idx] = false;
     }
   }
 
@@ -166,6 +246,10 @@ class Attribute {
   const uint32_t asUInt() const { return _u.u[0]; }
 
   const uint32_t* uintArray() const { return _u.u; }
+
+  const bool asBool() const { return _u.b[0]; }
+
+  const bool* boolArray() const { return _u.b; }
 
   Buffer* asBuffer() const { return _u.buffer; }
 

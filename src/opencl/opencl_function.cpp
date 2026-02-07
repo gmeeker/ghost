@@ -56,6 +56,15 @@ void FunctionOpenCL::execute(const ghost::Stream& s,
         checkError(err);
         break;
       }
+      case Attribute::Type_Bool: {
+        const bool* v = i->boolArray();
+        size_t count = i->count();
+        // cl_bool3 is the same as cl_bool4
+        if (count == 3) count = 4;
+        err = clSetKernelArg(kernel, idx++, sizeof(v[0]) * count, v);
+        checkError(err);
+        break;
+      }
       case Attribute::Type_Buffer: {
         auto opencl = static_cast<implementation::BufferOpenCL*>(
             i->asBuffer()->impl().get());
