@@ -100,6 +100,7 @@ set(GHOST_SOURCES
     src/device.cpp
     src/digest.cpp
     src/function.cpp
+    src/image.cpp
     src/sha1.c
     src/cpu/cpu_device.cpp
     src/cpu/cpu_function.cpp

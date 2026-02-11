@@ -227,21 +227,58 @@ ghost::Image DeviceCPU::sharedImage(const ImageDescription& descr,
 Attribute DeviceCPU::getAttribute(DeviceAttributeId what) const {
   switch (what) {
     case kDeviceImplementation:
-      return Attribute("CPU");
+      return "CPU";
     case kDeviceName:
       // TODO
-      return Attribute("");
+      return "";
     case kDeviceVendor:
       // TODO
-      return Attribute("");
+      return "";
     case kDeviceDriverVersion:
-      return Attribute("");
+      return "";
     case kDeviceCount:
-      return Attribute(1);
+      return 1;
+    case kDeviceProcessorCount:
+      return (uint32_t)getNumberOfCores();
+    case kDeviceUnifiedMemory:
+      return true;
+    case kDeviceMemory:
+      // TODO
+      return 0;
+    case kDeviceLocalMemory:
+      return 0;
+    case kDeviceMaxThreads:
+      return 1;
+    case kDeviceMaxWorkSize:
+      return Attribute(1, 1, 1);
+    case kDeviceMaxRegisters:
+      return 0;
+    case kDeviceMaxImageSize1:
+      return std::numeric_limits<int32_t>::max();
+    case kDeviceMaxImageSize2: {
+      auto v = std::numeric_limits<int32_t>::max();
+      return Attribute(v, v);
+    }
+    case kDeviceMaxImageSize3: {
+      auto v = std::numeric_limits<int32_t>::max();
+      return Attribute(v, v, v);
+    }
+    case kDeviceImageAlignment:
+      return 64;
+    case kDeviceSupportsImageIntegerFiltering:
+      return false;
+    case kDeviceSupportsImageFloatFiltering:
+      return false;
     case kDeviceSupportsMappedBuffer:
-      return Attribute(false);
+      return false;
     case kDeviceSupportsProgramConstants:
-      return Attribute(false);
+      return false;
+    case kDeviceSupportsSubgroup:
+      return true;
+    case kDeviceSupportsSubgroupShuffle:
+      return true;
+    case kDeviceSubgroupWidth:
+      return 16;
     default:
       return Attribute();
   }

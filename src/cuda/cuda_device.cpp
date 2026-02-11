@@ -510,36 +510,126 @@ ghost::Image DeviceCUDA::sharedImage(const ImageDescription& descr,
 Attribute DeviceCUDA::getAttribute(DeviceAttributeId what) const {
   switch (what) {
     case kDeviceImplementation:
-      return Attribute("CUDA");
+      return "CUDA";
     case kDeviceName: {
       char buf[128];
       checkError(cuDeviceGetName(buf, sizeof(buf), device));
-      return Attribute(buf);
+      return buf);
     }
     case kDeviceVendor:
-      return Attribute("NVIDIA");
+      return "NVIDIA";
     case kDeviceDriverVersion: {
       int version = 0;
       checkError(cuDriverGetVersion(&version));
       std::stringstream stream;
       stream << version;
-      return Attribute(stream.str());
+      return stream.str();
     }
-    case kDeviceCount: {
+    case kDeviceFamily: {
+      std::stringstream stream;
+      stream << computeCapability.major << "." << computeCapability.minor;
+      return stream.str();
+    }
+    case kDeviceCount:
+      return 1;
+    case kDeviceProcessorCount: {
       int multiProcessorCount;
       checkError(cuDeviceGetAttribute(&multiProcessorCount,
                                       CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT,
                                       device));
-      return Attribute(multiProcessorCount);
+      return multiProcessorCount;
     }
+    case kDeviceUnifiedMemory: {
+      int v;
+      checkError(
+          cuDeviceGetAttribute(&v, CU_DEVICE_ATTRIBUTE_INTEGRATED, device));
+      return v;
+    }
+    case kDeviceMemory: {
+      size_t v;
+      checkError(cuDeviceTotalMem(&v, device));
+      return v;
+    }
+    case kDeviceLocalMemory: {
+      int v;
+      checkError(cuDeviceGetAttribute(
+          &v, CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, device));
+      return v;
+    }
+    case kDeviceMaxThreads: {
+      int v;
+      checkError(cuDeviceGetAttribute(
+          &v, CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK, device));
+      return v;
+    }
+    case kDeviceMaxWorkSize: {
+      int x, y, z;
+      checkError(cuDeviceGetAttribute(&x, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X,
+                                      device));
+      checkError(cuDeviceGetAttribute(&y, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y,
+                                      device));
+      checkError(cuDeviceGetAttribute(&z, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z,
+                                      device));
+      return Attribute(x, y, z);
+    }
+    case kDeviceMaxRegisters: {
+      int v;
+      checkError(cuDeviceGetAttribute(
+          &v, CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK, device));
+      return v;
+    }
+    case kDeviceMaxImageSize1: {
+      int x, y, z;
+      checkError(cuDeviceGetAttribute(
+          &x, CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE1D_WIDTH, device));
+      return x;
+    }
+    case kDeviceMaxImageSize2: {
+      int x, y;
+      checkError(cuDeviceGetAttribute(
+          &x, CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_WIDTH, device));
+      checkError(cuDeviceGetAttribute(
+          &y, CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_HEIGHT, device));
+      return Attribute(x, y);
+    }
+    case kDeviceMaxImageSize3: {
+      int x, y, z;
+      checkError(cuDeviceGetAttribute(
+          &x, CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_WIDTH, device));
+      checkError(cuDeviceGetAttribute(
+          &y, CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_HEIGHT, device));
+      checkError(cuDeviceGetAttribute(
+          &z, CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_DEPTH, device));
+      return Attribute(x, y, z);
+    }
+    case kDeviceImageAlignment: {
+      int v;
+      checkError(cuDeviceGetAttribute(&v, CU_DEVICE_ATTRIBUTE_TEXTURE_ALIGNMENT,
+                                      device));
+      return v;
+    }
+    case kDeviceSupportsImageIntegerFiltering:
+      return true;
+    case kDeviceSupportsImageFloatFiltering:
+      return true;
     case kDeviceSupportsMappedBuffer: {
       int canMap;
       checkError(cuDeviceGetAttribute(
           &canMap, CU_DEVICE_ATTRIBUTE_CAN_MAP_HOST_MEMORY, device));
-      return Attribute(canMap != 0);
+      return canMap != 0;
     }
     case kDeviceSupportsProgramConstants:
-      return Attribute(false);
+      return false;
+    case kDeviceSupportsSubgroup:
+      return true;
+    case kDeviceSupportsSubgroupShuffle:
+      return true;
+    case kDeviceSubgroupWidth: {
+      int v;
+      checkError(
+          cuDeviceGetAttribute(&v, CU_DEVICE_ATTRIBUTE_WARP_SIZE, device));
+      return v;
+    }
     default:
       return Attribute();
   }

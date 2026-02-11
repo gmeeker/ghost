@@ -22,6 +22,8 @@
 #include <sys/sysctl.h>
 #include <sys/types.h>
 
+#include <TargetConditionals.h>
+
 namespace ghost {
 namespace implementation {
 using namespace metal;
@@ -524,19 +526,88 @@ std::string getOSRelease() {
 Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
   switch (what) {
   case kDeviceImplementation:
-    return Attribute("Metal");
+    return "Metal";
   case kDeviceName:
-    return Attribute([[dev.get() name] UTF8String]);
+    return [[dev.get() name] UTF8String];
   case kDeviceVendor:
-    return Attribute("Apple");
+    return "Apple";
   case kDeviceDriverVersion:
-    return Attribute(getMetalVersion());
+    return getMetalVersion();
   case kDeviceCount:
-    return Attribute(1);
+    return 1;
+  case kDeviceProcessorCount:
+    return 1;
+  case kDeviceUnifiedMemory:
+    return dev.get().hasUnifiedMemory;
+  case kDeviceMemory:
+    return (uint64_t)dev.get().recommendedMaxWorkingSetSize;
+  case kDeviceLocalMemory:
+    return (uint64_t)dev.get().maxThreadgroupMemoryLength;
+  case kDeviceMaxThreads: {
+    MTLSize size = dev.get().maxThreadsPerThreadgroup;
+    return uint64_t(size.width * size.height * size.depth);
+  }
+  case kDeviceMaxWorkSize: {
+    MTLSize size = dev.get().maxThreadsPerThreadgroup;
+    return Attribute((uint32_t)size.width, (uint32_t)size.height,
+                     (uint32_t)size.depth);
+  }
+  case kDeviceMaxRegisters:
+    return 0;
+  case kDeviceMaxImageSize1:
+  case kDeviceMaxImageSize2: {
+    int32_t v = 16384;
+    if (@available(macOS 10.15, iOS 13.0, *)) {
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple10]) {
+        v = 32786;
+      } else if (![dev.get() supportsFamily:MTLGPUFamilyApple3]) {
+        v = 8192;
+      }
+    } else {
+#if TARGET_OS_IPHONE
+      if (![dev.get() supportsFeatureSet:MTLFeatureSet_iOS_GPUFamily3_v1]) {
+        v = 8192;
+      }
+#endif
+    }
+    if (what == kDeviceMaxImageSize1) {
+      return v;
+    }
+    return Attribute(v, v);
+  }
+  case kDeviceMaxImageSize3: {
+    const int32_t v = 2048;
+    return Attribute(v, v, v);
+  }
+  case kDeviceImageAlignment: {
+    ImageDescription descr(Size3(16, 16, 1), PixelOrder_RGBA, DataType_Float,
+                           Stride2(0, 0));
+    size_t size = 256;
+    if (@available(macOS 10.13, iOS 11.0, *)) {
+      size = [dev.get()
+          minimumLinearTextureAlignmentForPixelFormat:getFormat(descr)];
+    }
+    return uint32_t(size / descr.pixelSize());
+  }
+  case kDeviceSupportsImageIntegerFiltering:
+    return true;
+  case kDeviceSupportsImageFloatFiltering:
+    if (@available(macOS 11, iOS 14.0, *)) {
+      return dev.get().supports32BitFloatFiltering != NO;
+    }
+    return false;
   case kDeviceSupportsMappedBuffer:
-    return Attribute(true);
+    return true;
   case kDeviceSupportsProgramConstants:
-    return Attribute(true);
+    return true;
+  case kDeviceSupportsSubgroup:
+  case kDeviceSupportsSubgroupShuffle:
+    if (@available(macOS 10.13, iOS 11.0, *)) {
+      return true;
+    }
+    return false;
+  case kDeviceSubgroupWidth:
+    return 32;
   default:
     return Attribute();
   }

@@ -99,6 +99,7 @@ class DeviceOpenCL : public Device {
  private:
   std::string _version;
   std::set<std::string> _extensions;
+  bool _fullProfile;
 
  public:
   opencl::ptr<cl_context> context;
@@ -136,6 +137,7 @@ class DeviceOpenCL : public Device {
 
   std::vector<cl_device_id> getDevices() const;
   cl_platform_id getPlatform() const;
+  cl_ulong getInt(cl_device_info param_name) const;
   std::string getString(cl_device_info param_name) const;
   std::string getPlatformString(cl_platform_info param_name) const;
 };

@@ -284,6 +284,7 @@ void* MappedBufferOpenCL::map(const ghost::Stream& s, Access access,
                            stream_impl->event(), &err);
   checkError(err);
   stream_impl->addEvent();
+  return ptr;
 }
 
 void MappedBufferOpenCL::unmap(const ghost::Stream& s) {
@@ -500,6 +501,7 @@ DeviceOpenCL::DeviceOpenCL(const SharedContext& share) {
         false);
     checkError(err);
   }
+  _fullProfile = getString(CL_DEVICE_PROFILE) != "EMBEDDED_PROFILE";
   if (!queue) {
     implementation::StreamOpenCL stream(*this);
     queue = stream.queue;
@@ -572,19 +574,91 @@ ghost::Image DeviceOpenCL::sharedImage(const ImageDescription& descr,
 Attribute DeviceOpenCL::getAttribute(DeviceAttributeId what) const {
   switch (what) {
     case kDeviceImplementation:
-      return Attribute("OpenCL");
+      return "OpenCL";
     case kDeviceName:
-      return Attribute(getString(CL_DEVICE_NAME));
+      return getString(CL_DEVICE_NAME);
     case kDeviceVendor:
-      return Attribute(getString(CL_DEVICE_VENDOR));
+      return getString(CL_DEVICE_VENDOR);
     case kDeviceDriverVersion:
-      return Attribute(getString(CL_DRIVER_VERSION));
+      return getString(CL_DRIVER_VERSION);
     case kDeviceCount:
-      return Attribute((int32_t)getDevices().size());
+      return (int32_t)getDevices().size();
+    case kDeviceProcessorCount:
+      return (uint64_t)getInt(CL_DEVICE_MAX_COMPUTE_UNITS);
+    case kDeviceUnifiedMemory:
+      return getInt(CL_DEVICE_HOST_UNIFIED_MEMORY) != 0;
+    case kDeviceMemory:
+      return (uint64_t)getInt(CL_DEVICE_MAX_MEM_ALLOC_SIZE);
+    case kDeviceLocalMemory:
+      return (uint64_t)getInt(CL_DEVICE_LOCAL_MEM_SIZE);
+    case kDeviceMaxThreads:
+      return (uint64_t)getInt(CL_DEVICE_MAX_WORK_GROUP_SIZE);
+    case kDeviceMaxWorkSize: {
+      auto devices = getDevices();
+      cl_int err;
+      cl_ulong v[3];
+      err = clGetDeviceInfo(devices[0], CL_DEVICE_MAX_WORK_ITEM_SIZES,
+                            sizeof(v[0]) * 3, v, nullptr);
+      checkError(err);
+      return Attribute((uint64_t)v[0], (uint64_t)v[1], (uint64_t)v[2]);
+    }
+    case kDeviceMaxRegisters:
+      return 0;
+    case kDeviceMaxImageSize1:
+      return (uint64_t)getInt(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE);
+    case kDeviceMaxImageSize2:
+      return Attribute((uint64_t)getInt(CL_DEVICE_IMAGE2D_MAX_WIDTH),
+                       (uint64_t)getInt(CL_DEVICE_IMAGE2D_MAX_HEIGHT));
+    case kDeviceMaxImageSize3:
+      return Attribute((uint64_t)getInt(CL_DEVICE_IMAGE3D_MAX_WIDTH),
+                       (uint64_t)getInt(CL_DEVICE_IMAGE3D_MAX_HEIGHT),
+                       (uint64_t)getInt(CL_DEVICE_IMAGE3D_MAX_DEPTH));
+    case kDeviceImageAlignment:
+      return (uint64_t)getInt(CL_DEVICE_IMAGE_PITCH_ALIGNMENT);
+    case kDeviceSupportsImageFloatFiltering:
+      if (!_fullProfile) {
+        return false;
+      }
+      // continue below
+    case kDeviceSupportsImageIntegerFiltering:
+#ifdef __APPLE_CC__
+      if (getString(CL_DEVICE_VENDOR) == "Apple") {
+        // Interpolation is broken on M1 as of macOS 11.2
+        return false;
+      }
+#endif
+      return true;
     case kDeviceSupportsMappedBuffer:
-      return Attribute(true);
+      return true;
     case kDeviceSupportsProgramConstants:
-      return Attribute(false);
+      return false;
+    case kDeviceSupportsSubgroup:
+      return checkExtension("cl_khr_subgroups");
+    case kDeviceSupportsSubgroupShuffle:
+      return checkExtension("cl_intel_subgroups");
+    case kDeviceSubgroupWidth: {
+#ifndef __APPLE_CC__
+      if (checkExtension("cl_nv_device_attribute_query")) {
+        return (uint64_t)getInt(CL_DEVICE_WARP_SIZE_NV);
+      } else if (checkExtension("cl_amd_device_attribute_query")) {
+        return (uint64_t)getInt(CL_DEVICE_WAVEFRONT_WIDTH_AMD);
+      }
+#endif
+      std::string vendor = getString(CL_DEVICE_VENDOR);
+      uint32_t size = 1;
+      if (vendor.find("NVIDIA") != std::string::npos) {
+        size = 32;
+      } else if (vendor.find("ATI") != std::string::npos ||
+                 vendor.find("AMD") != std::string::npos) {
+        size = 64;
+      } else if (vendor.find("Intel") != std::string::npos) {
+        // According to Intel's DirectX docs (but not mentioned in
+        // OpenCL docs)
+        // this can vary between 8 and 32.
+        size = 8;
+      }
+      return size;
+    }
     default:
       return Attribute();
   }
@@ -620,6 +694,15 @@ cl_platform_id DeviceOpenCL::getPlatform() const {
                         &platform, nullptr);
   checkError(err);
   return platform;
+}
+
+cl_ulong DeviceOpenCL::getInt(cl_device_info param_name) const {
+  auto devices = getDevices();
+  cl_int err;
+  cl_ulong v;
+  err = clGetDeviceInfo(devices[0], param_name, sizeof(v), &v, nullptr);
+  checkError(err);
+  return v;
 }
 
 std::string DeviceOpenCL::getString(cl_device_info param_name) const {
