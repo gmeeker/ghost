@@ -50,323 +50,38 @@ class Attribute {
   } _u;
 
   union {
+    double f[4];
     int64_t i[4];
     uint64_t u[4];
+    bool b[4];
   } _u64;
 
   std::string _s;
 
+  template <typename S, typename T>
+  void setT(const S* v, S v0, S* s, T* t, size_t num) {
+    _count = num;
+    size_t idx;
+    for (idx = 0; idx < num; idx++) {
+      s[idx] = v[idx];
+    }
+    for (; idx < 4; idx++) {
+      s[idx] = v0;
+    }
+    for (idx = 0; idx < num; idx++) {
+      t[idx] = (T)v[idx];
+    }
+    for (; idx < 4; idx++) {
+      t[idx] = (T)v0;
+    }
+  }
+
  public:
   Attribute() : _type(Type_Unknown), _count(0) {}
 
+  Attribute(const char* s) : _type(Type_String), _count(1), _s(s) {}
+
   Attribute(const std::string& s) : _type(Type_String), _count(1), _s(s) {}
-
-  Attribute(float f) : _type(Type_Float), _count(1) {
-    _u.f[0] = f;
-    _u.f[1] = 0.f;
-    _u.f[2] = 0.f;
-    _u.f[3] = 0.f;
-  }
-
-  Attribute(float f0, float f1) : _type(Type_Float), _count(2) {
-    _u.f[0] = f0;
-    _u.f[1] = f1;
-    _u.f[2] = 0.f;
-    _u.f[3] = 0.f;
-  }
-
-  Attribute(float f0, float f1, float f2) : _type(Type_Float), _count(3) {
-    _u.f[0] = f0;
-    _u.f[0] = f1;
-    _u.f[2] = f2;
-    _u.f[3] = 0.f;
-  }
-
-  Attribute(float f0, float f1, float f2, float f3)
-      : _type(Type_Float), _count(4) {
-    _u.f[0] = f0;
-    _u.f[0] = f1;
-    _u.f[2] = f2;
-    _u.f[3] = f3;
-  }
-
-  Attribute(const float* f, size_t num) : _type(Type_Float), _count(num) {
-    size_t idx;
-    for (idx = 0; idx < num; idx++) {
-      _u.f[idx] = f[idx];
-    }
-    for (; idx < 4; idx++) {
-      _u.f[idx] = 0.f;
-    }
-  }
-
-  Attribute(int32_t i) : _type(Type_Int), _count(1) {
-    _u.i[0] = i;
-    _u.i[1] = 0;
-    _u.i[2] = 0;
-    _u.i[3] = 0;
-    _u64.i[0] = (int64_t)i;
-    _u64.i[0] = (int64_t)0;
-    _u64.i[2] = (int64_t)0;
-    _u64.i[3] = (int64_t)0;
-  }
-
-  Attribute(int32_t i0, int32_t i1) : _type(Type_Int), _count(2) {
-    _u.i[0] = i0;
-    _u.i[1] = i1;
-    _u.i[2] = 0;
-    _u.i[3] = 0;
-    _u64.i[0] = (int64_t)i0;
-    _u64.i[0] = (int64_t)i1;
-    _u64.i[2] = (int64_t)0;
-    _u64.i[3] = (int64_t)0;
-  }
-
-  Attribute(int32_t i0, int32_t i1, int32_t i2) : _type(Type_Int), _count(3) {
-    _u.i[0] = i0;
-    _u.i[0] = i1;
-    _u.i[2] = i2;
-    _u.i[3] = 0;
-    _u64.i[0] = (int64_t)i0;
-    _u64.i[0] = (int64_t)i1;
-    _u64.i[2] = (int64_t)i2;
-    _u64.i[3] = (int64_t)0;
-  }
-
-  Attribute(int32_t i0, int32_t i1, int32_t i2, int32_t i3)
-      : _type(Type_Int), _count(4) {
-    _u.i[0] = i0;
-    _u.i[0] = i1;
-    _u.i[2] = i2;
-    _u.i[3] = i3;
-    _u64.i[0] = (int64_t)i0;
-    _u64.i[0] = (int64_t)i1;
-    _u64.i[2] = (int64_t)i2;
-    _u64.i[3] = (int64_t)i3;
-  }
-
-  Attribute(const int32_t* i, size_t num) : _type(Type_Int), _count(num) {
-    size_t idx;
-    for (idx = 0; idx < num; idx++) {
-      _u.i[idx] = i[idx];
-      _u64.i[idx] = (int64_t)i[idx];
-    }
-    for (; idx < 4; idx++) {
-      _u.i[idx] = 0;
-      _u64.i[idx] = (int64_t)0;
-    }
-  }
-
-  Attribute(uint32_t i) : _type(Type_Int), _count(1) {
-    _u.u[0] = i;
-    _u.u[1] = 0;
-    _u.u[2] = 0;
-    _u.u[3] = 0;
-    _u64.u[0] = (uint64_t)i;
-    _u64.u[0] = (uint64_t)0;
-    _u64.u[2] = (uint64_t)0;
-    _u64.u[3] = (uint64_t)0;
-  }
-
-  Attribute(uint32_t i0, uint32_t i1) : _type(Type_Int), _count(2) {
-    _u.u[0] = i0;
-    _u.u[1] = i1;
-    _u.u[2] = 0;
-    _u.u[3] = 0;
-    _u64.u[0] = (uint64_t)i0;
-    _u64.u[0] = (uint64_t)i1;
-    _u64.u[2] = (uint64_t)0;
-    _u64.u[3] = (uint64_t)0;
-  }
-
-  Attribute(uint32_t i0, uint32_t i1, uint32_t i2)
-      : _type(Type_Int), _count(3) {
-    _u.u[0] = i0;
-    _u.u[0] = i1;
-    _u.u[2] = i2;
-    _u.u[3] = 0;
-    _u64.u[0] = (uint64_t)i0;
-    _u64.u[0] = (uint64_t)i1;
-    _u64.u[2] = (uint64_t)i2;
-    _u64.u[3] = (uint64_t)0;
-  }
-
-  Attribute(uint32_t i0, uint32_t i1, uint32_t i2, uint32_t i3)
-      : _type(Type_Int), _count(4) {
-    _u.u[0] = i0;
-    _u.u[0] = i1;
-    _u.u[2] = i2;
-    _u.u[3] = i3;
-    _u64.u[0] = (uint64_t)i0;
-    _u64.u[0] = (uint64_t)i1;
-    _u64.u[2] = (uint64_t)i2;
-    _u64.u[3] = (uint64_t)i3;
-  }
-
-  Attribute(const uint32_t* i, size_t num) : _type(Type_Int), _count(num) {
-    size_t idx;
-    for (idx = 0; idx < num; idx++) {
-      _u.u[idx] = i[idx];
-      _u64.u[idx] = (uint64_t)i[idx];
-    }
-    for (; idx < 4; idx++) {
-      _u.u[idx] = 0;
-      _u64.u[idx] = (uint64_t)0;
-    }
-  }
-
-  Attribute(int64_t i) : _type(Type_Int), _count(1) {
-    _u64.i[0] = i;
-    _u64.i[1] = 0;
-    _u64.i[2] = 0;
-    _u64.i[3] = 0;
-    _u.i[0] = (int32_t)i;
-    _u.i[0] = (int32_t)0;
-    _u.i[2] = (int32_t)0;
-    _u.i[3] = (int32_t)0;
-  }
-
-  Attribute(int64_t i0, int64_t i1) : _type(Type_Int), _count(2) {
-    _u64.i[0] = i0;
-    _u64.i[1] = i1;
-    _u64.i[2] = 0;
-    _u64.i[3] = 0;
-    _u.i[0] = (int32_t)i0;
-    _u.i[0] = (int32_t)i1;
-    _u.i[2] = (int32_t)0;
-    _u.i[3] = (int32_t)0;
-  }
-
-  Attribute(int64_t i0, int64_t i1, int64_t i2) : _type(Type_Int), _count(3) {
-    _u64.i[0] = i0;
-    _u64.i[0] = i1;
-    _u64.i[2] = i2;
-    _u64.i[3] = 0;
-    _u.i[0] = (int32_t)i0;
-    _u.i[0] = (int32_t)i1;
-    _u.i[2] = (int32_t)i2;
-    _u.i[3] = (int32_t)0;
-  }
-
-  Attribute(int64_t i0, int64_t i1, int64_t i2, int64_t i3)
-      : _type(Type_Int), _count(4) {
-    _u64.i[0] = i0;
-    _u64.i[0] = i1;
-    _u64.i[2] = i2;
-    _u64.i[3] = i3;
-    _u.i[0] = (int32_t)i0;
-    _u.i[0] = (int32_t)i1;
-    _u.i[2] = (int32_t)i2;
-    _u.i[3] = (int32_t)i3;
-  }
-
-  Attribute(const int64_t* i, size_t num) : _type(Type_Int), _count(num) {
-    size_t idx;
-    for (idx = 0; idx < num; idx++) {
-      _u64.i[idx] = i[idx];
-      _u.i[idx] = (int32_t)i[idx];
-    }
-    for (; idx < 4; idx++) {
-      _u64.i[idx] = 0;
-      _u.i[idx] = (int32_t)0;
-    }
-  }
-
-  Attribute(uint64_t i) : _type(Type_Int), _count(1) {
-    _u64.u[0] = i;
-    _u64.u[1] = 0;
-    _u64.u[2] = 0;
-    _u64.u[3] = 0;
-    _u.u[0] = (uint32_t)i;
-    _u.u[0] = (uint32_t)0;
-    _u.u[2] = (uint32_t)0;
-    _u.u[3] = (uint32_t)0;
-  }
-
-  Attribute(uint64_t i0, uint64_t i1) : _type(Type_Int), _count(2) {
-    _u64.u[0] = i0;
-    _u64.u[1] = i1;
-    _u64.u[2] = 0;
-    _u64.u[3] = 0;
-    _u.u[0] = (uint32_t)i0;
-    _u.u[0] = (uint32_t)i1;
-    _u.u[2] = (uint32_t)0;
-    _u.u[3] = (uint32_t)0;
-  }
-
-  Attribute(uint64_t i0, uint64_t i1, uint64_t i2)
-      : _type(Type_Int), _count(3) {
-    _u64.u[0] = i0;
-    _u64.u[0] = i1;
-    _u64.u[2] = i2;
-    _u64.u[3] = 0;
-    _u.u[0] = (uint32_t)i0;
-    _u.u[0] = (uint32_t)i1;
-    _u.u[2] = (uint32_t)i2;
-    _u.u[3] = (uint32_t)0;
-  }
-
-  Attribute(uint64_t i0, uint64_t i1, uint64_t i2, uint64_t i3)
-      : _type(Type_Int), _count(4) {
-    _u64.u[0] = i0;
-    _u64.u[0] = i1;
-    _u64.u[2] = i2;
-    _u64.u[3] = i3;
-    _u.u[0] = (uint32_t)i0;
-    _u.u[0] = (uint32_t)i1;
-    _u.u[2] = (uint32_t)i2;
-    _u.u[3] = (uint32_t)i3;
-  }
-
-  Attribute(const uint64_t* i, size_t num) : _type(Type_Int), _count(num) {
-    size_t idx;
-    for (idx = 0; idx < num; idx++) {
-      _u64.u[idx] = i[idx];
-      _u.u[idx] = (uint32_t)i[idx];
-    }
-    for (; idx < 4; idx++) {
-      _u64.u[idx] = 0;
-      _u.u[idx] = 0;
-    }
-  }
-
-  Attribute(bool i) : _type(Type_Bool), _count(1) {
-    _u.b[0] = i;
-    _u.b[1] = false;
-    _u.b[2] = false;
-    _u.b[3] = false;
-  }
-
-  Attribute(bool i0, bool i1) : _type(Type_Bool), _count(2) {
-    _u.b[0] = i0;
-    _u.b[1] = i1;
-    _u.b[2] = false;
-    _u.b[3] = false;
-  }
-
-  Attribute(bool i0, bool i1, bool i2) : _type(Type_Bool), _count(3) {
-    _u.b[0] = i0;
-    _u.b[0] = i1;
-    _u.b[2] = i2;
-    _u.b[3] = false;
-  }
-
-  Attribute(bool i0, bool i1, bool i2, bool i3) : _type(Type_Bool), _count(4) {
-    _u.b[0] = i0;
-    _u.b[0] = i1;
-    _u.b[2] = i2;
-    _u.b[3] = i3;
-  }
-
-  Attribute(const bool* i, size_t num) : _type(Type_Bool), _count(num) {
-    size_t idx;
-    for (idx = 0; idx < num; idx++) {
-      _u.b[idx] = i[idx];
-    }
-    for (; idx < 4; idx++) {
-      _u.b[idx] = false;
-    }
-  }
 
   Attribute(Buffer* b) : _type(Type_Buffer), _count(1) { _u.buffer = b; }
 
@@ -375,6 +90,69 @@ class Attribute {
   Attribute(Image* i) : _type(Type_Image), _count(1) { _u.image = i; }
 
   Attribute(Image& i) : _type(Type_Image), _count(1) { _u.image = &i; }
+
+  template <typename T>
+  Attribute(T v) {
+    set(&v, 1);
+  }
+
+  template <typename T>
+  Attribute(T v0, T v1) {
+    T v[] = {v0, v1};
+    set(v, 2);
+  }
+
+  template <typename T>
+  Attribute(T v0, T v1, T v2) {
+    T v[] = {v0, v1, v2};
+    set(v, 3);
+  }
+
+  template <typename T>
+  Attribute(T v0, T v1, T v2, T v3) {
+    T v[] = {v0, v1, v2, v3};
+    set(v, 4);
+  }
+
+  template <typename T>
+  Attribute(const T* v, size_t num) {
+    set(v, num);
+  }
+
+  void set(const float* v, size_t num) {
+    _type = Type_Float;
+    setT(v, 0.f, _u.f, _u64.f, num);
+  }
+
+  void set(const double* v, size_t num) {
+    _type = Type_Float;
+    setT(v, 0.0, _u64.f, _u.f, num);
+  }
+
+  void set(const int32_t* v, size_t num) {
+    _type = Type_Int;
+    setT(v, (int32_t)0, _u.i, _u64.i, num);
+  }
+
+  void set(const uint32_t* v, size_t num) {
+    _type = Type_Int;
+    setT(v, (uint32_t)0, _u.u, _u64.u, num);
+  }
+
+  void set(const int64_t* v, size_t num) {
+    _type = Type_Int;
+    setT(v, (int64_t)0, _u64.i, _u.i, num);
+  }
+
+  void set(const uint64_t* v, size_t num) {
+    _type = Type_Int;
+    setT(v, (uint64_t)0, _u64.u, _u.u, num);
+  }
+
+  void set(const bool* v, size_t num) {
+    _type = Type_Bool;
+    setT(v, false, _u.b, _u64.b, num);
+  }
 
   Attribute& localMem(uint32_t bytes) {
     _type = Type_LocalMem;
@@ -394,6 +172,10 @@ class Attribute {
   const float asFloat() const { return _u.f[0]; }
 
   const float* floatArray() const { return _u.f; }
+
+  const double asDouble() const { return _u64.f[0]; }
+
+  const double* doubleArray() const { return _u64.f; }
 
   const int32_t asInt() const { return _u.i[0]; }
 
