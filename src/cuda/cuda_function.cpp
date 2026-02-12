@@ -31,7 +31,8 @@ namespace ghost {
 namespace implementation {
 using namespace cu;
 
-FunctionCUDA::FunctionCUDA(CUfunction k) : kernel(k) {}
+FunctionCUDA::FunctionCUDA(const DeviceCUDA& dev, CUfunction k)
+    : kernel(k), _dev(dev) {}
 
 void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                            const std::vector<Attribute>& args) {
@@ -136,6 +137,39 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                        local_size[0], local_size[1], local_size[2], local_mem,
                        stream_impl->queue, &params[0], nullptr);
   checkError(err);
+}
+
+Attribute FunctionCUDA::getAttribute(FunctionAttributeId what) const {
+  switch (what) {
+    case kFunctionLocalMemory: {
+      int bytes;
+      checkError(cuFuncGetAttribute(&bytes, CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES,
+                                    kernel));
+      return bytes;
+    }
+    case kFunctionMaxLocalMemory: {
+      int bytes;
+      checkError(cuFuncGetAttribute(
+          &bytes, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, kernel));
+      return bytes;
+    }
+    case kFunctionThreadWidth: {
+      int v;
+      checkError(
+          cuDeviceGetAttribute(&v, CU_DEVICE_ATTRIBUTE_WARP_SIZE, _dev.device));
+      return v;
+    }
+    case kFunctionMaxThreads: {
+      int bytes;
+      checkError(cuFuncGetAttribute(
+          &bytes, CU_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK, kernel));
+      return bytes;
+    }
+    case kFunctionRequiredWorkSize:
+      return Attribute(0, 0, 0);
+    default:
+      return Attribute();
+  }
 }
 
 LibraryCUDA::LibraryCUDA(const DeviceCUDA& dev) : program(0), _dev(dev) {}

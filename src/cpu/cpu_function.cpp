@@ -43,6 +43,23 @@ void FunctionCPU::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
   stream->pool->thread(count, function, args);
 }
 
+Attribute FunctionCPU::getAttribute(FunctionAttributeId what) const {
+  switch (what) {
+    case kFunctionLocalMemory:
+      return 0;
+    case kFunctionMaxLocalMemory:
+      return 0;
+    case kFunctionThreadWidth:
+      return 1;
+    case kFunctionMaxThreads:
+      return 1024;
+    case kFunctionRequiredWorkSize:
+      return Attribute(0, 0, 0);
+    default:
+      return Attribute();
+  }
+}
+
 LibraryCPU::LibraryCPU(const DeviceCPU& dev) : _dev(dev), _module(nullptr) {}
 
 LibraryCPU::~LibraryCPU() {

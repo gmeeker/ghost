@@ -118,6 +118,8 @@ class Function {
     (*_impl)(s, launchArgs, std::forward<ARGS>(args)...);
   }
 
+  Attribute getAttribute(FunctionAttributeId what) const;
+
  private:
   std::shared_ptr<implementation::Function> _impl;
 };

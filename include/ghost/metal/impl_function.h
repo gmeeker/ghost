@@ -34,6 +34,8 @@ class FunctionMetal : public Function {
 
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
+
+  virtual Attribute getAttribute(FunctionAttributeId what) const override;
 };
 
 class LibraryMetal : public Library {

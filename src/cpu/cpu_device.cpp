@@ -248,9 +248,9 @@ Attribute DeviceCPU::getAttribute(DeviceAttributeId what) const {
     case kDeviceLocalMemory:
       return 0;
     case kDeviceMaxThreads:
-      return 1;
+      return 1024;
     case kDeviceMaxWorkSize:
-      return Attribute(1, 1, 1);
+      return Attribute(1024, 1024, 1);
     case kDeviceMaxRegisters:
       return 0;
     case kDeviceMaxImageSize1:

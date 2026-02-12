@@ -48,6 +48,7 @@ FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name) {
   NSError *error;
   function = [library
       newFunctionWithName:[NSString stringWithUTF8String:name.c_str()]];
+  assert(function.get().functionType == MTLFunctionTypeKernel);
   pipeline = [library.device newComputePipelineStateWithFunction:function.get()
                                                            error:&error];
 }
@@ -56,6 +57,9 @@ FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name,
                              const std::vector<Attribute> &args) {
   NSError *error;
   MTLFunctionConstantValues *constantValues = [MTLFunctionConstantValues new];
+#if !__has_feature(objc_arc)
+  [constantValues autorelease];
+#endif
   size_t j = 0;
   for (auto arg : args) {
     if (arg.type() == Attribute::Type_Bool)
@@ -75,6 +79,7 @@ FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name,
       [library newFunctionWithName:[NSString stringWithUTF8String:name.c_str()]
                     constantValues:constantValues
                              error:&error];
+  assert(function.get().functionType == MTLFunctionTypeKernel);
   pipeline = [library.device newComputePipelineStateWithFunction:function.get()
 
                                                            error:&error];
@@ -95,6 +100,8 @@ void FunctionMetal::execute(const ghost::Stream &s,
   if (!computeEncoder) {
     computeEncoder = [commandBuffer computeCommandEncoder];
   }
+  // wait
+  [computeEncoder setComputePipelineState:pipeline];
 
   ProgramParams params;
   size_t bufferIndex = 0;
@@ -158,6 +165,32 @@ void FunctionMetal::execute(const ghost::Stream &s,
                  threadsPerThreadgroup:threadgroupSize];
 
   [computeEncoder endEncoding];
+}
+
+Attribute FunctionMetal::getAttribute(FunctionAttributeId what) const {
+  switch (what) {
+  case kFunctionLocalMemory:
+    return (uint32_t)pipeline.get().staticThreadgroupMemoryLength;
+  case kFunctionMaxLocalMemory:
+    return 0;
+  case kFunctionThreadWidth:
+    return (uint32_t)pipeline.get().threadExecutionWidth;
+  case kFunctionMaxThreads:
+    return (uint32_t)pipeline.get().maxTotalThreadsPerThreadgroup;
+  case kFunctionRequiredWorkSize: {
+#if defined(MAC_OS_VERSION_26_0)
+    if (@available(macOS 26.0, iOS 26.0, tvOS 26.0, macCatalyst 26.0,
+                   visionOS 26.0, *)) {
+      MTLSize s = pipeline.get().requiredThreadsPerThreadgroup;
+      return Attribute((uint32_t)s.width, (uint32_t)s.height,
+                       (uint32_t)s.depth);
+    }
+#endif
+    return Attribute(0, 0, 0);
+  }
+  default:
+    return Attribute();
+  }
 }
 
 LibraryMetal::LibraryMetal(const DeviceMetal &dev) : _dev(dev) {}

@@ -27,13 +27,21 @@ class FunctionOpenCL : public Function {
  public:
   opencl::ptr<cl_kernel> kernel;
 
-  FunctionOpenCL(opencl::ptr<cl_kernel> k);
+  FunctionOpenCL(const DeviceOpenCL& dev, opencl::ptr<cl_kernel> k);
 
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
+
+  virtual Attribute getAttribute(FunctionAttributeId what) const override;
+
+ private:
+  const DeviceOpenCL& _dev;
 };
 
 class LibraryOpenCL : public Library {
+ protected:
+  opencl::ptr<cl_context> context;
+
  public:
   opencl::ptr<cl_program> program;
 

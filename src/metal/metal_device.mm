@@ -459,48 +459,49 @@ ghost::Image DeviceMetal::sharedImage(const ImageDescription &descr,
 namespace {
 const char *getMetalVersion() {
 #if defined(MAC_OS_VERSION_26_0)
-  if (@available(macOS 26, iOS 26.0, *)) {
+  if (@available(macOS 26, iOS 26.0, tvOS 26.0, macCatalyst 26.0,
+                 visionOS 26.0, *)) {
     return "4.0";
   }
 #endif
 #if defined(MAC_OS_VERSION_15_0)
-  if (@available(macOS 15, iOS 18.0, *)) {
+  if (@available(macOS 15, iOS 18.0, tvOS 18.0, macCatalyst 18.0, *)) {
     return "3.2";
   }
 #endif
 #if defined(MAC_OS_VERSION_14_0)
-  if (@available(macOS 14, iOS 17.0, *)) {
+  if (@available(macOS 14, iOS 17.0, tvOS 17.0, macCatalyst 17.0, *)) {
     return "3.1";
   }
 #endif
 #if defined(MAC_OS_VERSION_13_0)
-  if (@available(macOS 13, iOS 16.0, *)) {
+  if (@available(macOS 13, iOS 16.0, tvOS 16.0, macCatalyst 16.0, *)) {
     return "3.0";
   }
 #endif
 #if defined(MAC_OS_VERSION_12_0)
-  if (@available(macOS 12, iOS 15.0, *)) {
+  if (@available(macOS 12, iOS 15.0, tvOS 15.0, macCatalyst 15.0, *)) {
     return "2.4";
   }
 #endif
 #if defined(MAC_OS_VERSION_11_0)
-  if (@available(macOS 11, iOS 14.0, *)) {
+  if (@available(macOS 11, iOS 14.0, tvOS 14.0, macCatalyst 14.0, *)) {
     return "2.3";
   }
 #endif
-  if (@available(macOS 10.15, iOS 13.0, *)) {
+  if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.0, *)) {
     return "2.2";
   }
-  if (@available(macOS 10.14, iOS 12.0, *)) {
+  if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, macCatalyst 12.0, *)) {
     return "2.1";
   }
-  if (@available(macOS 10.13, iOS 11.0, *)) {
+  if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, macCatalyst 11.0, *)) {
     return "2.0";
   }
-  if (@available(macOS 10.12, iOS 10.0, *)) {
+  if (@available(macOS 10.12, iOS 10.0, tvOS 10.0, macCatalyst 10.0, *)) {
     return "1.2";
   }
-  if (@available(macOS 10.11, iOS 9.0, *)) {
+  if (@available(macOS 10.11, iOS 9.0, tvOS 9.0, macCatalyst 9.0, *)) {
     return "1.1";
   }
   if (@available(iOS 8.0, *)) {
@@ -557,7 +558,7 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
   case kDeviceMaxImageSize1:
   case kDeviceMaxImageSize2: {
     int32_t v = 16384;
-    if (@available(macOS 10.15, iOS 13.0, *)) {
+    if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *)) {
       if ([dev.get() supportsFamily:MTLGPUFamilyApple10]) {
         v = 32786;
       } else if (![dev.get() supportsFamily:MTLGPUFamilyApple3]) {
@@ -583,7 +584,7 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
     ImageDescription descr(Size3(16, 16, 1), PixelOrder_RGBA, DataType_Float,
                            Stride2(0, 0));
     size_t size = 256;
-    if (@available(macOS 10.13, iOS 11.0, *)) {
+    if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, macCatalyst 13.1, *)) {
       size = [dev.get()
           minimumLinearTextureAlignmentForPixelFormat:getFormat(descr)];
     }
@@ -592,7 +593,7 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
   case kDeviceSupportsImageIntegerFiltering:
     return true;
   case kDeviceSupportsImageFloatFiltering:
-    if (@available(macOS 11, iOS 14.0, *)) {
+    if (@available(macOS 11, iOS 14.0, tvOS 16.0, macCatalyst 14.0, *)) {
       return dev.get().supports32BitFloatFiltering != NO;
     }
     return false;
@@ -602,7 +603,7 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
     return true;
   case kDeviceSupportsSubgroup:
   case kDeviceSupportsSubgroupShuffle:
-    if (@available(macOS 10.13, iOS 11.0, *)) {
+    if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, macCatalyst 11.0, *)) {
       return true;
     }
     return false;

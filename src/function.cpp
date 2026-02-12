@@ -29,6 +29,10 @@ ghost::Function Library::specializeFunction(
 Function::Function(std::shared_ptr<implementation::Function> impl)
     : _impl(impl) {}
 
+Attribute Function::getAttribute(FunctionAttributeId what) const {
+  return _impl->getAttribute(what);
+}
+
 Library::Library(std::shared_ptr<implementation::Library> impl) : _impl(impl) {}
 
 Function Library::lookupFunction(const std::string& name) const {

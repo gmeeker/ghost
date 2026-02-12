@@ -24,6 +24,14 @@
 #include <vector>
 
 namespace ghost {
+enum FunctionAttributeId {
+  kFunctionLocalMemory,
+  kFunctionMaxLocalMemory,
+  kFunctionThreadWidth,
+  kFunctionMaxThreads,
+  kFunctionRequiredWorkSize,
+};
+
 class Function;
 class Library;
 class Stream;
@@ -44,6 +52,8 @@ class Function {
 
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) = 0;
+
+  virtual Attribute getAttribute(FunctionAttributeId what) const = 0;
 
   static void addArgs(std::vector<Attribute>&) {}
 

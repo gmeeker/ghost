@@ -27,10 +27,15 @@ class FunctionCUDA : public Function {
  public:
   CUfunction kernel;
 
-  FunctionCUDA(CUfunction k);
+  FunctionCUDA(const DeviceCUDA& dev, CUfunction k);
 
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
+
+  virtual Attribute getAttribute(FunctionAttributeId what) const override;
+
+ private:
+  const DeviceCUDA& _dev;
 };
 
 class LibraryCUDA : public Library {

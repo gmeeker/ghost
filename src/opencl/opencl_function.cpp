@@ -29,7 +29,9 @@ namespace ghost {
 namespace implementation {
 using namespace opencl;
 
-FunctionOpenCL::FunctionOpenCL(opencl::ptr<cl_kernel> k) : kernel(k) {}
+FunctionOpenCL::FunctionOpenCL(const DeviceOpenCL& dev,
+                               opencl::ptr<cl_kernel> k)
+    : kernel(k), _dev(dev) {}
 
 void FunctionOpenCL::execute(const ghost::Stream& s,
                              const LaunchArgs& launchArgs,
@@ -103,6 +105,55 @@ void FunctionOpenCL::execute(const ghost::Stream& s,
       launchArgs.is_local_defined() ? local_size : nullptr, waitEvents.size(),
       waitEvents.empty() ? nullptr : &waitEvents[0], &outEvent);
   checkError(err);
+}
+
+Attribute FunctionOpenCL::getAttribute(FunctionAttributeId what) const {
+  std::vector<cl_device_id> devices;
+  cl_int err;
+  size_t numDevs;
+  err =
+      clGetContextInfo(_dev.context, CL_CONTEXT_DEVICES, 0, nullptr, &numDevs);
+  checkError(err);
+  numDevs /= sizeof(cl_device_id);
+  devices.resize(size_t(numDevs));
+  err = clGetContextInfo(_dev.context, CL_CONTEXT_DEVICES,
+                         numDevs * sizeof(cl_device_id), &devices[0], nullptr);
+  checkError(err);
+  switch (what) {
+    case kFunctionLocalMemory: {
+      cl_ulong bytes;
+      checkError(clGetKernelWorkGroupInfo(kernel, devices[0],
+                                          CL_KERNEL_LOCAL_MEM_SIZE,
+                                          sizeof(bytes), &bytes, nullptr));
+      return (uint64_t)bytes;
+    }
+    case kFunctionMaxLocalMemory:
+      return 0;
+    case kFunctionThreadWidth: {
+      size_t preferredWorkGroupSize;
+      checkError(clGetKernelWorkGroupInfo(
+          kernel, devices[0], CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE,
+          sizeof(preferredWorkGroupSize), &preferredWorkGroupSize, nullptr));
+      return (uint64_t)preferredWorkGroupSize;
+    }
+    case kFunctionMaxThreads: {
+      size_t maxSize;
+      checkError(clGetKernelWorkGroupInfo(kernel, devices[0],
+                                          CL_KERNEL_WORK_GROUP_SIZE,
+                                          sizeof(maxSize), &maxSize, nullptr));
+      return (uint64_t)maxSize;
+    }
+    case kFunctionRequiredWorkSize: {
+      size_t workSize[3];
+      checkError(clGetKernelWorkGroupInfo(
+          kernel, devices[0], CL_KERNEL_COMPILE_WORK_GROUP_SIZE,
+          sizeof(workSize[0]) * 3, workSize, nullptr));
+      return Attribute((uint64_t)workSize[0], (uint64_t)workSize[1],
+                       (uint64_t)workSize[2]);
+    }
+    default:
+      return Attribute();
+  }
 }
 
 LibraryOpenCL::LibraryOpenCL(const DeviceOpenCL& dev) : program(0), _dev(dev) {}
@@ -247,7 +298,7 @@ ghost::Function LibraryOpenCL::lookupFunction(const std::string& name) const {
   cl_int err;
   opencl::ptr<cl_kernel> kernel(clCreateKernel(program, name.c_str(), &err));
   checkError(err);
-  auto f = std::make_shared<FunctionOpenCL>(kernel);
+  auto f = std::make_shared<FunctionOpenCL>(_dev, kernel);
   return ghost::Function(f);
 }
 }  // namespace implementation
