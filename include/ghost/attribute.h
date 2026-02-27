@@ -79,6 +79,8 @@ class Attribute {
  public:
   Attribute() : _type(Type_Unknown), _count(0) {}
 
+  Attribute(char* s) : _type(Type_String), _count(1), _s(s) {}
+
   Attribute(const char* s) : _type(Type_String), _count(1), _s(s) {}
 
   Attribute(const std::string& s) : _type(Type_String), _count(1), _s(s) {}

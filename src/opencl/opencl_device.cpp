@@ -20,6 +20,10 @@
 #include <ghost/opencl/impl_function.h>
 #include <string.h>
 
+#ifndef __APPLE_CC__
+#include <CL/cl_ext.h>
+#endif
+
 namespace ghost {
 namespace implementation {
 using namespace opencl;

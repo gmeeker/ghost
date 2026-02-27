@@ -23,11 +23,30 @@
 #include <ghost/io.h>
 #include <string.h>
 
+#if WITH_CUDA_NVRTC
+#include <nvrtc.h>
+#endif
+
 #include <fstream>
 #include <list>
+#include <sstream>
 #include <vector>
 
 namespace ghost {
+#if WITH_CUDA_NVRTC
+namespace cu {
+template <>
+class detail<nvrtcProgram> {
+ public:
+  static void release(nvrtcProgram v) { nvrtcDestroyProgram(&v); }
+};
+}  // namespace cu
+
+inline void checkNVRTCError(nvrtcResult err) {
+  if (err != NVRTC_SUCCESS) throw std::runtime_error(nvrtcGetErrorString(err));
+}
+#endif
+
 namespace implementation {
 using namespace cu;
 
@@ -55,7 +74,7 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
       }
       case Attribute::Type_Bool: {
         const bool* v = i->boolArray();
-        params.push_back(const_cast<int32_t*>(v));
+        params.push_back(const_cast<bool*>(v));
         break;
       }
       case Attribute::Type_Buffer: {
@@ -174,7 +193,57 @@ Attribute FunctionCUDA::getAttribute(FunctionAttributeId what) const {
 
 LibraryCUDA::LibraryCUDA(const DeviceCUDA& dev) : program(0), _dev(dev) {}
 
-void LibraryCUDA::loadFromText(const std::string&, const std::string&) {}
+void LibraryCUDA::loadFromText(const std::string& text,
+                               const std::string& options) {
+#if WITH_CUDA_NVRTC
+  try {
+    loadFromCache(text.c_str(), text.size(), options);
+  } catch (...) {
+  }
+  if (program.get() != nullptr) return;
+  ptr<nvrtcProgram> prog;
+  checkNVRTCError(
+      nvrtcCreateProgram(&prog, text.c_str(), "ghost.cu", 0, NULL, NULL));
+  std::stringstream gpu_arch;
+  // If we want PTX:
+  // gpu_arch << "--gpu-architecture=compute_" << _dev.computeCapability.major
+  //          << "0";
+  gpu_arch << "--gpu-architecture=sm_" << _dev.computeCapability.major
+           << _dev.computeCapability.minor;
+  const char* opts[] = {gpu_arch.str().c_str()};
+  nvrtcResult compileResult = nvrtcCompileProgram(prog, 1, opts);
+  size_t logSize;
+  checkNVRTCError(nvrtcGetProgramLogSize(prog, &logSize));
+  std::vector<char> log(logSize);
+  checkNVRTCError(nvrtcGetProgramLog(prog, &log[0]));
+  if (compileResult != NVRTC_SUCCESS) {
+    throw std::runtime_error(std::string("CUDA compile error: ") + &log[0]);
+  }
+
+  // If we want PTX
+  // size_t ptxSize;
+  // checkNVRTCError(nvrtcGetPTXSize(prog, &ptxSize));
+  // std::vector<char> ptx(ptxSize);
+  // checkNVRTCError(nvrtcGetPTX(prog, &ptx[0]));
+  // loadFromData(&ptx[0], 0, options);
+  size_t cubinSize;
+  checkNVRTCError(nvrtcGetCUBINSize(prog, &cubinSize));
+  std::vector<char> cuOut(cubinSize);
+  checkNVRTCError(nvrtcGetCUBIN(prog, &cuOut[0]));
+
+  // Load resulting cuBin into module
+  loadFromBinary(&cuOut[0]);
+
+  try {
+    saveToCache(&cuOut[0], cuOut.size(), text.c_str(), text.size(), options);
+  } catch (...) {
+  }
+#else
+  (void)text;
+  (void)options;
+  throw unsupported_error();
+#endif
+}
 
 void LibraryCUDA::loadFromData(const void* data, size_t len,
                                const std::string& options_) {
@@ -277,7 +346,7 @@ ghost::Function LibraryCUDA::lookupFunction(const std::string& name) const {
   CUfunction kernel;
   err = cuModuleGetFunction(&kernel, program.get(), name.c_str());
   checkError(err);
-  auto f = std::make_shared<FunctionCUDA>(kernel);
+  auto f = std::make_shared<FunctionCUDA>(_dev, kernel);
   return ghost::Function(f);
 }
 }  // namespace implementation

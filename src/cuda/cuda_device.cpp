@@ -514,7 +514,7 @@ Attribute DeviceCUDA::getAttribute(DeviceAttributeId what) const {
     case kDeviceName: {
       char buf[128];
       checkError(cuDeviceGetName(buf, sizeof(buf), device));
-      return buf);
+      return buf;
     }
     case kDeviceVendor:
       return "NVIDIA";

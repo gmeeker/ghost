@@ -21,6 +21,8 @@ class GhostConan(ConanFile):
     options = {"shared": [True, False],
                "fPIC": [True, False],
                "with_cuda": [True, False],
+               "with_cuda_nvrtc": [True, False],
+               "static_nvrtc": [True, False],
                "with_directx": [True, False],
                "with_metal": [True, False],
                "with_opencl": [True, False],
@@ -29,6 +31,8 @@ class GhostConan(ConanFile):
                "shared": False,
                "fPIC": True,
                "with_cuda": True,
+               "with_cuda_nvrtc": False,
+               "static_nvrtc": False,
                "with_directx": False,
                "with_metal": True,
                "with_opencl": True,
@@ -85,10 +89,13 @@ class GhostConan(ConanFile):
         if self.options.get_safe("with_cuda", False):
             tc.variables['WITH_CUDA'] = 'ON'
             tc.variables['WITH_CUDA_DRIVER'] = 'ON'
+            if self.options.get_safe("with_cuda_nvrtc", False):
+                tc.variables['WITH_CUDA_NVRTC'] = 'ON'
+            if self.options.get_safe("static_nvrtc", False):
+                tc.variables['WITH_CUDA_NVRTC_STATIC'] = 'ON'
         if self.options.get_safe("with_directx", False):
             tc.variables['WITH_DIRECTX'] = 'ON'
-        if self.options.get_safe("with_opencl", False):
-            tc.variables['WITH_OPENCL'] = 'ON'
+        tc.variables['WITH_OPENCL'] = 'ON' if self.options.get_safe("with_opencl", False) else 'OFF'
         if self.options.get_safe("with_metal", False):
             tc.variables['WITH_METAL'] = 'ON'
         if self.options.get_safe("with_vulkan", False):
