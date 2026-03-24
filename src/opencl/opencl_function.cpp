@@ -151,6 +151,22 @@ Attribute FunctionOpenCL::getAttribute(FunctionAttributeId what) const {
       return Attribute((uint64_t)workSize[0], (uint64_t)workSize[1],
                        (uint64_t)workSize[2]);
     }
+    case kFunctionPreferredWorkMultiple: {
+      size_t v;
+      checkError(clGetKernelWorkGroupInfo(
+          kernel, devices[0], CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE,
+          sizeof(v), &v, nullptr));
+      return (uint64_t)v;
+    }
+    case kFunctionNumRegisters:
+      return 0;
+    case kFunctionPrivateMemory: {
+      cl_ulong bytes;
+      checkError(clGetKernelWorkGroupInfo(kernel, devices[0],
+                                          CL_KERNEL_PRIVATE_MEM_SIZE,
+                                          sizeof(bytes), &bytes, nullptr));
+      return (uint64_t)bytes;
+    }
     default:
       return Attribute();
   }

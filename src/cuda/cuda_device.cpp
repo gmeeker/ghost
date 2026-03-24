@@ -19,7 +19,9 @@
 #include <ghost/cuda/impl_device.h>
 #include <ghost/cuda/impl_function.h>
 
+#include <cstring>
 #include <sstream>
+#include <vector>
 
 namespace ghost {
 namespace implementation {
@@ -42,13 +44,17 @@ void StreamCUDA::sync() {
   checkError(err);
 }
 
-BufferCUDA::BufferCUDA(cu::ptr<CUdeviceptr> mem_) : mem(mem_) {}
+BufferCUDA::BufferCUDA(cu::ptr<CUdeviceptr> mem_, size_t bytes)
+    : mem(mem_), _size(bytes) {}
 
-BufferCUDA::BufferCUDA(const DeviceCUDA& dev, size_t bytes, Access) {
+BufferCUDA::BufferCUDA(const DeviceCUDA& dev, size_t bytes, Access)
+    : _size(bytes) {
   CUresult err;
   err = cuMemAlloc(&mem, bytes);
   checkError(err);
 }
+
+size_t BufferCUDA::size() const { return _size; }
 
 void BufferCUDA::copy(const ghost::Stream& s, const ghost::Buffer& src,
                       size_t bytes) {
@@ -73,8 +79,73 @@ void BufferCUDA::copyTo(const ghost::Stream& s, void* dst, size_t bytes) const {
   checkError(err);
 }
 
+void BufferCUDA::copy(const ghost::Stream& s, const ghost::Buffer& src,
+                      size_t srcOffset, size_t dstOffset, size_t bytes) {
+  auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  auto src_impl = static_cast<implementation::BufferCUDA*>(src.impl().get());
+  CUresult err;
+  err =
+      cuMemcpyDtoDAsync(mem.get() + dstOffset, src_impl->mem.get() + srcOffset,
+                        bytes, stream_impl->queue);
+  checkError(err);
+}
+
+void BufferCUDA::copy(const ghost::Stream& s, const void* src, size_t dstOffset,
+                      size_t bytes) {
+  auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  CUresult err;
+  err =
+      cuMemcpyHtoDAsync(mem.get() + dstOffset, src, bytes, stream_impl->queue);
+  checkError(err);
+}
+
+void BufferCUDA::copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
+                        size_t bytes) const {
+  auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  CUresult err;
+  err =
+      cuMemcpyDtoHAsync(dst, mem.get() + srcOffset, bytes, stream_impl->queue);
+  checkError(err);
+}
+
+void BufferCUDA::fill(const ghost::Stream& s, size_t offset, size_t size,
+                      uint8_t value) {
+  auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  CUresult err;
+  err = cuMemsetD8Async(mem.get() + offset, value, size, stream_impl->queue);
+  checkError(err);
+}
+
+void BufferCUDA::fill(const ghost::Stream& s, size_t offset, size_t size,
+                      const void* pattern, size_t patternSize) {
+  auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  CUresult err;
+  CUdeviceptr dst = mem.get() + offset;
+  if (patternSize == 1) {
+    err = cuMemsetD8Async(dst, *static_cast<const uint8_t*>(pattern), size,
+                          stream_impl->queue);
+  } else if (patternSize == 2) {
+    unsigned short v;
+    memcpy(&v, pattern, 2);
+    err = cuMemsetD16Async(dst, v, size / 2, stream_impl->queue);
+  } else if (patternSize == 4) {
+    unsigned int v;
+    memcpy(&v, pattern, 4);
+    err = cuMemsetD32Async(dst, v, size / 4, stream_impl->queue);
+  } else {
+    // For non-standard pattern sizes, fill from host
+    std::vector<uint8_t> buf(size);
+    for (size_t i = 0; i < size; i += patternSize) {
+      size_t n = std::min(patternSize, size - i);
+      memcpy(buf.data() + i, pattern, n);
+    }
+    err = cuMemcpyHtoDAsync(dst, buf.data(), size, stream_impl->queue);
+  }
+  checkError(err);
+}
+
 MappedBufferCUDA::MappedBufferCUDA(cu::ptr<void*> ptr_)
-    : BufferCUDA(cu::ptr<CUdeviceptr>()), ptr(ptr_) {
+    : BufferCUDA(cu::ptr<CUdeviceptr>(), 0), ptr(ptr_) {
   CUdeviceptr p;
   CUresult err;
   err = cuMemHostGetDevicePointer(&p, ptr, 0);
@@ -84,7 +155,7 @@ MappedBufferCUDA::MappedBufferCUDA(cu::ptr<void*> ptr_)
 
 MappedBufferCUDA::MappedBufferCUDA(const DeviceCUDA& dev, size_t bytes,
                                    Access access)
-    : BufferCUDA(cu::ptr<CUdeviceptr>()) {
+    : BufferCUDA(cu::ptr<CUdeviceptr>(), bytes) {
   unsigned int flags = CU_MEMHOSTALLOC_DEVICEMAP;
   if (access == Access_WriteOnly) {
     flags |= CU_MEMHOSTALLOC_WRITECOMBINED;
@@ -630,6 +701,35 @@ Attribute DeviceCUDA::getAttribute(DeviceAttributeId what) const {
           cuDeviceGetAttribute(&v, CU_DEVICE_ATTRIBUTE_WARP_SIZE, device));
       return v;
     }
+    case kDeviceMaxComputeUnits: {
+      int v;
+      checkError(cuDeviceGetAttribute(
+          &v, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device));
+      return v;
+    }
+    case kDeviceMemoryAlignment: {
+      int v;
+      checkError(cuDeviceGetAttribute(&v, CU_DEVICE_ATTRIBUTE_TEXTURE_ALIGNMENT,
+                                      device));
+      return v;
+    }
+    case kDeviceBufferAlignment:
+      return 256;
+    case kDeviceMaxBufferSize: {
+      size_t v;
+      checkError(cuDeviceTotalMem(&v, device));
+      return (uint64_t)v;
+    }
+    case kDeviceMaxConstantBufferSize: {
+      int v;
+      checkError(cuDeviceGetAttribute(
+          &v, CU_DEVICE_ATTRIBUTE_TOTAL_CONSTANT_MEMORY, device));
+      return v;
+    }
+    case kDeviceTimestampPeriod:
+      return 1000.0f;
+    case kDeviceSupportsProfilingTimer:
+      return true;
     default:
       return Attribute();
   }

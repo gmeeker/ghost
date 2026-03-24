@@ -95,9 +95,11 @@ class StreamCPU : public Stream {
 class BufferCPU : public Buffer {
  public:
   void* ptr;
-  size_t size;
+  size_t _size;
 
   BufferCPU(const DeviceCPU& dev, size_t bytes);
+
+  virtual size_t size() const override;
 
   virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
                     size_t bytes) override;
@@ -105,6 +107,18 @@ class BufferCPU : public Buffer {
                     size_t bytes) override;
   virtual void copyTo(const ghost::Stream& s, void* dst,
                       size_t bytes) const override;
+
+  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+                    size_t srcOffset, size_t dstOffset, size_t bytes) override;
+  virtual void copy(const ghost::Stream& s, const void* src, size_t dstOffset,
+                    size_t bytes) override;
+  virtual void copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
+                      size_t bytes) const override;
+
+  virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
+                    uint8_t value) override;
+  virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
+                    const void* pattern, size_t patternSize) override;
 };
 
 class ImageCPU : public Image {

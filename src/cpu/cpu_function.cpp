@@ -55,6 +55,12 @@ Attribute FunctionCPU::getAttribute(FunctionAttributeId what) const {
       return 1024;
     case kFunctionRequiredWorkSize:
       return Attribute(0, 0, 0);
+    case kFunctionPreferredWorkMultiple:
+      return 1;
+    case kFunctionNumRegisters:
+      return 0;
+    case kFunctionPrivateMemory:
+      return 0;
     default:
       return Attribute();
   }

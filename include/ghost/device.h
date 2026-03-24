@@ -19,6 +19,7 @@
 #include <ghost/image.h>
 #include <ghost/implementation/impl_device.h>
 
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -66,6 +67,9 @@ class Buffer {
   /// @brief Get the backend implementation (mutable).
   std::shared_ptr<implementation::Buffer>& impl() { return _impl; }
 
+  /// @brief Get the size of this buffer in bytes.
+  size_t size() const;
+
   /// @brief Copy data from another device buffer into this buffer.
   /// @param s The stream to enqueue the copy on.
   /// @param src Source buffer to copy from.
@@ -83,6 +87,23 @@ class Buffer {
   /// @param[out] dst Pointer to host destination buffer.
   /// @param bytes Number of bytes to copy.
   void copyTo(const Stream& s, void* dst, size_t bytes) const;
+
+  /// @brief Copy data from another device buffer with offsets.
+  void copy(const Stream& s, const Buffer& src, size_t srcOffset,
+            size_t dstOffset, size_t bytes);
+
+  /// @brief Copy data from host memory into this buffer at an offset.
+  void copy(const Stream& s, const void* src, size_t dstOffset, size_t bytes);
+
+  /// @brief Copy data from this buffer at an offset to host memory.
+  void copyTo(const Stream& s, void* dst, size_t srcOffset, size_t bytes) const;
+
+  /// @brief Fill a region of this buffer with a byte value.
+  void fill(const Stream& s, size_t offset, size_t size, uint8_t value);
+
+  /// @brief Fill a region of this buffer with a pattern.
+  void fill(const Stream& s, size_t offset, size_t size, const void* pattern,
+            size_t patternSize);
 
  private:
   std::shared_ptr<implementation::Buffer> _impl;

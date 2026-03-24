@@ -21,6 +21,7 @@
 #include <ghost/implementation/impl_function.h>
 #include <stdlib.h>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -80,6 +81,20 @@ enum DeviceAttributeId {
   kDeviceSupportsSubgroupShuffle,
   /// @brief Subgroup (SIMD/warp) width in threads.
   kDeviceSubgroupWidth,
+  /// @brief Number of compute units / streaming multiprocessors.
+  kDeviceMaxComputeUnits,
+  /// @brief Minimum allocation alignment in bytes.
+  kDeviceMemoryAlignment,
+  /// @brief Buffer offset alignment for sub-buffers in bytes.
+  kDeviceBufferAlignment,
+  /// @brief Maximum single buffer allocation size in bytes.
+  kDeviceMaxBufferSize,
+  /// @brief Maximum constant buffer / push constant size in bytes.
+  kDeviceMaxConstantBufferSize,
+  /// @brief Nanoseconds per timestamp tick (float).
+  kDeviceTimestampPeriod,
+  /// @brief Whether profiling timers are supported (bool).
+  kDeviceSupportsProfilingTimer,
 };
 
 /// @brief Opaque container for backend-specific context handles, used to share
@@ -150,11 +165,25 @@ class Buffer {
   Buffer& operator=(const Buffer& rhs) = delete;
 
  public:
+  virtual size_t size() const = 0;
+
   virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
                     size_t bytes) = 0;
   virtual void copy(const ghost::Stream& s, const void* src, size_t bytes) = 0;
   virtual void copyTo(const ghost::Stream& s, void* dst,
                       size_t bytes) const = 0;
+
+  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+                    size_t srcOffset, size_t dstOffset, size_t bytes) = 0;
+  virtual void copy(const ghost::Stream& s, const void* src, size_t dstOffset,
+                    size_t bytes) = 0;
+  virtual void copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
+                      size_t bytes) const = 0;
+
+  virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
+                    uint8_t value) = 0;
+  virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
+                    const void* pattern, size_t patternSize) = 0;
 
   /// @brief Map the buffer into host address space.
   ///

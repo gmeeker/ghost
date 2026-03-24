@@ -188,6 +188,12 @@ Attribute FunctionMetal::getAttribute(FunctionAttributeId what) const {
 #endif
     return Attribute(0, 0, 0);
   }
+  case kFunctionPreferredWorkMultiple:
+    return (uint32_t)pipeline.get().threadExecutionWidth;
+  case kFunctionNumRegisters:
+    return 0;
+  case kFunctionPrivateMemory:
+    return 0;
   default:
     return Attribute();
   }

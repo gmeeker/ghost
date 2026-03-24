@@ -17,6 +17,9 @@
 #include <ghost/cpu/impl_function.h>
 #include <string.h>
 
+#include <algorithm>
+#include <limits>
+
 namespace ghost {
 namespace implementation {
 void ThreadPoolDefault::worker() {
@@ -116,9 +119,11 @@ StreamCPU::~StreamCPU() {}
 
 void StreamCPU::sync() { pool->sync(); }
 
-BufferCPU::BufferCPU(const DeviceCPU& dev, size_t bytes) {
+BufferCPU::BufferCPU(const DeviceCPU& dev, size_t bytes) : _size(bytes) {
   ptr = dev.allocateHostMemory(bytes);
 }
+
+size_t BufferCPU::size() const { return _size; }
 
 void BufferCPU::copy(const ghost::Stream& s, const ghost::Buffer& src,
                      size_t bytes) {
@@ -131,6 +136,41 @@ void BufferCPU::copy(const ghost::Stream& s, const void* src, size_t bytes) {
 
 void BufferCPU::copyTo(const ghost::Stream& s, void* dst, size_t bytes) const {
   memcpy(dst, ptr, bytes);
+}
+
+void BufferCPU::copy(const ghost::Stream& s, const ghost::Buffer& src,
+                     size_t srcOffset, size_t dstOffset, size_t bytes) {
+  auto srcPtr = static_cast<const BufferCPU*>(src.impl().get())->ptr;
+  memcpy(static_cast<uint8_t*>(ptr) + dstOffset,
+         static_cast<const uint8_t*>(srcPtr) + srcOffset, bytes);
+}
+
+void BufferCPU::copy(const ghost::Stream& s, const void* src, size_t dstOffset,
+                     size_t bytes) {
+  memcpy(static_cast<uint8_t*>(ptr) + dstOffset, src, bytes);
+}
+
+void BufferCPU::copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
+                       size_t bytes) const {
+  memcpy(dst, static_cast<const uint8_t*>(ptr) + srcOffset, bytes);
+}
+
+void BufferCPU::fill(const ghost::Stream& s, size_t offset, size_t size,
+                     uint8_t value) {
+  memset(static_cast<uint8_t*>(ptr) + offset, value, size);
+}
+
+void BufferCPU::fill(const ghost::Stream& s, size_t offset, size_t size,
+                     const void* pattern, size_t patternSize) {
+  uint8_t* dst = static_cast<uint8_t*>(ptr) + offset;
+  if (patternSize == 1) {
+    memset(dst, *static_cast<const uint8_t*>(pattern), size);
+  } else {
+    for (size_t i = 0; i < size; i += patternSize) {
+      size_t n = std::min(patternSize, size - i);
+      memcpy(dst + i, pattern, n);
+    }
+  }
 }
 
 ImageCPU::ImageCPU(const DeviceCPU& dev, const ImageDescription& descr_)
@@ -279,6 +319,20 @@ Attribute DeviceCPU::getAttribute(DeviceAttributeId what) const {
       return true;
     case kDeviceSubgroupWidth:
       return 16;
+    case kDeviceMaxComputeUnits:
+      return (uint32_t)getNumberOfCores();
+    case kDeviceMemoryAlignment:
+      return (uint32_t)alignof(std::max_align_t);
+    case kDeviceBufferAlignment:
+      return (uint32_t)alignof(std::max_align_t);
+    case kDeviceMaxBufferSize:
+      return (uint64_t)std::numeric_limits<size_t>::max();
+    case kDeviceMaxConstantBufferSize:
+      return (uint64_t)std::numeric_limits<size_t>::max();
+    case kDeviceTimestampPeriod:
+      return 1.0f;
+    case kDeviceSupportsProfilingTimer:
+      return false;
     default:
       return Attribute();
   }

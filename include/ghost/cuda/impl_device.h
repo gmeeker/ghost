@@ -36,10 +36,13 @@ class StreamCUDA : public Stream {
 class BufferCUDA : public Buffer {
  public:
   cu::ptr<CUdeviceptr> mem;
+  size_t _size;
 
-  BufferCUDA(cu::ptr<CUdeviceptr> mem_);
+  BufferCUDA(cu::ptr<CUdeviceptr> mem_, size_t bytes);
   BufferCUDA(const DeviceCUDA& dev, size_t bytes,
              Access access = Access_ReadWrite);
+
+  virtual size_t size() const override;
 
   virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
                     size_t bytes) override;
@@ -47,6 +50,18 @@ class BufferCUDA : public Buffer {
                     size_t bytes) override;
   virtual void copyTo(const ghost::Stream& s, void* dst,
                       size_t bytes) const override;
+
+  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+                    size_t srcOffset, size_t dstOffset, size_t bytes) override;
+  virtual void copy(const ghost::Stream& s, const void* src, size_t dstOffset,
+                    size_t bytes) override;
+  virtual void copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
+                      size_t bytes) const override;
+
+  virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
+                    uint8_t value) override;
+  virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
+                    const void* pattern, size_t patternSize) override;
 };
 
 class MappedBufferCUDA : public BufferCUDA {

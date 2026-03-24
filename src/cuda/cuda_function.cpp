@@ -186,6 +186,23 @@ Attribute FunctionCUDA::getAttribute(FunctionAttributeId what) const {
     }
     case kFunctionRequiredWorkSize:
       return Attribute(0, 0, 0);
+    case kFunctionPreferredWorkMultiple: {
+      int v;
+      checkError(
+          cuDeviceGetAttribute(&v, CU_DEVICE_ATTRIBUTE_WARP_SIZE, _dev.device));
+      return v;
+    }
+    case kFunctionNumRegisters: {
+      int v;
+      checkError(cuFuncGetAttribute(&v, CU_FUNC_ATTRIBUTE_NUM_REGS, kernel));
+      return v;
+    }
+    case kFunctionPrivateMemory: {
+      int v;
+      checkError(
+          cuFuncGetAttribute(&v, CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, kernel));
+      return v;
+    }
     default:
       return Attribute();
   }

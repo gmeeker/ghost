@@ -14,6 +14,7 @@
 
 #include <ghost/device.h>
 
+#include <cstring>
 #include <memory>
 #include <string>
 
@@ -24,6 +25,27 @@ void* Buffer::map(const ghost::Stream&, Access, bool) {
 }
 
 void Buffer::unmap(const ghost::Stream&) { throw ghost::unsupported_error(); }
+
+void Buffer::copy(const ghost::Stream&, const ghost::Buffer&, size_t, size_t,
+                  size_t) {
+  throw ghost::unsupported_error();
+}
+
+void Buffer::copy(const ghost::Stream&, const void*, size_t, size_t) {
+  throw ghost::unsupported_error();
+}
+
+void Buffer::copyTo(const ghost::Stream&, void*, size_t, size_t) const {
+  throw ghost::unsupported_error();
+}
+
+void Buffer::fill(const ghost::Stream&, size_t, size_t, uint8_t) {
+  throw ghost::unsupported_error();
+}
+
+void Buffer::fill(const ghost::Stream&, size_t, size_t, const void*, size_t) {
+  throw ghost::unsupported_error();
+}
 
 BinaryCache Device::_cache;
 
@@ -50,6 +72,8 @@ void Stream::sync() { impl()->sync(); }
 
 Buffer::Buffer(std::shared_ptr<implementation::Buffer> impl) : _impl(impl) {}
 
+size_t Buffer::size() const { return _impl->size(); }
+
 void Buffer::copy(const Stream& s, const Buffer& src, size_t bytes) {
   _impl->copy(s, src, bytes);
 }
@@ -60,6 +84,30 @@ void Buffer::copy(const Stream& s, const void* src, size_t bytes) {
 
 void Buffer::copyTo(const Stream& s, void* dst, size_t bytes) const {
   _impl->copyTo(s, dst, bytes);
+}
+
+void Buffer::copy(const Stream& s, const Buffer& src, size_t srcOffset,
+                  size_t dstOffset, size_t bytes) {
+  _impl->copy(s, src, srcOffset, dstOffset, bytes);
+}
+
+void Buffer::copy(const Stream& s, const void* src, size_t dstOffset,
+                  size_t bytes) {
+  _impl->copy(s, src, dstOffset, bytes);
+}
+
+void Buffer::copyTo(const Stream& s, void* dst, size_t srcOffset,
+                    size_t bytes) const {
+  _impl->copyTo(s, dst, srcOffset, bytes);
+}
+
+void Buffer::fill(const Stream& s, size_t offset, size_t size, uint8_t value) {
+  _impl->fill(s, offset, size, value);
+}
+
+void Buffer::fill(const Stream& s, size_t offset, size_t size,
+                  const void* pattern, size_t patternSize) {
+  _impl->fill(s, offset, size, pattern, patternSize);
 }
 
 MappedBuffer::MappedBuffer(std::shared_ptr<implementation::Buffer> impl)

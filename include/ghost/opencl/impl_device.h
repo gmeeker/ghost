@@ -45,10 +45,13 @@ class StreamOpenCL : public Stream {
 class BufferOpenCL : public Buffer {
  public:
   opencl::ptr<cl_mem> mem;
+  size_t _size;
 
-  BufferOpenCL(opencl::ptr<cl_mem> mem_);
+  BufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes);
   BufferOpenCL(const DeviceOpenCL& dev, size_t bytes,
                Access access = Access_ReadWrite);
+
+  virtual size_t size() const override;
 
   virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
                     size_t bytes) override;
@@ -56,6 +59,18 @@ class BufferOpenCL : public Buffer {
                     size_t bytes) override;
   virtual void copyTo(const ghost::Stream& s, void* dst,
                       size_t bytes) const override;
+
+  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+                    size_t srcOffset, size_t dstOffset, size_t bytes) override;
+  virtual void copy(const ghost::Stream& s, const void* src, size_t dstOffset,
+                    size_t bytes) override;
+  virtual void copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
+                      size_t bytes) const override;
+
+  virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
+                    uint8_t value) override;
+  virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
+                    const void* pattern, size_t patternSize) override;
 };
 
 class MappedBufferOpenCL : public BufferOpenCL {
@@ -63,7 +78,7 @@ class MappedBufferOpenCL : public BufferOpenCL {
   size_t length;
   void* ptr;
 
-  MappedBufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes);
+  MappedBufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes, size_t allocSize);
   MappedBufferOpenCL(const DeviceOpenCL& dev, size_t bytes,
                      Access access = Access_ReadWrite);
 

@@ -210,16 +210,19 @@ void StreamOpenCL::addEvent() {
 
 cl_event* StreamOpenCL::event() { return outOfOrder ? &lastEvent : nullptr; }
 
-BufferOpenCL::BufferOpenCL(opencl::ptr<cl_mem> mem_) : mem(mem_) {}
+BufferOpenCL::BufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes)
+    : mem(mem_), _size(bytes) {}
 
-BufferOpenCL::BufferOpenCL(const DeviceOpenCL& dev, size_t bytes,
-                           Access access) {
+BufferOpenCL::BufferOpenCL(const DeviceOpenCL& dev, size_t bytes, Access access)
+    : _size(bytes) {
   cl_int err;
   cl_mem_flags flags = getMemFlags(access);
   mem = opencl::ptr<cl_mem>(
       clCreateBuffer(dev.context, flags, bytes, nullptr, &err));
   checkError(err);
 }
+
+size_t BufferOpenCL::size() const { return _size; }
 
 void BufferOpenCL::copy(const ghost::Stream& s, const ghost::Buffer& src,
                         size_t bytes) {
@@ -254,12 +257,69 @@ void BufferOpenCL::copyTo(const ghost::Stream& s, void* dst,
   stream_impl->addEvent();
 }
 
-MappedBufferOpenCL::MappedBufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes)
-    : BufferOpenCL(mem_), length(bytes), ptr(nullptr) {}
+void BufferOpenCL::copy(const ghost::Stream& s, const ghost::Buffer& src,
+                        size_t srcOffset, size_t dstOffset, size_t bytes) {
+  auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
+  auto src_impl = static_cast<implementation::BufferOpenCL*>(src.impl().get());
+  cl_int err;
+  err = clEnqueueCopyBuffer(stream_impl->queue, src_impl->mem, mem, srcOffset,
+                            dstOffset, bytes, stream_impl->events.size(),
+                            stream_impl->events, stream_impl->event());
+  checkError(err);
+  stream_impl->addEvent();
+}
+
+void BufferOpenCL::copy(const ghost::Stream& s, const void* src,
+                        size_t dstOffset, size_t bytes) {
+  auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
+  cl_int err;
+  err = clEnqueueWriteBuffer(stream_impl->queue, mem, false, dstOffset, bytes,
+                             src, stream_impl->events.size(),
+                             stream_impl->events, stream_impl->event());
+  checkError(err);
+  stream_impl->addEvent();
+}
+
+void BufferOpenCL::copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
+                          size_t bytes) const {
+  auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
+  cl_int err;
+  err = clEnqueueReadBuffer(stream_impl->queue, mem, false, srcOffset, bytes,
+                            dst, stream_impl->events.size(),
+                            stream_impl->events, stream_impl->event());
+  checkError(err);
+  stream_impl->addEvent();
+}
+
+void BufferOpenCL::fill(const ghost::Stream& s, size_t offset, size_t size,
+                        uint8_t value) {
+  auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
+  cl_int err;
+  err = clEnqueueFillBuffer(stream_impl->queue, mem, &value, sizeof(value),
+                            offset, size, stream_impl->events.size(),
+                            stream_impl->events, stream_impl->event());
+  checkError(err);
+  stream_impl->addEvent();
+}
+
+void BufferOpenCL::fill(const ghost::Stream& s, size_t offset, size_t size,
+                        const void* pattern, size_t patternSize) {
+  auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
+  cl_int err;
+  err = clEnqueueFillBuffer(stream_impl->queue, mem, pattern, patternSize,
+                            offset, size, stream_impl->events.size(),
+                            stream_impl->events, stream_impl->event());
+  checkError(err);
+  stream_impl->addEvent();
+}
+
+MappedBufferOpenCL::MappedBufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes,
+                                       size_t allocSize)
+    : BufferOpenCL(mem_, allocSize), length(bytes), ptr(nullptr) {}
 
 MappedBufferOpenCL::MappedBufferOpenCL(const DeviceOpenCL& dev, size_t bytes,
                                        Access access)
-    : BufferOpenCL(opencl::ptr<cl_mem>()), length(bytes), ptr(nullptr) {
+    : BufferOpenCL(opencl::ptr<cl_mem>(), bytes), length(bytes), ptr(nullptr) {
   cl_int err;
   cl_mem_flags flags = getMemFlags(access);
   flags |= CL_MEM_ALLOC_HOST_PTR;
@@ -663,6 +723,27 @@ Attribute DeviceOpenCL::getAttribute(DeviceAttributeId what) const {
       }
       return size;
     }
+    case kDeviceMaxComputeUnits:
+      return (uint64_t)getInt(CL_DEVICE_MAX_COMPUTE_UNITS);
+    case kDeviceMemoryAlignment:
+      return (uint64_t)getInt(CL_DEVICE_MEM_BASE_ADDR_ALIGN) / 8;
+    case kDeviceBufferAlignment:
+      return (uint64_t)getInt(CL_DEVICE_MEM_BASE_ADDR_ALIGN) / 8;
+    case kDeviceMaxBufferSize:
+      return (uint64_t)getInt(CL_DEVICE_MAX_MEM_ALLOC_SIZE);
+    case kDeviceMaxConstantBufferSize:
+      return (uint64_t)getInt(CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE);
+    case kDeviceTimestampPeriod: {
+      auto devices = getDevices();
+      cl_int err;
+      cl_ulong res;
+      err = clGetDeviceInfo(devices[0], CL_DEVICE_PROFILING_TIMER_RESOLUTION,
+                            sizeof(res), &res, nullptr);
+      checkError(err);
+      return (float)res;
+    }
+    case kDeviceSupportsProfilingTimer:
+      return true;
     default:
       return Attribute();
   }

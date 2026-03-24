@@ -41,6 +41,12 @@ enum FunctionAttributeId {
   kFunctionMaxThreads,
   /// @brief Required work-group size (3-element int array), or zeros if none.
   kFunctionRequiredWorkSize,
+  /// @brief Preferred work-group size multiple.
+  kFunctionPreferredWorkMultiple,
+  /// @brief Number of registers used per thread (CUDA).
+  kFunctionNumRegisters,
+  /// @brief Private memory per work-item in bytes.
+  kFunctionPrivateMemory,
 };
 
 class Function;
