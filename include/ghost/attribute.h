@@ -23,16 +23,37 @@ namespace ghost {
 class Buffer;
 class Image;
 
+/// @brief Type-safe tagged union for passing kernel arguments and querying
+/// device/function metadata.
+///
+/// An Attribute can hold one of several types: string, float, integer, boolean,
+/// buffer pointer, image pointer, or a local memory size. Numeric types support
+/// up to 4-element vectors, stored in both 32-bit and 64-bit representations
+/// for convenient access.
+///
+/// Attributes are used in two contexts:
+/// - As kernel arguments passed to Function::operator() and
+/// Function::execute().
+/// - As return values from Device::getAttribute() and Function::getAttribute().
 class Attribute {
  public:
+  /// @brief The type tag identifying which value the Attribute holds.
   enum Type {
+    /// @brief No value set.
     Type_Unknown,
+    /// @brief String value.
     Type_String,
+    /// @brief Floating-point value(s) (up to 4 elements).
     Type_Float,
+    /// @brief Integer value(s) (up to 4 elements, signed or unsigned).
     Type_Int,
+    /// @brief Boolean value(s) (up to 4 elements).
     Type_Bool,
+    /// @brief Pointer to a Buffer.
     Type_Buffer,
+    /// @brief Pointer to an Image.
     Type_Image,
+    /// @brief Local (shared) memory allocation size in bytes.
     Type_LocalMem
   };
 
@@ -77,14 +98,21 @@ class Attribute {
   }
 
  public:
+  /// @brief Construct an empty attribute with Type_Unknown.
   Attribute() : _type(Type_Unknown), _count(0) {}
 
+  /// @name String constructors
+  /// @{
   Attribute(char* s) : _type(Type_String), _count(1), _s(s) {}
 
   Attribute(const char* s) : _type(Type_String), _count(1), _s(s) {}
 
   Attribute(const std::string& s) : _type(Type_String), _count(1), _s(s) {}
 
+  /// @}
+
+  /// @name Buffer and Image constructors
+  /// @{
   Attribute(Buffer* b) : _type(Type_Buffer), _count(1) { _u.buffer = b; }
 
   Attribute(Buffer& b) : _type(Type_Buffer), _count(1) { _u.buffer = &b; }
@@ -93,6 +121,12 @@ class Attribute {
 
   Attribute(Image& i) : _type(Type_Image), _count(1) { _u.image = &i; }
 
+  /// @}
+
+  /// @name Scalar and vector numeric constructors
+  /// Construct from 1 to 4 numeric values (float, double, int32_t, uint32_t,
+  /// int64_t, uint64_t, or bool). The type is inferred from the argument type.
+  /// @{
   template <typename T>
   Attribute(T v) {
     set(&v, 1);
@@ -116,11 +150,22 @@ class Attribute {
     set(v, 4);
   }
 
+  /// @brief Construct from an array of @p num values.
+  /// @tparam T Numeric type (float, double, int32_t, uint32_t, int64_t,
+  /// uint64_t, or bool).
+  /// @param v Pointer to the array of values.
+  /// @param num Number of elements (1–4).
   template <typename T>
   Attribute(const T* v, size_t num) {
     set(v, num);
   }
 
+  /// @}
+
+  /// @name Typed setters
+  /// Set the attribute value from an array. Each overload sets the type tag
+  /// and stores the values in both 32-bit and 64-bit representations.
+  /// @{
   void set(const float* v, size_t num) {
     _type = Type_Float;
     setT(v, 0.f, _u.f, _u64.f, num);
@@ -156,6 +201,11 @@ class Attribute {
     setT(v, false, _u.b, _u64.b, num);
   }
 
+  /// @}
+
+  /// @brief Set this attribute to represent a local memory allocation.
+  /// @param bytes Size of local (shared) memory in bytes.
+  /// @return Reference to this attribute for chaining.
   Attribute& localMem(uint32_t bytes) {
     _type = Type_LocalMem;
     _count = 1;
@@ -163,12 +213,20 @@ class Attribute {
     return *this;
   }
 
+  /// @brief Check whether the attribute holds a value.
+  /// @return @c true if the type is not Type_Unknown.
   bool valid() const { return _type != Type_Unknown; }
 
+  /// @brief Get the type tag.
   Type type() const { return _type; }
 
+  /// @brief Get the number of elements (1–4 for numeric types).
   size_t count() const { return _count; }
 
+  /// @name Value accessors
+  /// Retrieve the stored value in the requested type. The caller must ensure
+  /// the attribute's type matches the accessor used.
+  /// @{
   const std::string& asString() const { return _s; }
 
   const float asFloat() const { return _u.f[0]; }
@@ -202,6 +260,8 @@ class Attribute {
   Buffer* asBuffer() const { return _u.buffer; }
 
   Image* asImage() const { return _u.image; }
+
+  /// @}
 };
 
 }  // namespace ghost

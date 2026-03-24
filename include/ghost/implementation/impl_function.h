@@ -24,11 +24,22 @@
 #include <vector>
 
 namespace ghost {
+
+/// @brief Identifiers for queryable function (kernel) attributes.
+///
+/// Pass these to Function::getAttribute() or
+/// implementation::Function::getAttribute() to retrieve kernel properties after
+/// compilation.
 enum FunctionAttributeId {
+  /// @brief Static local memory used by the kernel in bytes.
   kFunctionLocalMemory,
+  /// @brief Maximum local memory available to the kernel in bytes.
   kFunctionMaxLocalMemory,
+  /// @brief SIMD/warp width for this kernel.
   kFunctionThreadWidth,
+  /// @brief Maximum threads per work-group for this kernel.
   kFunctionMaxThreads,
+  /// @brief Required work-group size (3-element int array), or zeros if none.
   kFunctionRequiredWorkSize,
 };
 
@@ -38,6 +49,12 @@ class Stream;
 class LaunchArgs;
 
 namespace implementation {
+
+/// @brief Abstract backend interface for a compiled GPU kernel function.
+///
+/// Backend implementations derive from this class to provide kernel execution
+/// and attribute queries. Not copyable. The variadic operator() converts
+/// arguments to a vector of Attribute and delegates to execute().
 class Function {
  public:
   class Arg {};
@@ -50,11 +67,17 @@ class Function {
 
   Function& operator=(const Function& rhs) = delete;
 
+  /// @brief Execute the kernel on a stream with the given arguments.
+  /// @param s The stream to enqueue the kernel on.
+  /// @param launchArgs Global and local work size configuration.
+  /// @param args Kernel arguments as a vector of Attribute.
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) = 0;
 
   virtual Attribute getAttribute(FunctionAttributeId what) const = 0;
 
+  /// @brief Helper to build an Attribute vector from variadic arguments.
+  /// @{
   static void addArgs(std::vector<Attribute>&) {}
 
   template <typename ARG>
@@ -69,6 +92,10 @@ class Function {
     addArgs(args, std::forward<ARGS>(tail)...);
   }
 
+  /// @}
+
+  /// @brief Dispatch the kernel, converting variadic arguments to Attribute
+  /// vector.
   template <typename... ARGS>
   void operator()(const Stream& s, const LaunchArgs& launchArgs,
                   ARGS&&... tail) {
@@ -78,6 +105,10 @@ class Function {
   }
 };
 
+/// @brief Abstract backend interface for a compiled GPU program (library).
+///
+/// Backend implementations derive from this class to provide function lookup
+/// and optional specialization. Not copyable.
 class Library {
  public:
   Library() {}
@@ -89,6 +120,16 @@ class Library {
   Library& operator=(const Library& rhs) = delete;
 
   virtual ghost::Function lookupFunction(const std::string& name) const = 0;
+
+  /// @brief Create a specialized function variant with compile-time constant
+  /// values.
+  ///
+  /// The default implementation throws ghost::unsupported_error. Backends
+  /// that support function constants (e.g., Metal) override this method.
+  /// @param name The kernel function name.
+  /// @param args Specialization constant values.
+  /// @return The specialized Function.
+  /// @throws ghost::unsupported_error if not supported by the backend.
   virtual ghost::Function specializeFunction(
       const std::string& name, const std::vector<Attribute>& args) const;
 };

@@ -18,6 +18,12 @@
 #include <stdexcept>
 
 namespace ghost {
+
+/// @brief Exception thrown when an operation is not supported by the current
+/// backend.
+///
+/// Backends throw this when a requested feature (e.g., mapped buffers, image
+/// filtering) is not available on the underlying GPU API.
 class unsupported_error : public std::runtime_error {
  public:
   unsupported_error() : std::runtime_error("unsupported") {}

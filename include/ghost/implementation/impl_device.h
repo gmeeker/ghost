@@ -25,40 +25,81 @@
 #include <string>
 
 namespace ghost {
+
+/// @brief Identifiers for queryable device attributes.
+///
+/// Pass these to Device::getAttribute() or
+/// implementation::Device::getAttribute() to retrieve device properties.
 enum DeviceAttributeId {
+  /// @brief Backend name (e.g., "Metal", "OpenCL", "CUDA").
   kDeviceImplementation,
+  /// @brief Device name string.
   kDeviceName,
+  /// @brief Device vendor string.
   kDeviceVendor,
+  /// @brief Driver or runtime version string.
   kDeviceDriverVersion,
+  /// @brief Device family identifier (backend-specific).
   kDeviceFamily,
+  /// @brief Number of devices available on this backend.
   kDeviceCount,
+  /// @brief Number of compute processors / streaming multiprocessors.
   kDeviceProcessorCount,
+  /// @brief Whether the device shares memory with the host (bool).
   kDeviceUnifiedMemory,
+  /// @brief Total device global memory in bytes (uint64).
   kDeviceMemory,
+  /// @brief Maximum local (shared/threadgroup) memory per work-group in bytes.
   kDeviceLocalMemory,
+  /// @brief Maximum threads per work-group.
   kDeviceMaxThreads,
+  /// @brief Maximum work-group size per dimension (3-element int array).
   kDeviceMaxWorkSize,
+  /// @brief Maximum registers per thread (backend-specific).
   kDeviceMaxRegisters,
+  /// @brief Maximum 1D image width.
   kDeviceMaxImageSize1,
+  /// @brief Maximum 2D image dimensions (2-element int array).
   kDeviceMaxImageSize2,
+  /// @brief Maximum 3D image dimensions (3-element int array).
   kDeviceMaxImageSize3,
+  /// @brief Required image row alignment in bytes.
   kDeviceImageAlignment,
+  /// @brief Whether integer image filtering is supported (bool).
   kDeviceSupportsImageIntegerFiltering,
+  /// @brief Whether float image filtering is supported (bool).
   kDeviceSupportsImageFloatFiltering,
+  /// @brief Whether mapped (pinned) buffers are supported (bool).
   kDeviceSupportsMappedBuffer,
+  /// @brief Whether program constants / function specialization is supported
+  /// (bool).
   kDeviceSupportsProgramConstants,
+  /// @brief Whether subgroup (SIMD/warp) operations are supported (bool).
   kDeviceSupportsSubgroup,
+  /// @brief Whether subgroup shuffle operations are supported (bool).
   kDeviceSupportsSubgroupShuffle,
+  /// @brief Subgroup (SIMD/warp) width in threads.
   kDeviceSubgroupWidth,
 };
 
+/// @brief Opaque container for backend-specific context handles, used to share
+/// a device context.
+///
+/// Returned by Device::shareContext() and passed to backend constructors to
+/// create a second Device that shares the same GPU context and command queue.
 class SharedContext {
  public:
+  /// @brief Backend context handle (e.g., cl_context, CUcontext).
   void* context;
+  /// @brief Backend queue handle (e.g., cl_command_queue, MTLCommandQueue).
   void* queue;
+  /// @brief Backend device handle (e.g., cl_device_id, CUdevice,
+  /// id<MTLDevice>).
   void* device;
+  /// @brief Backend platform handle (e.g., cl_platform_id), or @c nullptr.
   void* platform;
 
+  /// @brief Construct a SharedContext with optional handles.
   SharedContext(void* context_ = nullptr, void* queue_ = nullptr,
                 void* device_ = nullptr, void* platform_ = nullptr)
       : context(context_),
@@ -75,6 +116,11 @@ class MappedBuffer;
 class Image;
 
 namespace implementation {
+
+/// @brief Abstract backend interface for a GPU command stream.
+///
+/// Backend implementations derive from this class to provide stream
+/// synchronization. Not copyable.
 class Stream {
  protected:
   Stream() {}
@@ -89,6 +135,10 @@ class Stream {
   virtual void sync() = 0;
 };
 
+/// @brief Abstract backend interface for a GPU memory buffer.
+///
+/// Backend implementations derive from this class to provide buffer
+/// copy and optional mapping operations. Not copyable.
 class Buffer {
  protected:
   Buffer() {}
@@ -105,10 +155,25 @@ class Buffer {
   virtual void copy(const ghost::Stream& s, const void* src, size_t bytes) = 0;
   virtual void copyTo(const ghost::Stream& s, void* dst,
                       size_t bytes) const = 0;
+
+  /// @brief Map the buffer into host address space.
+  ///
+  /// The default implementation throws ghost::unsupported_error. Backends
+  /// that support mapped buffers override this method.
+  /// @throws ghost::unsupported_error if not supported by the backend.
   virtual void* map(const ghost::Stream& s, Access access, bool sync = true);
+
+  /// @brief Unmap a previously mapped buffer.
+  ///
+  /// The default implementation throws ghost::unsupported_error.
+  /// @throws ghost::unsupported_error if not supported by the backend.
   virtual void unmap(const ghost::Stream& s);
 };
 
+/// @brief Abstract backend interface for a GPU image (texture).
+///
+/// Backend implementations derive from this class to provide image
+/// copy operations. Not copyable.
 class Image {
  protected:
   Image() {}
@@ -131,6 +196,10 @@ class Image {
                       const ImageDescription& descr) const = 0;
 };
 
+/// @brief Abstract backend interface for a GPU device.
+///
+/// Backend implementations derive from this class to provide library loading,
+/// resource allocation, context sharing, and attribute queries. Not copyable.
 class Device {
  protected:
   Device() : _poolSize(0) {}
@@ -147,16 +216,31 @@ class Device {
       const std::string& text, const std::string& options = "") const = 0;
   virtual ghost::Library loadLibraryFromData(
       const void* data, size_t len, const std::string& options = "") const = 0;
+
+  /// @brief Load a GPU program from a file path.
+  ///
+  /// The default implementation reads the file, attempts to load from the
+  /// binary cache, and falls back to loadLibraryFromText() or
+  /// loadLibraryFromData().
   virtual ghost::Library loadLibraryFromFile(const std::string& filename) const;
 
   virtual SharedContext shareContext() const = 0;
-
   virtual ghost::Stream createStream() const = 0;
 
+  /// @brief Get the current memory pool size. Default returns the stored pool
+  /// size.
   virtual size_t getMemoryPoolSize() const;
+
+  /// @brief Set the memory pool size. Default stores the value for
+  /// getMemoryPoolSize().
   virtual void setMemoryPoolSize(size_t bytes);
+
+  /// @brief Allocate page-locked host memory. Default uses malloc().
   virtual void* allocateHostMemory(size_t bytes) const;
+
+  /// @brief Free page-locked host memory. Default uses free().
   virtual void freeHostMemory(void* ptr) const;
+
   virtual ghost::Buffer allocateBuffer(
       size_t bytes, Access access = Access_ReadWrite) const = 0;
   virtual ghost::MappedBuffer allocateMappedBuffer(
