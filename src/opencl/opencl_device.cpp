@@ -161,6 +161,35 @@ cl_image_format getFormat(cl_context ctx, const ImageDescription& descr,
 }
 }  // namespace
 
+EventOpenCL::EventOpenCL(opencl::ptr<cl_event> event_) : event(event_) {}
+
+void EventOpenCL::wait() {
+  cl_event ev = event.get();
+  cl_int err = clWaitForEvents(1, &ev);
+  checkError(err);
+}
+
+bool EventOpenCL::isComplete() const {
+  cl_int status;
+  cl_int err = clGetEventInfo(event.get(), CL_EVENT_COMMAND_EXECUTION_STATUS,
+                              sizeof(status), &status, nullptr);
+  checkError(err);
+  return status == CL_COMPLETE;
+}
+
+double EventOpenCL::elapsed(const Event& other) const {
+  auto& otherOCL = static_cast<const EventOpenCL&>(other);
+  cl_ulong startTime, endTime;
+  cl_int err;
+  err = clGetEventProfilingInfo(event.get(), CL_PROFILING_COMMAND_END,
+                                sizeof(startTime), &startTime, nullptr);
+  if (err != CL_SUCCESS) return 0.0;
+  err = clGetEventProfilingInfo(otherOCL.event.get(), CL_PROFILING_COMMAND_END,
+                                sizeof(endTime), &endTime, nullptr);
+  if (err != CL_SUCCESS) return 0.0;
+  return static_cast<double>(endTime - startTime) / 1e9;
+}
+
 StreamOpenCL::StreamOpenCL(opencl::ptr<cl_command_queue> queue_)
     : queue(queue_), outOfOrder(true) {}
 
@@ -209,6 +238,31 @@ void StreamOpenCL::addEvent() {
 }
 
 cl_event* StreamOpenCL::event() { return outOfOrder ? &lastEvent : nullptr; }
+
+std::shared_ptr<Event> StreamOpenCL::record() {
+  cl_event ev;
+  cl_int err;
+#ifdef CL_VERSION_1_2
+  err = clEnqueueMarkerWithWaitList(queue, events.size(), events, &ev);
+#else
+  err = clEnqueueMarker(queue, &ev);
+#endif
+  checkError(err);
+  addEvent();
+  return std::make_shared<EventOpenCL>(opencl::ptr<cl_event>(ev));
+}
+
+void StreamOpenCL::waitForEvent(const std::shared_ptr<Event>& e) {
+  auto eventOCL = static_cast<EventOpenCL*>(e.get());
+  cl_event ev = eventOCL->event.get();
+  cl_int err;
+#ifdef CL_VERSION_1_2
+  err = clEnqueueBarrierWithWaitList(queue, 1, &ev, nullptr);
+#else
+  err = clEnqueueWaitForEvents(queue, 1, &ev);
+#endif
+  checkError(err);
+}
 
 BufferOpenCL::BufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes)
     : mem(mem_), _size(bytes) {}
@@ -312,6 +366,23 @@ void BufferOpenCL::fill(const ghost::Stream& s, size_t offset, size_t size,
   checkError(err);
   stream_impl->addEvent();
 }
+
+std::shared_ptr<Buffer> BufferOpenCL::createSubBuffer(
+    const std::shared_ptr<Buffer>& self, size_t offset, size_t size) {
+  cl_int err;
+  cl_buffer_region region;
+  region.origin = offset;
+  region.size = size;
+  cl_mem sub = clCreateSubBuffer(mem, CL_MEM_READ_WRITE,
+                                 CL_BUFFER_CREATE_TYPE_REGION, &region, &err);
+  checkError(err);
+  return std::make_shared<SubBufferOpenCL>(self, opencl::ptr<cl_mem>(sub),
+                                           size);
+}
+
+SubBufferOpenCL::SubBufferOpenCL(std::shared_ptr<Buffer> parent,
+                                 opencl::ptr<cl_mem> mem_, size_t bytes)
+    : BufferOpenCL(mem_, bytes), _parent(parent) {}
 
 MappedBufferOpenCL::MappedBufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes,
                                        size_t allocSize)
@@ -575,6 +646,22 @@ DeviceOpenCL::DeviceOpenCL(const SharedContext& share) {
   set_of(_extensions, getString(CL_DEVICE_EXTENSIONS));
 }
 
+DeviceOpenCL::DeviceOpenCL(cl_platform_id platform, cl_device_id device) {
+  cl_int err;
+  cl_context_properties properties[] = {
+      (cl_context_properties)CL_CONTEXT_PLATFORM,
+      (cl_context_properties)platform, (cl_context_properties)0};
+  context = opencl::ptr<cl_context>(
+      clCreateContext(properties, 1, &device, nullptr, nullptr, &err), false);
+  checkError(err);
+  _fullProfile = getString(CL_DEVICE_PROFILE) != "EMBEDDED_PROFILE";
+  implementation::StreamOpenCL stream(*this);
+  queue = stream.queue;
+  _version = getString(CL_DEVICE_VERSION);
+  set_of(_extensions, getPlatformString(CL_PLATFORM_EXTENSIONS));
+  set_of(_extensions, getString(CL_DEVICE_EXTENSIONS));
+}
+
 ghost::Library DeviceOpenCL::loadLibraryFromText(
     const std::string& text, const std::string& options) const {
   auto ptr = std::make_shared<implementation::LibraryOpenCL>(*this);
@@ -824,6 +911,97 @@ DeviceOpenCL::DeviceOpenCL(const SharedContext& share)
   auto opencl = static_cast<implementation::DeviceOpenCL*>(impl().get());
   setDefaultStream(
       std::make_shared<implementation::StreamOpenCL>(opencl->queue));
+}
+
+DeviceOpenCL::DeviceOpenCL(const GpuInfo& info) : Device(nullptr) {
+  cl_int err;
+  cl_uint numPlatforms;
+  err = clGetPlatformIDs(0, nullptr, &numPlatforms);
+  implementation::checkError(err);
+  std::vector<cl_platform_id> platforms(numPlatforms);
+  err = clGetPlatformIDs(numPlatforms, platforms.data(), nullptr);
+  implementation::checkError(err);
+
+  int platformIdx = info.index / 1000;
+  int deviceIdx = info.index % 1000;
+
+  if (platformIdx >= 0 && platformIdx < (int)platforms.size()) {
+    cl_uint numDevices;
+    err = clGetDeviceIDs(platforms[platformIdx], CL_DEVICE_TYPE_ALL, 0, nullptr,
+                         &numDevices);
+    implementation::checkError(err);
+    std::vector<cl_device_id> devices(numDevices);
+    err = clGetDeviceIDs(platforms[platformIdx], CL_DEVICE_TYPE_ALL, numDevices,
+                         devices.data(), nullptr);
+    implementation::checkError(err);
+    if (deviceIdx >= 0 && deviceIdx < (int)devices.size()) {
+      auto ocl = std::make_shared<implementation::DeviceOpenCL>(
+          platforms[platformIdx], devices[deviceIdx]);
+      impl() = ocl;
+      setDefaultStream(
+          std::make_shared<implementation::StreamOpenCL>(ocl->queue));
+      return;
+    }
+  }
+  // Fallback: default device
+  auto ocl = std::make_shared<implementation::DeviceOpenCL>(SharedContext());
+  impl() = ocl;
+  setDefaultStream(std::make_shared<implementation::StreamOpenCL>(ocl->queue));
+}
+
+std::vector<GpuInfo> DeviceOpenCL::enumerateDevices() {
+  std::vector<GpuInfo> result;
+  cl_int err;
+  cl_uint numPlatforms;
+  err = clGetPlatformIDs(0, nullptr, &numPlatforms);
+#ifdef CL_PLATFORM_NOT_FOUND_KHR
+  if (err == CL_PLATFORM_NOT_FOUND_KHR) return result;
+#endif
+  if (err != CL_SUCCESS) return result;
+  std::vector<cl_platform_id> platforms(numPlatforms);
+  err = clGetPlatformIDs(numPlatforms, platforms.data(), nullptr);
+  if (err != CL_SUCCESS) return result;
+
+  for (cl_uint pi = 0; pi < numPlatforms; pi++) {
+    cl_uint numDevices;
+    err = clGetDeviceIDs(platforms[pi], CL_DEVICE_TYPE_ALL, 0, nullptr,
+                         &numDevices);
+    if (err != CL_SUCCESS) continue;
+    std::vector<cl_device_id> devices(numDevices);
+    err = clGetDeviceIDs(platforms[pi], CL_DEVICE_TYPE_ALL, numDevices,
+                         devices.data(), nullptr);
+    if (err != CL_SUCCESS) continue;
+
+    for (cl_uint di = 0; di < numDevices; di++) {
+      GpuInfo info;
+      char buf[256];
+      size_t len;
+
+      if (clGetDeviceInfo(devices[di], CL_DEVICE_NAME, sizeof(buf), buf,
+                          &len) == CL_SUCCESS)
+        info.name = std::string(buf, len > 0 ? len - 1 : 0);
+
+      if (clGetDeviceInfo(devices[di], CL_DEVICE_VENDOR, sizeof(buf), buf,
+                          &len) == CL_SUCCESS)
+        info.vendor = std::string(buf, len > 0 ? len - 1 : 0);
+
+      info.implementation = "OpenCL";
+
+      cl_ulong memSize;
+      if (clGetDeviceInfo(devices[di], CL_DEVICE_GLOBAL_MEM_SIZE,
+                          sizeof(memSize), &memSize, nullptr) == CL_SUCCESS)
+        info.memory = memSize;
+
+      cl_bool unified;
+      if (clGetDeviceInfo(devices[di], CL_DEVICE_HOST_UNIFIED_MEMORY,
+                          sizeof(unified), &unified, nullptr) == CL_SUCCESS)
+        info.unifiedMemory = unified != 0;
+
+      info.index = (int)pi * 1000 + (int)di;
+      result.push_back(info);
+    }
+  }
+  return result;
 }
 }  // namespace ghost
 #endif

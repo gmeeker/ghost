@@ -123,6 +123,7 @@ class SharedContext {
         platform(platform_) {}
 };
 
+class Event;
 class Function;
 class Library;
 class Stream;
@@ -131,6 +132,36 @@ class MappedBuffer;
 class Image;
 
 namespace implementation {
+
+/// @brief Abstract backend interface for a GPU synchronization event.
+///
+/// Backend implementations derive from this class to provide event
+/// synchronization and timing. Not copyable.
+class Event {
+ protected:
+  Event() {}
+
+  Event(const Event& rhs) = delete;
+
+  virtual ~Event() {}
+
+  Event& operator=(const Event& rhs) = delete;
+
+ public:
+  /// @brief Block the calling CPU thread until this event has completed.
+  virtual void wait() = 0;
+
+  /// @brief Query whether this event has completed without blocking.
+  virtual bool isComplete() const = 0;
+
+  /// @brief Measure elapsed time in seconds between this event and another.
+  ///
+  /// The default implementation returns 0. Backends with profiling timers
+  /// override this method.
+  /// @param other The later event.
+  /// @return Elapsed time in seconds, or 0 if not supported.
+  virtual double elapsed(const Event& other) const;
+};
 
 /// @brief Abstract backend interface for a GPU command stream.
 ///
@@ -148,6 +179,18 @@ class Stream {
 
  public:
   virtual void sync() = 0;
+
+  /// @brief Record an event at the current point in the stream.
+  ///
+  /// The default implementation throws ghost::unsupported_error.
+  /// @return A shared pointer to the recorded event.
+  virtual std::shared_ptr<Event> record();
+
+  /// @brief Enqueue a GPU-side wait for an event (cross-stream sync).
+  ///
+  /// The default implementation throws ghost::unsupported_error.
+  /// @param e The event to wait for.
+  virtual void waitForEvent(const std::shared_ptr<Event>& e);
 };
 
 /// @brief Abstract backend interface for a GPU memory buffer.
@@ -166,6 +209,23 @@ class Buffer {
 
  public:
   virtual size_t size() const = 0;
+
+  /// @brief Get the base offset for sub-buffers.
+  ///
+  /// Regular buffers return 0. Sub-buffers return their offset into the parent
+  /// buffer. Used by backends (e.g., Metal) where the underlying handle is
+  /// shared with the parent.
+  virtual size_t baseOffset() const;
+
+  /// @brief Create a sub-buffer view into this buffer.
+  ///
+  /// The default implementation throws ghost::unsupported_error.
+  /// @param self Shared pointer to this buffer (to keep parent alive).
+  /// @param offset Byte offset into this buffer.
+  /// @param size Size of the sub-buffer in bytes.
+  /// @return Shared pointer to the new sub-buffer.
+  virtual std::shared_ptr<Buffer> createSubBuffer(
+      const std::shared_ptr<Buffer>& self, size_t offset, size_t size);
 
   virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
                     size_t bytes) = 0;

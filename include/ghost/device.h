@@ -15,6 +15,7 @@
 #ifndef GHOST_DEVICE_H
 #define GHOST_DEVICE_H
 
+#include <ghost/event.h>
 #include <ghost/function.h>
 #include <ghost/image.h>
 #include <ghost/implementation/impl_device.h>
@@ -46,6 +47,20 @@ class Stream {
 
   /// @brief Block until all operations enqueued on this stream have completed.
   void sync();
+
+  /// @brief Record an event at the current point in this stream.
+  ///
+  /// The returned event will be signaled once all operations enqueued before
+  /// this call have completed on the GPU.
+  /// @return An Event that tracks completion of prior operations.
+  Event record();
+
+  /// @brief Enqueue a GPU-side wait for an event from another stream.
+  ///
+  /// Subsequent operations on this stream will not begin until @p e has
+  /// completed. This does not block the CPU.
+  /// @param e The event to wait for (typically recorded on a different stream).
+  void waitForEvent(const Event& e);
 
  private:
   std::shared_ptr<implementation::Stream> _impl;
@@ -104,6 +119,15 @@ class Buffer {
   /// @brief Fill a region of this buffer with a pattern.
   void fill(const Stream& s, size_t offset, size_t size, const void* pattern,
             size_t patternSize);
+
+  /// @brief Create a sub-buffer view into this buffer.
+  ///
+  /// The returned buffer shares memory with this buffer, starting at
+  /// @p offset. Writes to either buffer are visible in the other.
+  /// @param offset Byte offset into this buffer.
+  /// @param size Size of the sub-buffer in bytes.
+  /// @return A Buffer viewing the specified region.
+  Buffer createSubBuffer(size_t offset, size_t size);
 
  private:
   std::shared_ptr<implementation::Buffer> _impl;

@@ -14,6 +14,7 @@
 
 #if WITH_OPENCL
 
+#include <ghost/argument_buffer.h>
 #include <ghost/digest.h>
 #include <ghost/function.h>
 #include <ghost/io.h>
@@ -80,6 +81,19 @@ void FunctionOpenCL::execute(const ghost::Stream& s,
             i->asImage()->impl().get());
         cl_mem v = opencl->mem.get();
         err = clSetKernelArg(kernel, idx++, sizeof(v), &v);
+        checkError(err);
+        break;
+      }
+      case Attribute::Type_ArgumentBuffer: {
+        auto ab = i->asArgumentBuffer();
+        if (ab->isStruct()) {
+          err = clSetKernelArg(kernel, idx++, ab->size(), ab->data());
+        } else {
+          auto ocl = static_cast<implementation::BufferOpenCL*>(
+              ab->bufferImpl().get());
+          cl_mem v = ocl->mem.get();
+          err = clSetKernelArg(kernel, idx++, sizeof(v), &v);
+        }
         checkError(err);
         break;
       }

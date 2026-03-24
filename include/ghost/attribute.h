@@ -20,6 +20,7 @@
 #include <string>
 
 namespace ghost {
+class ArgumentBuffer;
 class Buffer;
 class Image;
 
@@ -54,7 +55,9 @@ class Attribute {
     /// @brief Pointer to an Image.
     Type_Image,
     /// @brief Local (shared) memory allocation size in bytes.
-    Type_LocalMem
+    Type_LocalMem,
+    /// @brief Pointer to an ArgumentBuffer.
+    Type_ArgumentBuffer
   };
 
  private:
@@ -66,6 +69,7 @@ class Attribute {
     int32_t i[4];
     uint32_t u[4];
     bool b[4];
+    ArgumentBuffer* argumentBuffer;
     Buffer* buffer;
     Image* image;
   } _u;
@@ -120,6 +124,14 @@ class Attribute {
   Attribute(Image* i) : _type(Type_Image), _count(1) { _u.image = i; }
 
   Attribute(Image& i) : _type(Type_Image), _count(1) { _u.image = &i; }
+
+  Attribute(ArgumentBuffer* ab) : _type(Type_ArgumentBuffer), _count(1) {
+    _u.argumentBuffer = ab;
+  }
+
+  Attribute(ArgumentBuffer& ab) : _type(Type_ArgumentBuffer), _count(1) {
+    _u.argumentBuffer = &ab;
+  }
 
   /// @}
 
@@ -260,6 +272,8 @@ class Attribute {
   Buffer* asBuffer() const { return _u.buffer; }
 
   Image* asImage() const { return _u.image; }
+
+  ArgumentBuffer* asArgumentBuffer() const { return _u.argumentBuffer; }
 
   /// @}
 };

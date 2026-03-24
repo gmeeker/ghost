@@ -70,6 +70,14 @@ class detail<CUlinkState> {
   static void release(CUlinkState v) { cuLinkDestroy(v); }
 };
 
+#if CUDA_VERSION >= 11020
+template <>
+class detail<CUmemoryPool> {
+ public:
+  static void release(CUmemoryPool v) { cuMemPoolDestroy(v); }
+};
+#endif
+
 template <typename TYPE, typename DETAIL = detail<TYPE>>
 class ptr {
  protected:

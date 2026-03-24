@@ -27,6 +27,29 @@ namespace ghost {
 namespace implementation {
 using namespace cu;
 
+EventCUDA::EventCUDA(cu::ptr<CUevent> event_) : event(event_) {}
+
+void EventCUDA::wait() {
+  CUresult err = cuEventSynchronize(event);
+  checkError(err);
+}
+
+bool EventCUDA::isComplete() const {
+  CUresult err = cuEventQuery(event);
+  if (err == CUDA_SUCCESS) return true;
+  if (err == CUDA_ERROR_NOT_READY) return false;
+  checkError(err);
+  return false;
+}
+
+double EventCUDA::elapsed(const Event& other) const {
+  auto& otherCUDA = static_cast<const EventCUDA&>(other);
+  float ms = 0.0f;
+  CUresult err = cuEventElapsedTime(&ms, event, otherCUDA.event);
+  if (err != CUDA_SUCCESS) return 0.0;
+  return static_cast<double>(ms) / 1000.0;
+}
+
 StreamCUDA::StreamCUDA(cu::ptr<CUstream> queue_) : queue(queue_) {}
 
 StreamCUDA::StreamCUDA(CUcontext dev) {
@@ -41,6 +64,22 @@ void StreamCUDA::sync() {
     err = cuStreamSynchronize(queue);
   else
     err = cuCtxSynchronize();
+  checkError(err);
+}
+
+std::shared_ptr<Event> StreamCUDA::record() {
+  cu::ptr<CUevent> ev;
+  CUresult err;
+  err = cuEventCreate(&ev, CU_EVENT_DEFAULT);
+  checkError(err);
+  err = cuEventRecord(ev, queue);
+  checkError(err);
+  return std::make_shared<EventCUDA>(ev);
+}
+
+void StreamCUDA::waitForEvent(const std::shared_ptr<Event>& e) {
+  auto eventCUDA = static_cast<EventCUDA*>(e.get());
+  CUresult err = cuStreamWaitEvent(queue, eventCUDA->event, 0);
   checkError(err);
 }
 
@@ -143,6 +182,16 @@ void BufferCUDA::fill(const ghost::Stream& s, size_t offset, size_t size,
   }
   checkError(err);
 }
+
+std::shared_ptr<Buffer> BufferCUDA::createSubBuffer(
+    const std::shared_ptr<Buffer>& self, size_t offset, size_t size) {
+  cu::ptr<CUdeviceptr> subMem(mem.get() + offset, false);
+  return std::make_shared<SubBufferCUDA>(self, subMem, size);
+}
+
+SubBufferCUDA::SubBufferCUDA(std::shared_ptr<Buffer> parent,
+                             cu::ptr<CUdeviceptr> mem_, size_t bytes)
+    : BufferCUDA(mem_, bytes), _parent(parent) {}
 
 MappedBufferCUDA::MappedBufferCUDA(cu::ptr<void*> ptr_)
     : BufferCUDA(cu::ptr<CUdeviceptr>(), 0), ptr(ptr_) {
@@ -519,6 +568,27 @@ DeviceCUDA::DeviceCUDA(const SharedContext& share) {
                                   device));
 }
 
+DeviceCUDA::DeviceCUDA(int deviceOrdinal) {
+  CUresult err;
+  err = cuDeviceGet(&device, deviceOrdinal);
+  checkError(err);
+#if CUDA_VERSION >= 13000
+  CUctxCreateParams ctxCreateParams = {};
+  err = cuCtxCreate(&context, &ctxCreateParams, 0, device);
+#else
+  err = cuCtxCreate(&context, 0, device);
+#endif
+  checkError(err);
+  err = cuStreamCreate(&queue, CU_STREAM_NON_BLOCKING);
+  checkError(err);
+  checkError(cuDeviceGetAttribute(&computeCapability.major,
+                                  CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+                                  device));
+  checkError(cuDeviceGetAttribute(&computeCapability.minor,
+                                  CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+                                  device));
+}
+
 ghost::Library DeviceCUDA::loadLibraryFromText(
     const std::string& text, const std::string& options) const {
   auto ptr = std::make_shared<implementation::LibraryCUDA>(*this);
@@ -543,11 +613,47 @@ ghost::Stream DeviceCUDA::createStream() const {
   return ghost::Stream(ptr);
 }
 
-size_t DeviceCUDA::getMemoryPoolSize() const {}
+size_t DeviceCUDA::getMemoryPoolSize() const {
+  return Device::getMemoryPoolSize();
+}
 
-void DeviceCUDA::setMemoryPoolSize(size_t bytes) {}
+void DeviceCUDA::setMemoryPoolSize(size_t bytes) {
+  Device::setMemoryPoolSize(bytes);
+#if CUDA_VERSION >= 11020
+  memPool.reset();
+  if (bytes > 0) {
+    CUmemPoolProps poolProps = {};
+    poolProps.allocType = CU_MEM_ALLOCATION_TYPE_PINNED;
+    poolProps.handleTypes = CU_MEM_HANDLE_TYPE_NONE;
+    poolProps.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    poolProps.location.id = device;
+    CUresult err = cuMemPoolCreate(&memPool, &poolProps);
+    if (err == CUDA_SUCCESS) {
+      cuuint64_t maxBytes = static_cast<cuuint64_t>(bytes);
+      cuMemPoolSetAttribute(memPool, CU_MEMPOOL_ATTR_RELEASE_THRESHOLD,
+                            &maxBytes);
+    } else {
+      memPool.reset();
+    }
+  }
+#endif
+}
 
 ghost::Buffer DeviceCUDA::allocateBuffer(size_t bytes, Access access) const {
+#if CUDA_VERSION >= 11020
+  if (memPool) {
+    CUdeviceptr devPtr;
+    CUresult err = cuMemAllocFromPoolAsync(&devPtr, bytes, memPool, queue);
+    if (err == CUDA_SUCCESS) {
+      // Sync to ensure the allocation is complete before use
+      cuStreamSynchronize(queue);
+      auto ptr = std::make_shared<implementation::BufferCUDA>(
+          cu::ptr<CUdeviceptr>(devPtr, false), bytes);
+      return ghost::Buffer(ptr);
+    }
+    // Pool allocation failed — fall through to standard allocation
+  }
+#endif
   auto ptr = std::make_shared<implementation::BufferCUDA>(*this, bytes, access);
   return ghost::Buffer(ptr);
 }
@@ -740,6 +846,50 @@ DeviceCUDA::DeviceCUDA(const SharedContext& share)
     : Device(std::make_shared<implementation::DeviceCUDA>(share)) {
   auto cuda = static_cast<implementation::DeviceCUDA*>(impl().get());
   setDefaultStream(std::make_shared<implementation::StreamCUDA>(cuda->queue));
+}
+
+DeviceCUDA::DeviceCUDA(const GpuInfo& info)
+    : Device(std::make_shared<implementation::DeviceCUDA>(info.index)) {
+  auto cuda = static_cast<implementation::DeviceCUDA*>(impl().get());
+  setDefaultStream(std::make_shared<implementation::StreamCUDA>(cuda->queue));
+}
+
+std::vector<GpuInfo> DeviceCUDA::enumerateDevices() {
+  std::vector<GpuInfo> result;
+  CUresult err = cuInit(0);
+  if (err != CUDA_SUCCESS) return result;
+
+  int count = 0;
+  err = cuDeviceGetCount(&count);
+  if (err != CUDA_SUCCESS) return result;
+
+  for (int i = 0; i < count; i++) {
+    CUdevice dev;
+    err = cuDeviceGet(&dev, i);
+    if (err != CUDA_SUCCESS) continue;
+
+    GpuInfo info;
+
+    char name[256];
+    if (cuDeviceGetName(name, sizeof(name), dev) == CUDA_SUCCESS)
+      info.name = name;
+
+    info.vendor = "NVIDIA";
+    info.implementation = "CUDA";
+
+    size_t totalMem;
+    if (cuDeviceTotalMem(&totalMem, dev) == CUDA_SUCCESS)
+      info.memory = totalMem;
+
+    int unified = 0;
+    if (cuDeviceGetAttribute(&unified, CU_DEVICE_ATTRIBUTE_UNIFIED_ADDRESSING,
+                             dev) == CUDA_SUCCESS)
+      info.unifiedMemory = unified != 0;
+
+    info.index = i;
+    result.push_back(info);
+  }
+  return result;
 }
 }  // namespace ghost
 #endif

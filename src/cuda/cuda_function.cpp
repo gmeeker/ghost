@@ -14,6 +14,7 @@
 
 #if WITH_CUDA
 
+#include <ghost/argument_buffer.h>
 #include <ghost/cuda/device.h>
 #include <ghost/cuda/exception.h>
 #include <ghost/cuda/impl_device.h>
@@ -138,6 +139,17 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
         params.push_back(&texObj.value);
         break;
       }
+      case Attribute::Type_ArgumentBuffer: {
+        auto ab = i->asArgumentBuffer();
+        if (ab->isStruct()) {
+          params.push_back(const_cast<void*>(ab->data()));
+        } else {
+          auto cuda =
+              static_cast<implementation::BufferCUDA*>(ab->bufferImpl().get());
+          params.push_back(&cuda->mem.value);
+        }
+        break;
+      }
       case Attribute::Type_LocalMem:
         local_mem += (size_t)i->asUInt();
         break;
@@ -152,9 +164,16 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
     global_size[i] = launchArgs.global_size()[i];
     local_size[i] = launchArgs.local_size()[i];
   }
-  err = cuLaunchKernel(kernel, global_size[0], global_size[1], global_size[2],
-                       local_size[0], local_size[1], local_size[2], local_mem,
-                       stream_impl->queue, &params[0], nullptr);
+  if (launchArgs.is_cooperative()) {
+    err = cuLaunchCooperativeKernel(kernel, global_size[0], global_size[1],
+                                    global_size[2], local_size[0],
+                                    local_size[1], local_size[2], local_mem,
+                                    stream_impl->queue, &params[0]);
+  } else {
+    err = cuLaunchKernel(kernel, global_size[0], global_size[1], global_size[2],
+                         local_size[0], local_size[1], local_size[2], local_mem,
+                         stream_impl->queue, &params[0], nullptr);
+  }
   checkError(err);
 }
 

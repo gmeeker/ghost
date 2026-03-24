@@ -66,7 +66,11 @@ set(GHOST_PUBLIC_HEADERS
     include/ghost/attribute.h
     include/ghost/binary_cache.h
     include/ghost/device.h
+    include/ghost/event.h
     include/ghost/exception.h
+    include/ghost/argument_buffer.h
+    include/ghost/command_buffer.h
+    include/ghost/gpu_info.h
     include/ghost/function.h
     include/ghost/io.h
     include/ghost/cpu/device.h
@@ -101,7 +105,9 @@ else()
 endif()
 
 set(GHOST_SOURCES
+    src/argument_buffer.cpp
     src/binary_cache.cpp
+    src/command_buffer.cpp
     src/device.cpp
     src/digest.cpp
     src/function.cpp

@@ -25,6 +25,17 @@ namespace ghost {
 namespace implementation {
 class DeviceOpenCL;
 
+class EventOpenCL : public Event {
+ public:
+  opencl::ptr<cl_event> event;
+
+  EventOpenCL(opencl::ptr<cl_event> event_);
+
+  virtual void wait() override;
+  virtual bool isComplete() const override;
+  virtual double elapsed(const Event& other) const override;
+};
+
 class StreamOpenCL : public Stream {
  protected:
   opencl::ptr<cl_event> lastEvent;
@@ -38,6 +49,8 @@ class StreamOpenCL : public Stream {
   StreamOpenCL(const DeviceOpenCL& dev);
 
   virtual void sync() override;
+  virtual std::shared_ptr<Event> record() override;
+  virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
   void addEvent();
   cl_event* event();
 };
@@ -71,6 +84,17 @@ class BufferOpenCL : public Buffer {
                     uint8_t value) override;
   virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
                     const void* pattern, size_t patternSize) override;
+
+  virtual std::shared_ptr<Buffer> createSubBuffer(
+      const std::shared_ptr<Buffer>& self, size_t offset, size_t size) override;
+};
+
+class SubBufferOpenCL : public BufferOpenCL {
+ public:
+  std::shared_ptr<Buffer> _parent;
+
+  SubBufferOpenCL(std::shared_ptr<Buffer> parent, opencl::ptr<cl_mem> mem_,
+                  size_t bytes);
 };
 
 class MappedBufferOpenCL : public BufferOpenCL {
@@ -121,6 +145,7 @@ class DeviceOpenCL : public Device {
   opencl::ptr<cl_command_queue> queue;
 
   DeviceOpenCL(const SharedContext& share);
+  DeviceOpenCL(cl_platform_id platform, cl_device_id device);
 
   virtual ghost::Library loadLibraryFromText(
       const std::string& text, const std::string& options = "") const override;

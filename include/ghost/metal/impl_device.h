@@ -23,6 +23,17 @@ namespace ghost {
 namespace implementation {
 class DeviceMetal;
 
+class EventMetal : public Event {
+ public:
+  objc::ptr<id<MTLSharedEvent>> sharedEvent;
+  uint64_t targetValue;
+
+  EventMetal(objc::ptr<id<MTLSharedEvent>> event_, uint64_t value);
+
+  virtual void wait() override;
+  virtual bool isComplete() const override;
+};
+
 class StreamMetal : public Stream {
  public:
   objc::ptr<id<MTLCommandQueue>> queue;
@@ -32,6 +43,8 @@ class StreamMetal : public Stream {
   StreamMetal(id<MTLDevice> dev);
 
   virtual void sync() override;
+  virtual std::shared_ptr<Event> record() override;
+  virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
 };
 
 class BufferMetal : public Buffer {
@@ -63,6 +76,27 @@ class BufferMetal : public Buffer {
                     uint8_t value) override;
   virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
                     const void* pattern, size_t patternSize) override;
+
+  virtual std::shared_ptr<Buffer> createSubBuffer(
+      const std::shared_ptr<Buffer>& self, size_t offset, size_t size) override;
+};
+
+class SubBufferMetal : public BufferMetal {
+ public:
+  std::shared_ptr<Buffer> _parent;
+  size_t _offset;
+
+  SubBufferMetal(std::shared_ptr<Buffer> parent, objc::ptr<id<MTLBuffer>> mem_,
+                 size_t offset, size_t size);
+
+  virtual size_t baseOffset() const override;
+
+  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+                    size_t bytes) override;
+  virtual void copy(const ghost::Stream& s, const void* src,
+                    size_t bytes) override;
+  virtual void copyTo(const ghost::Stream& s, void* dst,
+                      size_t bytes) const override;
 };
 
 class MappedBufferMetal : public BufferMetal {
@@ -105,8 +139,10 @@ class DeviceMetal : public Device {
  public:
   objc::ptr<id<MTLDevice>> dev;
   objc::ptr<id<MTLCommandQueue>> queue;
+  objc::ptr<id<MTLHeap>> heap;
 
   DeviceMetal(const SharedContext& share);
+  DeviceMetal(id<MTLDevice> device);
 
   virtual ghost::Library loadLibraryFromText(
       const std::string& text, const std::string& options = "") const override;

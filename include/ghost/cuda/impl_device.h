@@ -23,6 +23,17 @@ namespace ghost {
 namespace implementation {
 class DeviceCUDA;
 
+class EventCUDA : public Event {
+ public:
+  cu::ptr<CUevent> event;
+
+  EventCUDA(cu::ptr<CUevent> event_);
+
+  virtual void wait() override;
+  virtual bool isComplete() const override;
+  virtual double elapsed(const Event& other) const override;
+};
+
 class StreamCUDA : public Stream {
  public:
   cu::ptr<CUstream> queue;
@@ -31,6 +42,8 @@ class StreamCUDA : public Stream {
   StreamCUDA(CUcontext dev);
 
   void sync();
+  virtual std::shared_ptr<Event> record() override;
+  virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
 };
 
 class BufferCUDA : public Buffer {
@@ -62,6 +75,17 @@ class BufferCUDA : public Buffer {
                     uint8_t value) override;
   virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
                     const void* pattern, size_t patternSize) override;
+
+  virtual std::shared_ptr<Buffer> createSubBuffer(
+      const std::shared_ptr<Buffer>& self, size_t offset, size_t size) override;
+};
+
+class SubBufferCUDA : public BufferCUDA {
+ public:
+  std::shared_ptr<Buffer> _parent;
+
+  SubBufferCUDA(std::shared_ptr<Buffer> parent, cu::ptr<CUdeviceptr> mem_,
+                size_t bytes);
 };
 
 class MappedBufferCUDA : public BufferCUDA {
@@ -105,12 +129,16 @@ class DeviceCUDA : public Device {
   cu::ptr<CUcontext> context;
   cu::ptr<CUstream> queue;
   CUdevice device;
+#if CUDA_VERSION >= 11020
+  cu::ptr<CUmemoryPool> memPool;
+#endif
 
   struct ComputeCapability {
     int major, minor;
   } computeCapability;
 
   DeviceCUDA(const SharedContext& share);
+  DeviceCUDA(int deviceOrdinal);
 
   virtual ghost::Library loadLibraryFromText(
       const std::string& text, const std::string& options = "") const override;

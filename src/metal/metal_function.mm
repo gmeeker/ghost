@@ -14,6 +14,7 @@
 
 #if WITH_METAL
 
+#include <ghost/argument_buffer.h>
 #include <ghost/function.h>
 #include <ghost/metal/impl_device.h>
 #include <ghost/metal/impl_function.h>
@@ -139,6 +140,21 @@ void FunctionMetal::execute(const ghost::Stream &s,
       auto metal =
           static_cast<implementation::ImageMetal *>(i->asImage()->impl().get());
       [computeEncoder setTexture:metal->mem.get() atIndex:textureIndex++];
+      break;
+    }
+    case Attribute::Type_ArgumentBuffer: {
+      auto ab = i->asArgumentBuffer();
+      if (ab->isStruct()) {
+        [computeEncoder setBytes:ab->data()
+                          length:ab->size()
+                         atIndex:bufferIndex++];
+      } else {
+        auto metal =
+            static_cast<implementation::BufferMetal *>(ab->bufferImpl().get());
+        [computeEncoder setBuffer:metal->mem.get()
+                           offset:metal->baseOffset()
+                          atIndex:bufferIndex++];
+      }
       break;
     }
     case Attribute::Type_LocalMem:

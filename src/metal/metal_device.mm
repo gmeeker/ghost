@@ -156,6 +156,27 @@ static bool IsPrivate(id<MTLResource> res) {
 }
 } // namespace
 
+EventMetal::EventMetal(objc::ptr<id<MTLSharedEvent>> event_, uint64_t value)
+    : sharedEvent(event_), targetValue(value) {}
+
+void EventMetal::wait() {
+  if (sharedEvent.get().signaledValue >= targetValue)
+    return;
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  MTLSharedEventListener *listener = [[MTLSharedEventListener alloc] init];
+  [sharedEvent.get()
+      notifyListener:listener
+             atValue:targetValue
+               block:^(id<MTLSharedEvent> event, uint64_t value) {
+                 dispatch_semaphore_signal(sem);
+               }];
+  dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+}
+
+bool EventMetal::isComplete() const {
+  return sharedEvent.get().signaledValue >= targetValue;
+}
+
 StreamMetal::StreamMetal(objc::ptr<id<MTLCommandQueue>> queue_)
     : queue(queue_) {}
 StreamMetal::StreamMetal(id<MTLDevice> dev) {
@@ -164,6 +185,27 @@ StreamMetal::StreamMetal(id<MTLDevice> dev) {
 }
 
 void StreamMetal::sync() {}
+
+std::shared_ptr<Event> StreamMetal::record() {
+  id<MTLDevice> device = queue.get().device;
+  objc::ptr<id<MTLSharedEvent>> sharedEvent =
+      objc::ptr<id<MTLSharedEvent>>([device newSharedEvent]);
+  uint64_t value = 1;
+  id<MTLCommandBuffer> commandBuffer = [queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost Event Record";
+  [commandBuffer encodeSignalEvent:sharedEvent.get() value:value];
+  [commandBuffer commit];
+  return std::make_shared<EventMetal>(sharedEvent, value);
+}
+
+void StreamMetal::waitForEvent(const std::shared_ptr<Event> &e) {
+  auto eventMetal = static_cast<EventMetal *>(e.get());
+  id<MTLCommandBuffer> commandBuffer = [queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost Event Wait";
+  [commandBuffer encodeWaitForEvent:eventMetal->sharedEvent.get()
+                              value:eventMetal->targetValue];
+  [commandBuffer commit];
+}
 
 BufferMetal::BufferMetal(objc::ptr<id<MTLBuffer>> mem_, size_t bytes)
     : mem(mem_), _size(bytes) {}
@@ -181,61 +223,32 @@ size_t BufferMetal::size() const { return _size; }
 
 void BufferMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
                        size_t bytes) {
-  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
-  auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
-  id<MTLCommandBuffer> commandBuffer = nil;
-  commandBuffer = [stream_impl->queue.get() commandBuffer];
-  commandBuffer.label = @"Ghost";
-  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
-  [blit copyFromBuffer:src_impl->mem.get()
-           sourceOffset:0
-               toBuffer:mem.get()
-      destinationOffset:0
-                   size:bytes];
-  [blit endEncoding];
+  copy(s, src, 0, 0, bytes);
 }
 
 void BufferMetal::copy(const ghost::Stream &s, const void *src, size_t bytes) {
-  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
-  if (IsPrivate(mem)) {
-  } else {
-    void *dst = [mem contents];
-    memcpy(dst, src, bytes);
-    if (mem.get().storageMode == MTLStorageModeManaged)
-      [mem didModifyRange:NSMakeRange(0, bytes)];
-  }
+  copy(s, src, 0, bytes);
 }
 
 void BufferMetal::copyTo(const ghost::Stream &s, void *dst,
                          size_t bytes) const {
-  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
-  if (IsPrivate(mem)) {
-    if (mem.get().storageMode == MTLStorageModeManaged) {
-      id<MTLCommandBuffer> commandBuffer = nil;
-      commandBuffer = [stream_impl->queue.get() commandBuffer];
-      commandBuffer.label = @"Ghost";
-      id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
-      [blit synchronizeResource:mem];
-      [blit endEncoding];
-    }
-  } else {
-    const void *src = [mem contents];
-    memcpy(dst, src, bytes);
-  }
+  copyTo(s, dst, 0, bytes);
 }
 
 void BufferMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
                        size_t srcOffset, size_t dstOffset, size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
+  size_t effectiveSrcOff = src_impl->baseOffset() + srcOffset;
+  size_t effectiveDstOff = baseOffset() + dstOffset;
   id<MTLCommandBuffer> commandBuffer = nil;
   commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
   [blit copyFromBuffer:src_impl->mem.get()
-           sourceOffset:srcOffset
+           sourceOffset:effectiveSrcOff
                toBuffer:mem.get()
-      destinationOffset:dstOffset
+      destinationOffset:effectiveDstOff
                    size:bytes];
   [blit endEncoding];
   [commandBuffer commit];
@@ -244,6 +257,7 @@ void BufferMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
 void BufferMetal::copy(const ghost::Stream &s, const void *src,
                        size_t dstOffset, size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  size_t effectiveDstOff = baseOffset() + dstOffset;
   if (IsPrivate(mem)) {
     // For private buffers, use a temporary shared buffer and blit
     id<MTLBuffer> staging =
@@ -257,21 +271,22 @@ void BufferMetal::copy(const ghost::Stream &s, const void *src,
     [blit copyFromBuffer:staging
              sourceOffset:0
                  toBuffer:mem.get()
-        destinationOffset:dstOffset
+        destinationOffset:effectiveDstOff
                      size:bytes];
     [blit endEncoding];
     [commandBuffer commit];
   } else {
-    void *dst = static_cast<uint8_t *>([mem contents]) + dstOffset;
+    void *dst = static_cast<uint8_t *>([mem contents]) + effectiveDstOff;
     memcpy(dst, src, bytes);
     if (mem.get().storageMode == MTLStorageModeManaged)
-      [mem didModifyRange:NSMakeRange(dstOffset, bytes)];
+      [mem didModifyRange:NSMakeRange(effectiveDstOff, bytes)];
   }
 }
 
 void BufferMetal::copyTo(const ghost::Stream &s, void *dst, size_t srcOffset,
                          size_t bytes) const {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  size_t effectiveSrcOff = baseOffset() + srcOffset;
   if (IsPrivate(mem)) {
     if (mem.get().storageMode == MTLStorageModeManaged) {
       id<MTLCommandBuffer> commandBuffer = nil;
@@ -283,7 +298,8 @@ void BufferMetal::copyTo(const ghost::Stream &s, void *dst, size_t srcOffset,
       [commandBuffer commit];
     }
   } else {
-    const void *src = static_cast<const uint8_t *>([mem contents]) + srcOffset;
+    const void *src =
+        static_cast<const uint8_t *>([mem contents]) + effectiveSrcOff;
     memcpy(dst, src, bytes);
   }
 }
@@ -291,12 +307,41 @@ void BufferMetal::copyTo(const ghost::Stream &s, void *dst, size_t srcOffset,
 void BufferMetal::fill(const ghost::Stream &s, size_t offset, size_t size,
                        uint8_t value) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  size_t effectiveOff = baseOffset() + offset;
   id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
-  [blit fillBuffer:mem.get() range:NSMakeRange(offset, size) value:value];
+  [blit fillBuffer:mem.get() range:NSMakeRange(effectiveOff, size) value:value];
   [blit endEncoding];
   [commandBuffer commit];
+}
+
+std::shared_ptr<Buffer>
+BufferMetal::createSubBuffer(const std::shared_ptr<Buffer> &self, size_t offset,
+                             size_t size) {
+  return std::make_shared<SubBufferMetal>(self, mem, offset, size);
+}
+
+SubBufferMetal::SubBufferMetal(std::shared_ptr<Buffer> parent,
+                               objc::ptr<id<MTLBuffer>> mem_, size_t offset,
+                               size_t size)
+    : BufferMetal(mem_, size), _parent(parent), _offset(offset) {}
+
+size_t SubBufferMetal::baseOffset() const { return _offset; }
+
+void SubBufferMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
+                          size_t bytes) {
+  BufferMetal::copy(s, src, 0, 0, bytes);
+}
+
+void SubBufferMetal::copy(const ghost::Stream &s, const void *src,
+                          size_t bytes) {
+  BufferMetal::copy(s, src, 0, bytes);
+}
+
+void SubBufferMetal::copyTo(const ghost::Stream &s, void *dst,
+                            size_t bytes) const {
+  BufferMetal::copyTo(s, dst, 0, bytes);
 }
 
 void BufferMetal::fill(const ghost::Stream &s, size_t offset, size_t size,
@@ -309,6 +354,7 @@ void BufferMetal::fill(const ghost::Stream &s, size_t offset, size_t size,
     return;
   }
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  size_t effectiveOff = baseOffset() + offset;
   // Build the fill pattern in a staging buffer
   id<MTLBuffer> staging =
       [mem.get().device newBufferWithLength:size
@@ -324,7 +370,7 @@ void BufferMetal::fill(const ghost::Stream &s, size_t offset, size_t size,
   [blit copyFromBuffer:staging
            sourceOffset:0
                toBuffer:mem.get()
-      destinationOffset:offset
+      destinationOffset:effectiveOff
                    size:size];
   [blit endEncoding];
   [commandBuffer commit];
@@ -497,6 +543,12 @@ DeviceMetal::DeviceMetal(const SharedContext &share) {
   }
 }
 
+DeviceMetal::DeviceMetal(id<MTLDevice> device) {
+  dev = objc::ptr<id<MTLDevice>>(device, true);
+  queue = [dev.get() newCommandQueue];
+  checkExists(queue);
+}
+
 ghost::Library
 DeviceMetal::loadLibraryFromText(const std::string &text,
                                  const std::string &options) const {
@@ -530,11 +582,39 @@ ghost::Stream DeviceMetal::createStream() const {
   return ghost::Stream(ptr);
 }
 
-size_t DeviceMetal::getMemoryPoolSize() const {}
+size_t DeviceMetal::getMemoryPoolSize() const {
+  if (heap)
+    return heap.get().size;
+  return Device::getMemoryPoolSize();
+}
 
-void DeviceMetal::setMemoryPoolSize(size_t bytes) {}
+void DeviceMetal::setMemoryPoolSize(size_t bytes) {
+  Device::setMemoryPoolSize(bytes);
+  if (bytes > 0) {
+    MTLHeapDescriptor *descriptor = [[MTLHeapDescriptor alloc] init];
+    descriptor.size = bytes;
+    descriptor.storageMode = MTLStorageModePrivate;
+    descriptor.cpuCacheMode = MTLCPUCacheModeDefaultCache;
+    descriptor.hazardTrackingMode = MTLHazardTrackingModeUntracked;
+    heap = [dev.get() newHeapWithDescriptor:descriptor];
+  } else {
+    heap = objc::ptr<id<MTLHeap>>();
+  }
+}
 
 ghost::Buffer DeviceMetal::allocateBuffer(size_t bytes, Access access) const {
+  if (heap) {
+    MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache |
+                                 MTLResourceHazardTrackingModeUntracked |
+                                 MTLResourceStorageModePrivate;
+    objc::ptr<id<MTLBuffer>> buf([heap.get() newBufferWithLength:bytes
+                                                         options:options]);
+    if (buf) {
+      auto ptr = std::make_shared<implementation::BufferMetal>(buf, bytes);
+      return ghost::Buffer(ptr);
+    }
+    // Heap full — fall through to individual allocation
+  }
   auto ptr =
       std::make_shared<implementation::BufferMetal>(*this, bytes, access);
   return ghost::Buffer(ptr);
@@ -743,6 +823,60 @@ DeviceMetal::DeviceMetal(const SharedContext &share)
     : Device(std::make_shared<implementation::DeviceMetal>(share)) {
   auto metal = static_cast<implementation::DeviceMetal *>(impl().get());
   setDefaultStream(std::make_shared<implementation::StreamMetal>(metal->queue));
+}
+
+DeviceMetal::DeviceMetal(const GpuInfo &info) : Device(nullptr) {
+  @autoreleasepool {
+#if TARGET_OS_OSX
+    NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
+    if (info.index >= 0 && info.index < (int)devices.count) {
+      auto metal =
+          std::make_shared<implementation::DeviceMetal>(devices[info.index]);
+      impl() = metal;
+      setDefaultStream(
+          std::make_shared<implementation::StreamMetal>(metal->queue));
+      return;
+    }
+#endif
+    // Fallback: default device
+    auto metal = std::make_shared<implementation::DeviceMetal>(SharedContext());
+    impl() = metal;
+    setDefaultStream(
+        std::make_shared<implementation::StreamMetal>(metal->queue));
+  }
+}
+
+std::vector<GpuInfo> DeviceMetal::enumerateDevices() {
+  std::vector<GpuInfo> result;
+  @autoreleasepool {
+#if TARGET_OS_OSX
+    NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
+    for (NSUInteger i = 0; i < devices.count; i++) {
+      id<MTLDevice> d = devices[i];
+      GpuInfo info;
+      info.name = [[d name] UTF8String];
+      info.vendor = "Apple";
+      info.implementation = "Metal";
+      info.memory = (uint64_t)d.recommendedMaxWorkingSetSize;
+      info.unifiedMemory = d.hasUnifiedMemory;
+      info.index = (int)i;
+      result.push_back(info);
+    }
+#else
+    id<MTLDevice> d = MTLCreateSystemDefaultDevice();
+    if (d) {
+      GpuInfo info;
+      info.name = [[d name] UTF8String];
+      info.vendor = "Apple";
+      info.implementation = "Metal";
+      info.memory = (uint64_t)d.recommendedMaxWorkingSetSize;
+      info.unifiedMemory = d.hasUnifiedMemory;
+      info.index = 0;
+      result.push_back(info);
+    }
+#endif
+  }
+  return result;
 }
 } // namespace ghost
 #endif

@@ -82,6 +82,14 @@ class ThreadPoolDefault : public ThreadPool {
   void worker();
 };
 
+class EventCPU : public Event {
+ public:
+  EventCPU();
+
+  virtual void wait() override;
+  virtual bool isComplete() const override;
+};
+
 class StreamCPU : public Stream {
  public:
   std::shared_ptr<ThreadPool> pool;
@@ -90,9 +98,14 @@ class StreamCPU : public Stream {
   ~StreamCPU();
 
   virtual void sync() override;
+  virtual std::shared_ptr<Event> record() override;
+  virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
 };
 
 class BufferCPU : public Buffer {
+ protected:
+  BufferCPU(void* ptr_, size_t bytes);
+
  public:
   void* ptr;
   size_t _size;
@@ -119,6 +132,16 @@ class BufferCPU : public Buffer {
                     uint8_t value) override;
   virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
                     const void* pattern, size_t patternSize) override;
+
+  virtual std::shared_ptr<Buffer> createSubBuffer(
+      const std::shared_ptr<Buffer>& self, size_t offset, size_t size) override;
+};
+
+class SubBufferCPU : public BufferCPU {
+ public:
+  std::shared_ptr<Buffer> _parent;
+
+  SubBufferCPU(std::shared_ptr<Buffer> parent, void* ptr_, size_t bytes);
 };
 
 class ImageCPU : public Image {

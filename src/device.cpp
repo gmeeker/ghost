@@ -20,6 +20,21 @@
 
 namespace ghost {
 namespace implementation {
+double Event::elapsed(const Event&) const { return 0.0; }
+
+std::shared_ptr<Event> Stream::record() { throw ghost::unsupported_error(); }
+
+void Stream::waitForEvent(const std::shared_ptr<Event>&) {
+  throw ghost::unsupported_error();
+}
+
+size_t Buffer::baseOffset() const { return 0; }
+
+std::shared_ptr<Buffer> Buffer::createSubBuffer(const std::shared_ptr<Buffer>&,
+                                                size_t, size_t) {
+  throw ghost::unsupported_error();
+}
+
 void* Buffer::map(const ghost::Stream&, Access, bool) {
   throw ghost::unsupported_error();
 }
@@ -66,9 +81,23 @@ size_t Device::getMemoryPoolSize() const { return _poolSize; }
 void Device::setMemoryPoolSize(size_t bytes) { _poolSize = bytes; }
 }  // namespace implementation
 
+Event::Event(std::shared_ptr<implementation::Event> impl) : _impl(impl) {}
+
+void Event::wait() { _impl->wait(); }
+
+bool Event::isComplete() const { return _impl->isComplete(); }
+
+double Event::elapsed(const Event& start, const Event& end) {
+  return start._impl->elapsed(*end._impl);
+}
+
 Stream::Stream(std::shared_ptr<implementation::Stream> impl) : _impl(impl) {}
 
 void Stream::sync() { impl()->sync(); }
+
+Event Stream::record() { return Event(_impl->record()); }
+
+void Stream::waitForEvent(const Event& e) { _impl->waitForEvent(e.impl()); }
 
 Buffer::Buffer(std::shared_ptr<implementation::Buffer> impl) : _impl(impl) {}
 
@@ -108,6 +137,10 @@ void Buffer::fill(const Stream& s, size_t offset, size_t size, uint8_t value) {
 void Buffer::fill(const Stream& s, size_t offset, size_t size,
                   const void* pattern, size_t patternSize) {
   _impl->fill(s, offset, size, pattern, patternSize);
+}
+
+Buffer Buffer::createSubBuffer(size_t offset, size_t size) {
+  return Buffer(_impl->createSubBuffer(_impl, offset, size));
 }
 
 MappedBuffer::MappedBuffer(std::shared_ptr<implementation::Buffer> impl)

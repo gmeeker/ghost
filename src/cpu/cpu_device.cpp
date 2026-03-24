@@ -17,6 +17,12 @@
 #include <ghost/cpu/impl_function.h>
 #include <string.h>
 
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#elif defined(__linux__)
+#include <unistd.h>
+#endif
+
 #include <algorithm>
 #include <limits>
 
@@ -113,11 +119,26 @@ void ThreadPoolDefault::sync() {
 #endif
 }
 
+EventCPU::EventCPU() {}
+
+void EventCPU::wait() {}
+
+bool EventCPU::isComplete() const { return true; }
+
 StreamCPU::StreamCPU(std::shared_ptr<ThreadPool> pool_) : pool(pool_) {}
 
 StreamCPU::~StreamCPU() {}
 
 void StreamCPU::sync() { pool->sync(); }
+
+std::shared_ptr<Event> StreamCPU::record() {
+  pool->sync();
+  return std::make_shared<EventCPU>();
+}
+
+void StreamCPU::waitForEvent(const std::shared_ptr<Event>& e) { e->wait(); }
+
+BufferCPU::BufferCPU(void* ptr_, size_t bytes) : ptr(ptr_), _size(bytes) {}
 
 BufferCPU::BufferCPU(const DeviceCPU& dev, size_t bytes) : _size(bytes) {
   ptr = dev.allocateHostMemory(bytes);
@@ -172,6 +193,16 @@ void BufferCPU::fill(const ghost::Stream& s, size_t offset, size_t size,
     }
   }
 }
+
+std::shared_ptr<Buffer> BufferCPU::createSubBuffer(
+    const std::shared_ptr<Buffer>& self, size_t offset, size_t size) {
+  return std::make_shared<SubBufferCPU>(
+      self, static_cast<uint8_t*>(ptr) + offset, size);
+}
+
+SubBufferCPU::SubBufferCPU(std::shared_ptr<Buffer> parent, void* ptr_,
+                           size_t bytes)
+    : BufferCPU(ptr_, bytes), _parent(parent) {}
 
 ImageCPU::ImageCPU(const DeviceCPU& dev, const ImageDescription& descr_)
     : descr(descr_) {}
@@ -341,4 +372,37 @@ Attribute DeviceCPU::getAttribute(DeviceAttributeId what) const {
 
 DeviceCPU::DeviceCPU(const SharedContext& share)
     : Device(std::make_shared<implementation::DeviceCPU>(share)) {}
+
+DeviceCPU::DeviceCPU(const GpuInfo&)
+    : Device(std::make_shared<implementation::DeviceCPU>(SharedContext())) {}
+
+std::vector<GpuInfo> DeviceCPU::enumerateDevices() {
+  std::vector<GpuInfo> result;
+  GpuInfo info;
+  info.name = "CPU";
+  info.vendor = "";
+  info.implementation = "CPU";
+  info.memory = 0;
+  info.unifiedMemory = true;
+  info.index = 0;
+
+#if defined(__APPLE__)
+  int64_t memSize = 0;
+  size_t len = sizeof(memSize);
+  if (sysctlbyname("hw.memsize", &memSize, &len, nullptr, 0) == 0)
+    info.memory = (uint64_t)memSize;
+#elif defined(_WIN32)
+  MEMORYSTATUSEX statex;
+  statex.dwLength = sizeof(statex);
+  if (GlobalMemoryStatusEx(&statex)) info.memory = statex.ullTotalPhys;
+#elif defined(__linux__)
+  long pages = sysconf(_SC_PHYS_PAGES);
+  long page_size = sysconf(_SC_PAGE_SIZE);
+  if (pages > 0 && page_size > 0)
+    info.memory = (uint64_t)pages * (uint64_t)page_size;
+#endif
+
+  result.push_back(info);
+  return result;
+}
 }  // namespace ghost

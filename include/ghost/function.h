@@ -38,6 +38,7 @@ class LaunchArgs {
   uint32_t _global_size[3];
   uint32_t _local_size[3];
   bool _local_defined;
+  bool _cooperative;
 
  public:
   /// @brief Get the number of dimensions (1, 2, or 3).
@@ -51,6 +52,9 @@ class LaunchArgs {
 
   /// @brief Check whether local_size was explicitly set.
   bool is_local_defined() const { return _local_defined; }
+
+  /// @brief Check whether cooperative launch is enabled.
+  bool is_cooperative() const { return _cooperative; }
 
   /// @brief Compute the number of work groups in dimension @p i.
   /// @param i Dimension index (0, 1, or 2).
@@ -69,7 +73,7 @@ class LaunchArgs {
   }
 
   /// @brief Construct with default values (0 dimensions, all sizes 1).
-  LaunchArgs() : _dims(0), _local_defined(false) {
+  LaunchArgs() : _dims(0), _local_defined(false), _cooperative(false) {
     _global_size[0] = 1;
     _global_size[1] = 1;
     _global_size[2] = 1;
@@ -134,6 +138,18 @@ class LaunchArgs {
   }
 
   /// @}
+
+  /// @brief Enable or disable cooperative launch mode.
+  ///
+  /// When enabled, the CUDA backend uses @c cuLaunchCooperativeKernel instead
+  /// of @c cuLaunchKernel, enabling cooperative groups functionality. Other
+  /// backends ignore this flag.
+  /// @param enable @c true to enable cooperative launch (default @c true).
+  /// @return @c *this for chaining.
+  LaunchArgs& cooperative(bool enable = true) {
+    _cooperative = enable;
+    return *this;
+  }
 };
 
 /// @brief A compiled GPU kernel function that can be dispatched on a stream.

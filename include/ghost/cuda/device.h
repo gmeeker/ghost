@@ -16,11 +16,17 @@
 #define GHOST_CUDA_DEVICE_H
 
 #include <ghost/device.h>
+#include <ghost/gpu_info.h>
+
+#include <vector>
 
 namespace ghost {
 class DeviceCUDA : public Device {
  public:
   DeviceCUDA(const SharedContext& share = SharedContext());
+  DeviceCUDA(const GpuInfo& info);
+
+  static std::vector<GpuInfo> enumerateDevices();
 };
 }  // namespace ghost
 
