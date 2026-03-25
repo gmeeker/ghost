@@ -12,22 +12,30 @@
 // License for the specific language governing permissions and limitations under
 // the License.
 
-#ifndef GHOST_VULKAN_DEVICE_H
-#define GHOST_VULKAN_DEVICE_H
+#ifndef GHOST_DIRECTX_EXCEPTION_H
+#define GHOST_DIRECTX_EXCEPTION_H
 
 #include <ghost/device.h>
-#include <ghost/gpu_info.h>
+#include <stdint.h>
 
-#include <vector>
+#include <exception>
 
 namespace ghost {
-class DeviceVulkan : public Device {
- public:
-  DeviceVulkan(const SharedContext& share = SharedContext());
-  DeviceVulkan(const GpuInfo& info);
+namespace dx {
+class runtime_error : public std::runtime_error {
+ private:
+  int32_t _hr;
 
-  static std::vector<GpuInfo> enumerateDevices();
+ public:
+  runtime_error(int32_t hr);
+  int32_t error() const noexcept;
+  static const char* errorString(int32_t hr);
 };
+
+inline void checkHR(int32_t hr) {
+  if (hr < 0) throw runtime_error(hr);
+}
+}  // namespace dx
 }  // namespace ghost
 
 #endif

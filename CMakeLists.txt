@@ -24,7 +24,11 @@ if(WITH_OPENCL)
   # find_package(OpenCLHeadersCpp REQUIRED CONFIG)
 endif()
 if(WITH_VULKAN)
-  find_package(Vulkan REQUIRED)
+  if(APPLE)
+    find_package(moltenvk REQUIRED)
+  else()
+    find_package(Vulkan REQUIRED)
+  endif()
 endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
@@ -50,9 +54,13 @@ if(WITH_OPENCL AND OpenCL_FOUND)
   add_definitions(-DWITH_OPENCL)
   include_directories(${OPENCL_INCLUDE_DIRS})
 endif()
-if(WITH_VULKAN AND Vulkan_FOUND)
-  add_definitions(-DWITH_VULKAN)
-  include_directories(${VULKAN_INCLUDE_DIRS})
+if(WITH_VULKAN)
+  if(APPLE AND moltenvk_FOUND)
+    add_definitions(-DWITH_VULKAN)
+  elseif(Vulkan_FOUND)
+    add_definitions(-DWITH_VULKAN)
+    include_directories(${Vulkan_INCLUDE_DIRS})
+  endif()
 endif()
 if(WITH_ARC AND APPLE)
   add_compile_options(-fobjc-arc)
@@ -80,6 +88,9 @@ set(GHOST_PUBLIC_HEADERS
     include/ghost/cuda/impl_device.h
     include/ghost/cuda/impl_function.h
     include/ghost/directx/device.h
+    include/ghost/directx/exception.h
+    include/ghost/directx/impl_device.h
+    include/ghost/directx/impl_function.h
     include/ghost/metal/device.h
     include/ghost/metal/exception.h
     include/ghost/metal/impl_device.h
@@ -91,6 +102,9 @@ set(GHOST_PUBLIC_HEADERS
     include/ghost/opencl/impl_function.h
     include/ghost/opencl/ptr.h
     include/ghost/vulkan/device.h
+    include/ghost/vulkan/exception.h
+    include/ghost/vulkan/impl_device.h
+    include/ghost/vulkan/impl_function.h
     include/ghost/implementation/impl_device.h
     include/ghost/implementation/impl_function.h
   )
@@ -121,10 +135,14 @@ set(GHOST_SOURCES
     src/cuda/cuda_function.cpp
     src/cuda/cuda_wrapper.cpp
     src/directx/directx_device.cpp
+    src/directx/directx_exception.cpp
+    src/directx/directx_function.cpp
     src/opencl/opencl_device.cpp
     src/opencl/opencl_exception.cpp
     src/opencl/opencl_function.cpp
     src/vulkan/vulkan_device.cpp
+    src/vulkan/vulkan_exception.cpp
+    src/vulkan/vulkan_function.cpp
     ${GHOST_OBJC_SOURCES}
   )
 
@@ -153,8 +171,15 @@ if(WITH_CUDA)
   endif()
   target_link_libraries(${PROJECT_NAME} PUBLIC ${GHOST_CUDA_LIBS} ${GHOST_CUDA_NVRTC_LIBS})
 endif()
+if(WITH_DIRECTX AND WIN32)
+  target_link_libraries(${PROJECT_NAME} PUBLIC d3d12 dxgi dxguid)
+endif()
 if(WITH_VULKAN)
-  target_link_libraries(${PROJECT_NAME} PUBLIC Vulkan::Vulkan)
+  if(APPLE AND moltenvk_FOUND)
+    target_link_libraries(${PROJECT_NAME} PUBLIC moltenvk::moltenvk)
+  elseif(Vulkan_FOUND)
+    target_link_libraries(${PROJECT_NAME} PUBLIC Vulkan::Vulkan)
+  endif()
 endif()
 if(WITH_METAL AND APPLE)
   target_link_libraries(${PROJECT_NAME} INTERFACE "-framework Metal" "-framework Foundation")

@@ -99,10 +99,10 @@ class GhostConan(ConanFile):
         if self.options.get_safe("with_metal", False):
             tc.variables['WITH_METAL'] = 'ON'
         if self.options.get_safe("with_vulkan", False):
-            if self.settings.os == "Macos":
-                tc.variables['WITH_VULKAN'] = self.deps_cpp_info["moltenvk"].rootpath
+            if is_apple_os(self):
+                tc.variables['WITH_VULKAN'] = self.dependencies["moltenvk"].package_folder
             else:
-                tc.variables['WITH_VULKAN'] = self.deps_cpp_info["vulkan-headers"].rootpath
+                tc.variables['WITH_VULKAN'] = self.dependencies["vulkan-headers"].package_folder
         tc.generate()
         cd = CMakeDeps(self)
         cd.generate()
