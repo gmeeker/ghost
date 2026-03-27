@@ -178,13 +178,36 @@ bool EventMetal::isComplete() const {
 }
 
 StreamMetal::StreamMetal(objc::ptr<id<MTLCommandQueue>> queue_)
-    : queue(queue_) {}
+    : queue(queue_) {
+  if (queue.get()) {
+    syncEvent = [queue.get().device newEvent];
+  }
+}
 StreamMetal::StreamMetal(id<MTLDevice> dev) {
   queue = [dev newCommandQueue];
   checkExists(queue);
+  syncEvent = [dev newEvent];
 }
 
-void StreamMetal::sync() {}
+void StreamMetal::commitAndTrack(id<MTLCommandBuffer> cb) {
+  syncCounter++;
+  [cb encodeSignalEvent:syncEvent.get() value:syncCounter];
+  [cb commit];
+  lastCommandBuffer = objc::ptr<id<MTLCommandBuffer>>(cb, true);
+}
+
+void StreamMetal::encodeWait(id<MTLCommandBuffer> cb) {
+  if (syncCounter > 0) {
+    [cb encodeWaitForEvent:syncEvent.get() value:syncCounter];
+  }
+}
+
+void StreamMetal::sync() {
+  if (lastCommandBuffer.get()) {
+    [lastCommandBuffer.get() waitUntilCompleted];
+    lastCommandBuffer = objc::ptr<id<MTLCommandBuffer>>();
+  }
+}
 
 std::shared_ptr<Event> StreamMetal::record() {
   id<MTLDevice> device = queue.get().device;
@@ -194,7 +217,7 @@ std::shared_ptr<Event> StreamMetal::record() {
   id<MTLCommandBuffer> commandBuffer = [queue.get() commandBuffer];
   commandBuffer.label = @"Ghost Event Record";
   [commandBuffer encodeSignalEvent:sharedEvent.get() value:value];
-  [commandBuffer commit];
+  commitAndTrack(commandBuffer);
   return std::make_shared<EventMetal>(sharedEvent, value);
 }
 
@@ -204,7 +227,7 @@ void StreamMetal::waitForEvent(const std::shared_ptr<Event> &e) {
   commandBuffer.label = @"Ghost Event Wait";
   [commandBuffer encodeWaitForEvent:eventMetal->sharedEvent.get()
                               value:eventMetal->targetValue];
-  [commandBuffer commit];
+  commitAndTrack(commandBuffer);
 }
 
 BufferMetal::BufferMetal(objc::ptr<id<MTLBuffer>> mem_, size_t bytes)
@@ -241,9 +264,9 @@ void BufferMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
   auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
   size_t effectiveSrcOff = src_impl->baseOffset() + srcOffset;
   size_t effectiveDstOff = baseOffset() + dstOffset;
-  id<MTLCommandBuffer> commandBuffer = nil;
-  commandBuffer = [stream_impl->queue.get() commandBuffer];
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
   [blit copyFromBuffer:src_impl->mem.get()
            sourceOffset:effectiveSrcOff
@@ -251,7 +274,7 @@ void BufferMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
       destinationOffset:effectiveDstOff
                    size:bytes];
   [blit endEncoding];
-  [commandBuffer commit];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
 void BufferMetal::copy(const ghost::Stream &s, const void *src,
@@ -267,6 +290,7 @@ void BufferMetal::copy(const ghost::Stream &s, const void *src,
     id<MTLCommandBuffer> commandBuffer =
         [stream_impl->queue.get() commandBuffer];
     commandBuffer.label = @"Ghost";
+    stream_impl->encodeWait(commandBuffer);
     id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
     [blit copyFromBuffer:staging
              sourceOffset:0
@@ -274,7 +298,7 @@ void BufferMetal::copy(const ghost::Stream &s, const void *src,
         destinationOffset:effectiveDstOff
                      size:bytes];
     [blit endEncoding];
-    [commandBuffer commit];
+    stream_impl->commitAndTrack(commandBuffer);
   } else {
     void *dst = static_cast<uint8_t *>([mem contents]) + effectiveDstOff;
     memcpy(dst, src, bytes);
@@ -287,16 +311,38 @@ void BufferMetal::copyTo(const ghost::Stream &s, void *dst, size_t srcOffset,
                          size_t bytes) const {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   size_t effectiveSrcOff = baseOffset() + srcOffset;
-  if (IsPrivate(mem)) {
-    if (mem.get().storageMode == MTLStorageModeManaged) {
-      id<MTLCommandBuffer> commandBuffer = nil;
-      commandBuffer = [stream_impl->queue.get() commandBuffer];
-      commandBuffer.label = @"Ghost";
-      id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
-      [blit synchronizeResource:mem];
-      [blit endEncoding];
-      [commandBuffer commit];
-    }
+  if (mem.get().storageMode == MTLStorageModePrivate) {
+    // Private buffers: blit to a shared staging buffer, wait, then memcpy.
+    id<MTLBuffer> staging =
+        [mem.get().device newBufferWithLength:bytes
+                                      options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> commandBuffer =
+        [stream_impl->queue.get() commandBuffer];
+    commandBuffer.label = @"Ghost";
+    stream_impl->encodeWait(commandBuffer);
+    id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+    [blit copyFromBuffer:mem.get()
+             sourceOffset:effectiveSrcOff
+                 toBuffer:staging
+        destinationOffset:0
+                     size:bytes];
+    [blit endEncoding];
+    [commandBuffer commit];
+    [commandBuffer waitUntilCompleted];
+    memcpy(dst, [staging contents], bytes);
+  } else if (mem.get().storageMode == MTLStorageModeManaged) {
+    id<MTLCommandBuffer> commandBuffer =
+        [stream_impl->queue.get() commandBuffer];
+    commandBuffer.label = @"Ghost";
+    stream_impl->encodeWait(commandBuffer);
+    id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+    [blit synchronizeResource:mem];
+    [blit endEncoding];
+    [commandBuffer commit];
+    [commandBuffer waitUntilCompleted];
+    const void *src =
+        static_cast<const uint8_t *>([mem contents]) + effectiveSrcOff;
+    memcpy(dst, src, bytes);
   } else {
     const void *src =
         static_cast<const uint8_t *>([mem contents]) + effectiveSrcOff;
@@ -310,10 +356,11 @@ void BufferMetal::fill(const ghost::Stream &s, size_t offset, size_t size,
   size_t effectiveOff = baseOffset() + offset;
   id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
   [blit fillBuffer:mem.get() range:NSMakeRange(effectiveOff, size) value:value];
   [blit endEncoding];
-  [commandBuffer commit];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
 std::shared_ptr<Buffer>
@@ -366,6 +413,7 @@ void BufferMetal::fill(const ghost::Stream &s, size_t offset, size_t size,
   }
   id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
   [blit copyFromBuffer:staging
            sourceOffset:0
@@ -373,7 +421,7 @@ void BufferMetal::fill(const ghost::Stream &s, size_t offset, size_t size,
       destinationOffset:effectiveOff
                    size:size];
   [blit endEncoding];
-  [commandBuffer commit];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
 MappedBufferMetal::MappedBufferMetal(objc::ptr<id<MTLBuffer>> mem_,
@@ -394,7 +442,9 @@ MappedBufferMetal::MappedBufferMetal(const DeviceMetal &dev, size_t bytes,
 
 void *MappedBufferMetal::map(const ghost::Stream &s, Access access, bool sync) {
   if (sync) {
-    // TODO
+    auto stream_impl =
+        static_cast<implementation::StreamMetal *>(s.impl().get());
+    stream_impl->sync();
   }
   return [mem contents];
 }
@@ -433,9 +483,9 @@ ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_,
 void ImageMetal::copy(const ghost::Stream &s, const ghost::Image &src) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto src_impl = static_cast<implementation::ImageMetal *>(src.impl().get());
-  id<MTLCommandBuffer> commandBuffer = nil;
-  commandBuffer = [stream_impl->queue.get() commandBuffer];
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
   MTLRegion region = {{0, 0, 0}, {descr.size.x, descr.size.y, descr.size.z}};
   MTLOrigin dst_origin = {0, 0, 0};
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
@@ -449,15 +499,16 @@ void ImageMetal::copy(const ghost::Stream &s, const ghost::Image &src) {
        destinationLevel:0
       destinationOrigin:dst_origin];
   [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
 void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
                       const ImageDescription &descr_) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
-  id<MTLCommandBuffer> commandBuffer = nil;
-  commandBuffer = [stream_impl->queue.get() commandBuffer];
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
   MTLRegion region = {{0, 0, 0}, {descr.size.x, descr.size.y, descr.size.z}};
   MTLOrigin dst_origin = {0, 0, 0};
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
@@ -471,30 +522,53 @@ void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
          destinationLevel:0
         destinationOrigin:dst_origin];
   [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
 void ImageMetal::copy(const ghost::Stream &s, const void *src,
                       const ImageDescription &descr_) {
+  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   if (!IsPrivate(mem.get())) {
-    // d->wait(*ctx);
     MTLRegion region = {{0, 0, 0},
                         {descr_.size.x, descr_.size.y, descr_.size.z}};
     [mem.get() replaceRegion:region
                  mipmapLevel:0
                    withBytes:src
                  bytesPerRow:descr_.stride.x];
-    // d->dirty = false; // This updates the CPU side first.
     return;
   }
+  // Private texture: upload via staging buffer + blit
+  size_t dataSize = descr_.stride.x * descr_.size.y;
+  id<MTLBuffer> staging =
+      [mem.get().device newBufferWithBytes:src
+                                    length:dataSize
+                                   options:MTLResourceStorageModeShared];
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
+  MTLRegion region = {{0, 0, 0}, {descr_.size.x, descr_.size.y, descr_.size.z}};
+  MTLOrigin dst_origin = {0, 0, 0};
+  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+  [blit copyFromBuffer:staging
+             sourceOffset:0
+        sourceBytesPerRow:descr_.stride.x
+      sourceBytesPerImage:dataSize
+               sourceSize:region.size
+                toTexture:mem.get()
+         destinationSlice:0
+         destinationLevel:0
+        destinationOrigin:dst_origin];
+  [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
 void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
                         const ImageDescription &descr_) const {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto dst_impl = static_cast<implementation::BufferMetal *>(dst.impl().get());
-  id<MTLCommandBuffer> commandBuffer = nil;
-  commandBuffer = [stream_impl->queue.get() commandBuffer];
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
   MTLRegion region = {{0, 0, 0}, {descr.size.x, descr.size.y, descr.size.z}};
   MTLOrigin dst_origin = {0, 0, 0};
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
@@ -508,10 +582,49 @@ void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
         destinationBytesPerRow:descr_.stride.x
       destinationBytesPerImage:descr_.stride.y];
   [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
 void ImageMetal::copyTo(const ghost::Stream &s, void *dst,
-                        const ImageDescription &descr_) const {}
+                        const ImageDescription &descr_) const {
+  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  // For non-private textures accessed from CPU, we need to sync pending GPU
+  // work.
+  if (!IsPrivate(mem.get())) {
+    stream_impl->sync();
+    // Shared/Managed: read directly from texture
+    MTLRegion region = {{0, 0, 0},
+                        {descr_.size.x, descr_.size.y, descr_.size.z}};
+    [mem.get() getBytes:dst
+            bytesPerRow:descr_.stride.x
+             fromRegion:region
+            mipmapLevel:0];
+    return;
+  }
+  // Private texture: blit to staging buffer, wait, then memcpy
+  size_t dataSize = descr_.stride.x * descr_.size.y;
+  id<MTLBuffer> staging =
+      [mem.get().device newBufferWithLength:dataSize
+                                    options:MTLResourceStorageModeShared];
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
+  MTLRegion region = {{0, 0, 0}, {descr_.size.x, descr_.size.y, descr_.size.z}};
+  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+  [blit copyFromTexture:mem.get()
+                   sourceSlice:0
+                   sourceLevel:0
+                  sourceOrigin:region.origin
+                    sourceSize:region.size
+                      toBuffer:staging
+             destinationOffset:0
+        destinationBytesPerRow:descr_.stride.x
+      destinationBytesPerImage:dataSize];
+  [blit endEncoding];
+  [commandBuffer commit];
+  [commandBuffer waitUntilCompleted];
+  memcpy(dst, [staging contents], dataSize);
+}
 
 DeviceMetal::DeviceMetal(const SharedContext &share) {
   if (share.device) {
@@ -538,6 +651,25 @@ DeviceMetal::DeviceMetal(const SharedContext &share) {
     checkExists(dev);
   }
   if (!queue) {
+    queue = [dev.get() newCommandQueue];
+    checkExists(queue);
+  }
+}
+
+DeviceMetal::DeviceMetal(const GpuInfo &info) {
+  @autoreleasepool {
+#if TARGET_OS_OSX
+    NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
+    if (info.index >= 0 && info.index < (int)devices.count) {
+      dev = objc::ptr<id<MTLDevice>>(devices[info.index], true);
+      queue = [dev.get() newCommandQueue];
+      checkExists(queue);
+      return;
+    }
+#endif
+    // Fallback: default device
+    dev = MTLCreateSystemDefaultDevice();
+    checkExists(dev);
     queue = [dev.get() newCommandQueue];
     checkExists(queue);
   }
@@ -825,25 +957,10 @@ DeviceMetal::DeviceMetal(const SharedContext &share)
   setDefaultStream(std::make_shared<implementation::StreamMetal>(metal->queue));
 }
 
-DeviceMetal::DeviceMetal(const GpuInfo &info) : Device(nullptr) {
-  @autoreleasepool {
-#if TARGET_OS_OSX
-    NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
-    if (info.index >= 0 && info.index < (int)devices.count) {
-      auto metal =
-          std::make_shared<implementation::DeviceMetal>(devices[info.index]);
-      impl() = metal;
-      setDefaultStream(
-          std::make_shared<implementation::StreamMetal>(metal->queue));
-      return;
-    }
-#endif
-    // Fallback: default device
-    auto metal = std::make_shared<implementation::DeviceMetal>(SharedContext());
-    impl() = metal;
-    setDefaultStream(
-        std::make_shared<implementation::StreamMetal>(metal->queue));
-  }
+DeviceMetal::DeviceMetal(const GpuInfo &info)
+    : Device(std::make_shared<implementation::DeviceMetal>(info)) {
+  auto metal = static_cast<implementation::DeviceMetal *>(impl().get());
+  setDefaultStream(std::make_shared<implementation::StreamMetal>(metal->queue));
 }
 
 std::vector<GpuInfo> DeviceMetal::enumerateDevices() {

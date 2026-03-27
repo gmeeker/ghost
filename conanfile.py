@@ -10,7 +10,7 @@ required_conan_version = ">=1.54.0"
 
 class GhostConan(ConanFile):
     name = "ghost"
-    version = "0.1"
+    version = "1.0"
     license = "BSD-3-Clause"
     author = "Digital Anarchy"
     description = "Compute engine"
@@ -74,14 +74,18 @@ class GhostConan(ConanFile):
 
     def requirements(self):
         if self.options.get_safe("with_opencl", False):
-            self.requires("opencl-headers/2023.04.17")
-            self.requires("opencl-icd-loader/2023.04.17")
+            if not is_apple_os(self):
+                self.requires("opencl-headers/2023.04.17")
+                self.requires("opencl-icd-loader/2023.04.17")
         if self.options.get_safe("with_vulkan", False):
             if is_apple_os(self):
                 self.requires("moltenvk/1.2.2")
             else:
                 self.requires("vulkan-headers/1.3.250.0")
                 self.requires("vulkan-loader/1.3.243.0")
+
+    def build_requirements(self):
+        self.test_requires("gtest/[>=1.14.0 <2]")
 
     def generate(self):
         tc = CMakeToolchain(self)

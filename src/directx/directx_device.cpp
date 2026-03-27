@@ -801,6 +801,37 @@ DeviceDirectX::DeviceDirectX(const SharedContext& share) : adapterDesc{} {
   }
 }
 
+DeviceDirectX::DeviceDirectX(const GpuInfo& info) : adapterDesc{} {
+  checkHR(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
+
+  int adapterIdx = 0;
+  for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND;
+       i++) {
+    DXGI_ADAPTER_DESC1 desc;
+    adapter->GetDesc1(&desc);
+    if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+      adapter.Reset();
+      continue;
+    }
+    if (adapterIdx == info.index) {
+      if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0,
+                                      IID_PPV_ARGS(&device)))) {
+        adapterDesc = desc;
+        break;
+      }
+    }
+    adapterIdx++;
+    adapter.Reset();
+  }
+
+  if (!device) throw std::runtime_error("Invalid DirectX device index");
+
+  D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+  queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+  queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+  checkHR(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue)));
+}
+
 DeviceDirectX::~DeviceDirectX() {}
 
 ComPtr<ID3D12Resource> DeviceDirectX::createCommittedBuffer(
@@ -977,35 +1008,10 @@ DeviceDirectX::DeviceDirectX(const SharedContext& share)
       *static_cast<implementation::DeviceDirectX*>(impl().get())));
 }
 
-DeviceDirectX::DeviceDirectX(const GpuInfo& info) : Device(nullptr) {
-  ComPtr<IDXGIFactory4> dxgiFactory;
-  dx::checkHR(CreateDXGIFactory1(IID_PPV_ARGS(&dxgiFactory)));
-
-  ComPtr<IDXGIAdapter1> dxgiAdapter;
-  int adapterIdx = 0;
-  for (UINT i = 0;
-       dxgiFactory->EnumAdapters1(i, &dxgiAdapter) != DXGI_ERROR_NOT_FOUND;
-       i++) {
-    DXGI_ADAPTER_DESC1 desc;
-    dxgiAdapter->GetDesc1(&desc);
-    if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
-      dxgiAdapter.Reset();
-      continue;
-    }
-    if (adapterIdx == info.index) {
-      SharedContext share(nullptr, nullptr, dxgiAdapter.Get(),
-                          dxgiFactory.Get());
-      auto devImpl = std::make_shared<implementation::DeviceDirectX>(share);
-      impl() = devImpl;
-      setDefaultStream(
-          std::make_shared<implementation::StreamDirectX>(*devImpl));
-      return;
-    }
-    adapterIdx++;
-    dxgiAdapter.Reset();
-  }
-
-  throw std::runtime_error("Invalid DirectX device index");
+DeviceDirectX::DeviceDirectX(const GpuInfo& info)
+    : Device(std::make_shared<implementation::DeviceDirectX>(info)) {
+  setDefaultStream(std::make_shared<implementation::StreamDirectX>(
+      *static_cast<implementation::DeviceDirectX*>(impl().get())));
 }
 
 std::vector<GpuInfo> DeviceDirectX::enumerateDevices() {

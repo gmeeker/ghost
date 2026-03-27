@@ -109,7 +109,9 @@ bool BinaryCache::loadBinaries(
   makeDigest(d, dev, count, nullptr, 0, "");
   makeDigest(f, dev, count, data, length, options);
   FileWrapper file;
-  file = fopen((cachePath + f.get()).c_str(), "rb");
+  file = fopen(
+      (cachePath + f.get().substr(0, GHOST_DIGEST_FILENAME_LENGTH)).c_str(),
+      "rb");
   if (!file.okay()) return false;
 
   uint8_t digest1[Digest::length];
@@ -156,7 +158,9 @@ void BinaryCache::saveBinaries(const implementation::Device& dev,
   size_t i;
 
   FileWrapper file;
-  file = fopen((cachePath + f.get()).c_str(), "wb");
+  file = fopen(
+      (cachePath + f.get().substr(0, GHOST_DIGEST_FILENAME_LENGTH)).c_str(),
+      "wb");
   if (file.okay()) {
     uint8_t digest[Digest::length];
     d.get(digest);

@@ -185,6 +185,7 @@ class DeviceVulkan : public Device {
   VkPhysicalDeviceMemoryProperties memProperties;
 
   DeviceVulkan(const SharedContext& share);
+  DeviceVulkan(const GpuInfo& info);
   ~DeviceVulkan();
 
   virtual ghost::Library loadLibraryFromText(

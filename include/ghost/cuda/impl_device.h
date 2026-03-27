@@ -138,6 +138,7 @@ class DeviceCUDA : public Device {
   } computeCapability;
 
   DeviceCUDA(const SharedContext& share);
+  DeviceCUDA(const GpuInfo& info);
   DeviceCUDA(int deviceOrdinal);
 
   virtual ghost::Library loadLibraryFromText(

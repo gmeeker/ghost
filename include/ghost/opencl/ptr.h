@@ -203,6 +203,8 @@ class array {
     return objects_.empty() ? nullptr : &objects_[0];
   }
 
+  bool empty() const { return objects_.empty(); }
+
   size_t size() const { return objects_.size(); }
 
   operator const cl_type*() const { return get(); }

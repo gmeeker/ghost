@@ -15,34 +15,27 @@
 #include <ghost/digest.h>
 #include <stdio.h>
 
-#include "sha1.h"
+#include "sha256.h"
 
 namespace ghost {
 Digest::Digest() {
-  data = new SHA1_CTX();
-  PD_SHA1_Init(reinterpret_cast<SHA1_CTX*>(data));
+  data = new sha256();
+  sha256_init(reinterpret_cast<sha256*>(data));
 }
 
-Digest::~Digest() { delete reinterpret_cast<SHA1_CTX*>(data); }
+Digest::~Digest() { delete reinterpret_cast<sha256*>(data); }
 
 void Digest::update(const void* buf, size_t len) {
-  PD_SHA1_Update(reinterpret_cast<SHA1_CTX*>(data),
-                 reinterpret_cast<const uint8_t*>(buf), (unsigned)len);
+  sha256_append(reinterpret_cast<sha256*>(data), buf, len);
 }
 
 void Digest::get(uint8_t digest[length]) {
-  PD_SHA1_Final(reinterpret_cast<SHA1_CTX*>(data), digest);
+  sha256_finalize_bytes(reinterpret_cast<sha256*>(data), digest);
 }
 
 std::string Digest::get() {
-  uint8_t buf[length];
-  PD_SHA1_Final(reinterpret_cast<SHA1_CTX*>(data), buf);
-  std::string v;
-  for (size_t i = 0; i < length; i++) {
-    char buf[4];
-    snprintf(buf, sizeof(buf), "%02x", (unsigned int)buf[i]);
-    v += buf;
-  }
-  return v;
+  char hex[SHA256_HEX_SIZE];
+  sha256_finalize_hex(reinterpret_cast<sha256*>(data), hex);
+  return std::string(hex);
 }
 }  // namespace ghost

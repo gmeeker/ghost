@@ -17,6 +17,7 @@
 
 #include <ghost/device.h>
 
+#include <list>
 #include <set>
 
 #include "ptr.h"
@@ -134,17 +135,77 @@ class ImageOpenCL : public Image {
                       const ImageDescription& descr) const override;
 };
 
+class BufferPool {
+ public:
+  struct BufferEntry {
+    opencl::ptr<cl_mem> mem;
+    size_t bytes;
+  };
+
+  struct ImageEntry {
+    opencl::ptr<cl_mem> mem;
+    ImageDescription descr;
+    size_t bytes;
+  };
+
+  ~BufferPool();
+
+  size_t getLimit() const;
+  void setLimit(size_t limit);
+
+  opencl::ptr<cl_mem> lookupBuffer(size_t bytes);
+  opencl::ptr<cl_mem> lookupImage(const ImageDescription& descr);
+
+  void reserve(size_t bytes);
+  void recycleBuffer(opencl::ptr<cl_mem> mem, size_t bytes);
+  void recycleImage(opencl::ptr<cl_mem> mem, const ImageDescription& descr,
+                    size_t bytes);
+  void clear();
+
+ private:
+  void purge(size_t needed = 0);
+  static bool imageMatch(const ImageDescription& a, const ImageDescription& b);
+
+  std::list<BufferEntry> _buffers;
+  std::list<ImageEntry> _images;
+  size_t _current = 0;
+  size_t _limit = 0;
+};
+
+class PooledBufferOpenCL : public BufferOpenCL {
+ public:
+  std::shared_ptr<BufferPool> pool;
+
+  PooledBufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes,
+                     std::shared_ptr<BufferPool> pool_);
+  ~PooledBufferOpenCL();
+};
+
+class PooledImageOpenCL : public ImageOpenCL {
+ public:
+  std::shared_ptr<BufferPool> pool;
+  size_t imageBytes;
+
+  PooledImageOpenCL(opencl::ptr<cl_mem> mem_, const ImageDescription& descr,
+                    size_t bytes, std::shared_ptr<BufferPool> pool_);
+  ~PooledImageOpenCL();
+};
+
 class DeviceOpenCL : public Device {
  private:
   std::string _version;
   std::set<std::string> _extensions;
   bool _fullProfile;
+  mutable std::shared_ptr<BufferPool> _pool;
+
+  void setVersion();
 
  public:
   opencl::ptr<cl_context> context;
   opencl::ptr<cl_command_queue> queue;
 
   DeviceOpenCL(const SharedContext& share);
+  DeviceOpenCL(const GpuInfo& info);
   DeviceOpenCL(cl_platform_id platform, cl_device_id device);
 
   virtual ghost::Library loadLibraryFromText(

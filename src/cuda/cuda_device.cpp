@@ -568,6 +568,8 @@ DeviceCUDA::DeviceCUDA(const SharedContext& share) {
                                   device));
 }
 
+DeviceCUDA::DeviceCUDA(const GpuInfo& info) : DeviceCUDA(info.index) {}
+
 DeviceCUDA::DeviceCUDA(int deviceOrdinal) {
   CUresult err;
   err = cuDeviceGet(&device, deviceOrdinal);
@@ -849,7 +851,7 @@ DeviceCUDA::DeviceCUDA(const SharedContext& share)
 }
 
 DeviceCUDA::DeviceCUDA(const GpuInfo& info)
-    : Device(std::make_shared<implementation::DeviceCUDA>(info.index)) {
+    : Device(std::make_shared<implementation::DeviceCUDA>(info)) {
   auto cuda = static_cast<implementation::DeviceCUDA*>(impl().get());
   setDefaultStream(std::make_shared<implementation::StreamCUDA>(cuda->queue));
 }

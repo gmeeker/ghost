@@ -223,11 +223,15 @@ StreamOpenCL::StreamOpenCL(const DeviceOpenCL& dev) : outOfOrder(true) {
 }
 
 void StreamOpenCL::sync() {
-  /*
-  cl_event ev = queue;
-  cl_int err = clWaitForEvents(1, &ev);
+  cl_int err = CL_SUCCESS;
+  if (outOfOrder) {
+    if (!events.empty()) {
+      err = clWaitForEvents(events.size(), events);
+    }
+  } else {
+    err = clFinish(queue);
+  }
   checkError(err);
-  */
 }
 
 void StreamOpenCL::addEvent() {
@@ -571,6 +575,119 @@ void ImageOpenCL::copyTo(const ghost::Stream& s, void* dst,
   stream_impl->addEvent();
 }
 
+// ---------------------------------------------------------------------------
+// BufferPool
+// ---------------------------------------------------------------------------
+
+BufferPool::~BufferPool() { clear(); }
+
+size_t BufferPool::getLimit() const { return _limit; }
+
+void BufferPool::setLimit(size_t limit) {
+  _limit = limit;
+  if (_limit == 0) {
+    clear();
+  } else {
+    purge();
+  }
+}
+
+opencl::ptr<cl_mem> BufferPool::lookupBuffer(size_t bytes) {
+  for (auto it = _buffers.begin(); it != _buffers.end(); ++it) {
+    if (it->bytes == bytes) {
+      auto mem = std::move(it->mem);
+      _buffers.erase(it);
+      return mem;
+    }
+  }
+  purge(bytes);
+  return opencl::ptr<cl_mem>();
+}
+
+opencl::ptr<cl_mem> BufferPool::lookupImage(const ImageDescription& descr) {
+  for (auto it = _images.begin(); it != _images.end(); ++it) {
+    if (imageMatch(it->descr, descr)) {
+      auto mem = std::move(it->mem);
+      _images.erase(it);
+      return mem;
+    }
+  }
+  return opencl::ptr<cl_mem>();
+}
+
+void BufferPool::reserve(size_t bytes) {
+  _current += bytes;
+  purge();
+}
+
+void BufferPool::recycleBuffer(opencl::ptr<cl_mem> mem, size_t bytes) {
+  _buffers.push_back({std::move(mem), bytes});
+}
+
+void BufferPool::recycleImage(opencl::ptr<cl_mem> mem,
+                              const ImageDescription& descr, size_t bytes) {
+  _images.push_back({std::move(mem), descr, bytes});
+}
+
+void BufferPool::clear() {
+  _buffers.clear();
+  _images.clear();
+  _current = 0;
+}
+
+void BufferPool::purge(size_t needed) {
+  while (!_buffers.empty() && _current + needed > _limit) {
+    size_t sz = _buffers.front().bytes;
+    _current -= std::min(_current, sz);
+    _buffers.pop_front();
+  }
+  while (!_images.empty() && _current + needed > _limit) {
+    size_t sz = _images.front().bytes;
+    _current -= std::min(_current, sz);
+    _images.pop_front();
+  }
+}
+
+bool BufferPool::imageMatch(const ImageDescription& a,
+                            const ImageDescription& b) {
+  return a.size.x == b.size.x && a.size.y == b.size.y && a.size.z == b.size.z &&
+         a.channels == b.channels && a.order == b.order && a.type == b.type &&
+         a.stride.x == b.stride.x && a.stride.y == b.stride.y &&
+         a.access == b.access;
+}
+
+// ---------------------------------------------------------------------------
+// PooledBufferOpenCL / PooledImageOpenCL
+// ---------------------------------------------------------------------------
+
+PooledBufferOpenCL::PooledBufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes,
+                                       std::shared_ptr<BufferPool> pool_)
+    : BufferOpenCL(std::move(mem_), bytes), pool(std::move(pool_)) {}
+
+PooledBufferOpenCL::~PooledBufferOpenCL() {
+  if (pool && pool->getLimit() > 0) {
+    pool->recycleBuffer(std::move(mem), _size);
+  }
+}
+
+PooledImageOpenCL::PooledImageOpenCL(opencl::ptr<cl_mem> mem_,
+                                     const ImageDescription& descr_,
+                                     size_t bytes,
+                                     std::shared_ptr<BufferPool> pool_)
+    : ImageOpenCL(std::move(mem_), descr_),
+      pool(std::move(pool_)),
+      imageBytes(bytes) {}
+
+PooledImageOpenCL::~PooledImageOpenCL() {
+  if (pool && pool->getLimit() > 0) {
+    pool->recycleImage(std::move(mem), descr, imageBytes);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DeviceOpenCL
+// ---------------------------------------------------------------------------
+
 DeviceOpenCL::DeviceOpenCL(const SharedContext& share) {
   cl_int err;
   if (share.context) {
@@ -617,6 +734,7 @@ DeviceOpenCL::DeviceOpenCL(const SharedContext& share) {
         platform = platforms[i];
         cl_uint num;
         err = clGetDeviceIDs(platform, deviceType, 0, nullptr, &num);
+        if (err != CL_SUCCESS) continue;
         devices.resize(size_t(num));
         if (!devices.empty()) {
           err = clGetDeviceIDs(platform, deviceType, num, &devices[0], nullptr);
@@ -626,6 +744,28 @@ DeviceOpenCL::DeviceOpenCL(const SharedContext& share) {
           devices.resize(1);
         }
       }
+      // If no GPU devices found, fall back to any device type.
+      if (devices.empty() && deviceType != CL_DEVICE_TYPE_ALL) {
+        deviceType = CL_DEVICE_TYPE_ALL;
+        for (size_t i = 0; i < platforms.size() && devices.empty(); i++) {
+          platform = platforms[i];
+          cl_uint num;
+          err = clGetDeviceIDs(platform, deviceType, 0, nullptr, &num);
+          if (err != CL_SUCCESS) continue;
+          devices.resize(size_t(num));
+          if (!devices.empty()) {
+            err =
+                clGetDeviceIDs(platform, deviceType, num, &devices[0], nullptr);
+            checkError(err);
+          }
+          if (devices.size() > 1) {
+            devices.resize(1);
+          }
+        }
+      }
+    }
+    if (devices.empty()) {
+      throw opencl::runtime_error(CL_DEVICE_NOT_FOUND);
     }
     cl_context_properties properties[] = {
         (cl_context_properties)CL_CONTEXT_PLATFORM,
@@ -641,7 +781,63 @@ DeviceOpenCL::DeviceOpenCL(const SharedContext& share) {
     implementation::StreamOpenCL stream(*this);
     queue = stream.queue;
   }
-  _version = getString(CL_DEVICE_VERSION);
+  setVersion();
+  set_of(_extensions, getPlatformString(CL_PLATFORM_EXTENSIONS));
+  set_of(_extensions, getString(CL_DEVICE_EXTENSIONS));
+}
+
+DeviceOpenCL::DeviceOpenCL(const GpuInfo& info) {
+  cl_int err;
+  cl_uint numPlatforms;
+  err = clGetPlatformIDs(0, nullptr, &numPlatforms);
+  checkError(err);
+  std::vector<cl_platform_id> platforms(numPlatforms);
+  err = clGetPlatformIDs(numPlatforms, platforms.data(), nullptr);
+  checkError(err);
+
+  int platformIdx = info.index / 1000;
+  int deviceIdx = info.index % 1000;
+
+  cl_platform_id selectedPlatform = nullptr;
+  cl_device_id selectedDevice = nullptr;
+
+  if (platformIdx >= 0 && platformIdx < (int)platforms.size()) {
+    cl_uint numDevices;
+    err = clGetDeviceIDs(platforms[platformIdx], CL_DEVICE_TYPE_ALL, 0, nullptr,
+                         &numDevices);
+    checkError(err);
+    std::vector<cl_device_id> devices(numDevices);
+    err = clGetDeviceIDs(platforms[platformIdx], CL_DEVICE_TYPE_ALL, numDevices,
+                         devices.data(), nullptr);
+    checkError(err);
+    if (deviceIdx >= 0 && deviceIdx < (int)devices.size()) {
+      selectedPlatform = platforms[platformIdx];
+      selectedDevice = devices[deviceIdx];
+    }
+  }
+
+  if (selectedDevice) {
+    cl_context_properties properties[] = {
+        (cl_context_properties)CL_CONTEXT_PLATFORM,
+        (cl_context_properties)selectedPlatform, (cl_context_properties)0};
+    context = opencl::ptr<cl_context>(
+        clCreateContext(properties, 1, &selectedDevice, nullptr, nullptr, &err),
+        false);
+    checkError(err);
+  } else {
+    // Fallback: default device via SharedContext
+    DeviceOpenCL tmp{SharedContext()};
+    context = std::move(tmp.context);
+    queue = std::move(tmp.queue);
+    _version = std::move(tmp._version);
+    _extensions = std::move(tmp._extensions);
+    _fullProfile = tmp._fullProfile;
+    return;
+  }
+  _fullProfile = getString(CL_DEVICE_PROFILE) != "EMBEDDED_PROFILE";
+  implementation::StreamOpenCL stream(*this);
+  queue = stream.queue;
+  setVersion();
   set_of(_extensions, getPlatformString(CL_PLATFORM_EXTENSIONS));
   set_of(_extensions, getString(CL_DEVICE_EXTENSIONS));
 }
@@ -657,7 +853,7 @@ DeviceOpenCL::DeviceOpenCL(cl_platform_id platform, cl_device_id device) {
   _fullProfile = getString(CL_DEVICE_PROFILE) != "EMBEDDED_PROFILE";
   implementation::StreamOpenCL stream(*this);
   queue = stream.queue;
-  _version = getString(CL_DEVICE_VERSION);
+  setVersion();
   set_of(_extensions, getPlatformString(CL_PLATFORM_EXTENSIONS));
   set_of(_extensions, getString(CL_DEVICE_EXTENSIONS));
 }
@@ -686,11 +882,37 @@ ghost::Stream DeviceOpenCL::createStream() const {
   return ghost::Stream(ptr);
 }
 
-size_t DeviceOpenCL::getMemoryPoolSize() const {}
+size_t DeviceOpenCL::getMemoryPoolSize() const {
+  return Device::getMemoryPoolSize();
+}
 
-void DeviceOpenCL::setMemoryPoolSize(size_t bytes) {}
+void DeviceOpenCL::setMemoryPoolSize(size_t bytes) {
+  Device::setMemoryPoolSize(bytes);
+  if (bytes > 0) {
+    if (!_pool) _pool = std::make_shared<BufferPool>();
+    _pool->setLimit(bytes);
+  } else if (_pool) {
+    _pool->setLimit(0);
+  }
+}
 
 ghost::Buffer DeviceOpenCL::allocateBuffer(size_t bytes, Access access) const {
+  if (_pool && _pool->getLimit() > 0) {
+    auto mem = _pool->lookupBuffer(bytes);
+    if (mem.get()) {
+      return ghost::Buffer(
+          std::make_shared<PooledBufferOpenCL>(std::move(mem), bytes, _pool));
+    }
+    // Allocate new, but wrap in pooled buffer for recycling on destruction.
+    cl_int err;
+    cl_mem_flags flags = getMemFlags(access);
+    auto newMem = opencl::ptr<cl_mem>(
+        clCreateBuffer(context, flags, bytes, nullptr, &err));
+    checkError(err);
+    _pool->reserve(bytes);
+    return ghost::Buffer(
+        std::make_shared<PooledBufferOpenCL>(std::move(newMem), bytes, _pool));
+  }
   auto ptr =
       std::make_shared<implementation::BufferOpenCL>(*this, bytes, access);
   return ghost::Buffer(ptr);
@@ -704,6 +926,25 @@ ghost::MappedBuffer DeviceOpenCL::allocateMappedBuffer(size_t bytes,
 }
 
 ghost::Image DeviceOpenCL::allocateImage(const ImageDescription& descr) const {
+  if (_pool && _pool->getLimit() > 0) {
+    auto mem = _pool->lookupImage(descr);
+    if (mem.get()) {
+      // Estimate image size for pool accounting.
+      size_t rowBytes =
+          descr.stride.x > 0 ? (size_t)descr.stride.x : descr.size.x * 4;
+      size_t bytes = descr.size.y * rowBytes * descr.size.z;
+      return ghost::Image(std::make_shared<PooledImageOpenCL>(
+          std::move(mem), descr, bytes, _pool));
+    }
+    // Create new image and wrap for pooling.
+    auto img = std::make_shared<ImageOpenCL>(*this, descr);
+    size_t rowBytes =
+        descr.stride.x > 0 ? (size_t)descr.stride.x : descr.size.x * 4;
+    size_t bytes = descr.size.y * rowBytes * descr.size.z;
+    _pool->reserve(bytes);
+    return ghost::Image(std::make_shared<PooledImageOpenCL>(
+        std::move(img->mem), descr, bytes, _pool));
+  }
   auto ptr = std::make_shared<implementation::ImageOpenCL>(*this, descr);
   return ghost::Image(ptr);
 }
@@ -836,8 +1077,17 @@ Attribute DeviceOpenCL::getAttribute(DeviceAttributeId what) const {
   }
 }
 
+void DeviceOpenCL::setVersion() {
+  _version = getString(CL_DEVICE_VERSION);
+  // _version is "OpenCL X.Y ..." — extract the numeric part after "OpenCL ".
+  auto pos = _version.find(' ');
+  if (pos != std::string::npos) {
+    _version = _version.substr(pos + 1);
+  }
+}
+
 bool DeviceOpenCL::checkVersion(const std::string& version) const {
-  return strcmp(_version.c_str(), version.c_str()) >= 0;
+  return _version.compare(0, version.size(), version) >= 0;
 }
 
 bool DeviceOpenCL::checkExtension(const std::string& extension) const {
@@ -913,40 +1163,11 @@ DeviceOpenCL::DeviceOpenCL(const SharedContext& share)
       std::make_shared<implementation::StreamOpenCL>(opencl->queue));
 }
 
-DeviceOpenCL::DeviceOpenCL(const GpuInfo& info) : Device(nullptr) {
-  cl_int err;
-  cl_uint numPlatforms;
-  err = clGetPlatformIDs(0, nullptr, &numPlatforms);
-  implementation::checkError(err);
-  std::vector<cl_platform_id> platforms(numPlatforms);
-  err = clGetPlatformIDs(numPlatforms, platforms.data(), nullptr);
-  implementation::checkError(err);
-
-  int platformIdx = info.index / 1000;
-  int deviceIdx = info.index % 1000;
-
-  if (platformIdx >= 0 && platformIdx < (int)platforms.size()) {
-    cl_uint numDevices;
-    err = clGetDeviceIDs(platforms[platformIdx], CL_DEVICE_TYPE_ALL, 0, nullptr,
-                         &numDevices);
-    implementation::checkError(err);
-    std::vector<cl_device_id> devices(numDevices);
-    err = clGetDeviceIDs(platforms[platformIdx], CL_DEVICE_TYPE_ALL, numDevices,
-                         devices.data(), nullptr);
-    implementation::checkError(err);
-    if (deviceIdx >= 0 && deviceIdx < (int)devices.size()) {
-      auto ocl = std::make_shared<implementation::DeviceOpenCL>(
-          platforms[platformIdx], devices[deviceIdx]);
-      impl() = ocl;
-      setDefaultStream(
-          std::make_shared<implementation::StreamOpenCL>(ocl->queue));
-      return;
-    }
-  }
-  // Fallback: default device
-  auto ocl = std::make_shared<implementation::DeviceOpenCL>(SharedContext());
-  impl() = ocl;
-  setDefaultStream(std::make_shared<implementation::StreamOpenCL>(ocl->queue));
+DeviceOpenCL::DeviceOpenCL(const GpuInfo& info)
+    : Device(std::make_shared<implementation::DeviceOpenCL>(info)) {
+  auto opencl = static_cast<implementation::DeviceOpenCL*>(impl().get());
+  setDefaultStream(
+      std::make_shared<implementation::StreamOpenCL>(opencl->queue));
 }
 
 std::vector<GpuInfo> DeviceOpenCL::enumerateDevices() {

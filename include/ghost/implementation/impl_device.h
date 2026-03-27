@@ -17,6 +17,7 @@
 
 #include <ghost/attribute.h>
 #include <ghost/binary_cache.h>
+#include <ghost/gpu_info.h>
 #include <ghost/image.h>
 #include <ghost/implementation/impl_function.h>
 #include <stdlib.h>

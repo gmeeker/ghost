@@ -26,9 +26,12 @@ class Device;
 }
 class Digest;
 
+/// @brief Number of hex characters of the digest to use in cache filenames.
+#define GHOST_DIGEST_FILENAME_LENGTH 32
+
 /// @brief Content-addressed cache for compiled GPU binaries.
 ///
-/// Stores and retrieves pre-compiled GPU program binaries keyed by a SHA-1
+/// Stores and retrieves pre-compiled GPU program binaries keyed by a SHA-256
 /// digest of the source data, compiler options, and device identity. Cached
 /// files are stored under @c cachePath and are subject to a time-to-live
 /// purge policy. Set the cachePath member to enable caching.
@@ -45,7 +48,7 @@ class BinaryCache {
   /// @brief Root directory for cached binary files.
   PathString cachePath;
 
-  /// @brief Build a SHA-1 digest key for a compiled program.
+  /// @brief Build a SHA-256 digest key for a compiled program.
   /// @param[in,out] d Digest object to update with the key material.
   /// @param dev The device whose identity is included in the digest.
   /// @param count Device count or index used as part of the key.

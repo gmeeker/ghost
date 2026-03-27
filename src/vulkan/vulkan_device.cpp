@@ -1042,6 +1042,100 @@ DeviceVulkan::DeviceVulkan(const SharedContext& share)
       vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool));
 }
 
+DeviceVulkan::DeviceVulkan(const GpuInfo& info)
+    : instance(VK_NULL_HANDLE),
+      physicalDevice(VK_NULL_HANDLE),
+      device(VK_NULL_HANDLE),
+      computeQueue(VK_NULL_HANDLE),
+      computeQueueFamily(0),
+      descriptorPool(VK_NULL_HANDLE),
+      ownsInstance(true) {
+  // Create new instance
+  VkApplicationInfo appInfo = {};
+  appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+  appInfo.pApplicationName = "Ghost";
+  appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+  appInfo.pEngineName = "Ghost";
+  appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+  appInfo.apiVersion = VK_API_VERSION_1_2;
+
+  VkInstanceCreateInfo createInfo = {};
+  createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+  createInfo.pApplicationInfo = &appInfo;
+
+  checkError(vkCreateInstance(&createInfo, nullptr, &instance));
+
+  // Pick physical device by index
+  uint32_t deviceCount = 0;
+  vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+  std::vector<VkPhysicalDevice> devices(deviceCount);
+  vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+
+  if (info.index < 0 || info.index >= (int)deviceCount) {
+    vkDestroyInstance(instance, nullptr);
+    instance = VK_NULL_HANDLE;
+    ownsInstance = false;
+    throw std::runtime_error("Invalid Vulkan device index");
+  }
+  physicalDevice = devices[info.index];
+
+  // Find compute queue family
+  uint32_t queueFamilyCount = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount,
+                                           nullptr);
+  std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+  vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount,
+                                           queueFamilies.data());
+
+  bool found = false;
+  for (uint32_t i = 0; i < queueFamilyCount; i++) {
+    if (queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+      computeQueueFamily = i;
+      found = true;
+      if (!(queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) break;
+    }
+  }
+  if (!found) throw std::runtime_error("No compute queue family found");
+
+  // Create logical device
+  float queuePriority = 1.0f;
+  VkDeviceQueueCreateInfo queueCreateInfo = {};
+  queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+  queueCreateInfo.queueFamilyIndex = computeQueueFamily;
+  queueCreateInfo.queueCount = 1;
+  queueCreateInfo.pQueuePriorities = &queuePriority;
+
+  VkDeviceCreateInfo deviceCreateInfo = {};
+  deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+  deviceCreateInfo.queueCreateInfoCount = 1;
+  deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
+
+  checkError(
+      vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device));
+
+  vkGetDeviceQueue(device, computeQueueFamily, 0, &computeQueue);
+
+  // Cache device properties
+  vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+  vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+  // Create descriptor pool
+  VkDescriptorPoolSize poolSizes[] = {
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1024},
+  };
+
+  VkDescriptorPoolCreateInfo poolInfo = {};
+  poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+  poolInfo.maxSets = 4096;
+  poolInfo.poolSizeCount = 2;
+  poolInfo.pPoolSizes = poolSizes;
+
+  checkError(
+      vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool));
+}
+
 DeviceVulkan::~DeviceVulkan() {
   if (device != VK_NULL_HANDLE) {
     vkDeviceWaitIdle(device);
@@ -1323,39 +1417,10 @@ DeviceVulkan::DeviceVulkan(const SharedContext& share)
       *static_cast<implementation::DeviceVulkan*>(impl().get())));
 }
 
-DeviceVulkan::DeviceVulkan(const GpuInfo& info) : Device(nullptr) {
-  // Enumerate physical devices and pick by index
-  VkInstance inst;
-  VkApplicationInfo appInfo = {};
-  appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-  appInfo.pApplicationName = "Ghost";
-  appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-  appInfo.pEngineName = "Ghost";
-  appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-  appInfo.apiVersion = VK_API_VERSION_1_2;
-
-  VkInstanceCreateInfo createInfo = {};
-  createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-  createInfo.pApplicationInfo = &appInfo;
-
-  vk::checkError(vkCreateInstance(&createInfo, nullptr, &inst));
-
-  uint32_t deviceCount = 0;
-  vkEnumeratePhysicalDevices(inst, &deviceCount, nullptr);
-  std::vector<VkPhysicalDevice> devices(deviceCount);
-  vkEnumeratePhysicalDevices(inst, &deviceCount, devices.data());
-
-  if (info.index >= 0 && info.index < (int)deviceCount) {
-    SharedContext share(inst, nullptr, nullptr, devices[info.index]);
-    auto devImpl = std::make_shared<implementation::DeviceVulkan>(share);
-    // Transfer instance ownership
-    devImpl->ownsInstance = true;
-    impl() = devImpl;
-    setDefaultStream(std::make_shared<implementation::StreamVulkan>(*devImpl));
-  } else {
-    vkDestroyInstance(inst, nullptr);
-    throw std::runtime_error("Invalid Vulkan device index");
-  }
+DeviceVulkan::DeviceVulkan(const GpuInfo& info)
+    : Device(std::make_shared<implementation::DeviceVulkan>(info)) {
+  setDefaultStream(std::make_shared<implementation::StreamVulkan>(
+      *static_cast<implementation::DeviceVulkan*>(impl().get())));
 }
 
 std::vector<GpuInfo> DeviceVulkan::enumerateDevices() {

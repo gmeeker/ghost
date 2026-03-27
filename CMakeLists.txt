@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 3.5)
-project(Ghost VERSION 0.1 LANGUAGES C CXX)
+cmake_minimum_required(VERSION 3.10...4.1)
+project(Ghost VERSION 1.0 LANGUAGES C CXX)
 if(APPLE)
     enable_language(OBJC OBJCXX)
 endif()
@@ -21,7 +21,6 @@ if(WITH_CUDA)
 endif()
 if(WITH_OPENCL)
   find_package(OpenCL REQUIRED)
-  # find_package(OpenCLHeadersCpp REQUIRED CONFIG)
 endif()
 if(WITH_VULKAN)
   if(APPLE)
@@ -126,7 +125,7 @@ set(GHOST_SOURCES
     src/digest.cpp
     src/function.cpp
     src/image.cpp
-    src/sha1.c
+    src/sha256.c
     src/cpu/cpu_device.cpp
     src/cpu/cpu_function.cpp
     src/cpu/cpu_thread.cpp
@@ -150,8 +149,12 @@ add_library(${PROJECT_NAME}
     "${GHOST_SOURCES}"
   )
 if(WITH_OPENCL AND OpenCL_FOUND)
-  # target_link_libraries(${PROJECT_NAME} PUBLIC OpenCL::OpenCL OpenCL::HeadersCpp)
-  target_link_libraries(${PROJECT_NAME} PUBLIC OpenCL::OpenCL)
+  if(APPLE)
+    # On macOS, link directly against the system framework.
+    target_link_libraries(${PROJECT_NAME} PUBLIC "-framework OpenCL")
+  else()
+    target_link_libraries(${PROJECT_NAME} PUBLIC OpenCL::OpenCL)
+  endif()
 endif()
 
 if(WITH_CUDA)
@@ -189,6 +192,32 @@ add_executable(TestGhost test/TestGhost.cpp)
 target_link_libraries(TestGhost ${PROJECT_NAME})
 add_test(NAME TestGhost
          COMMAND TestGhost)
+
+# Google Test based tests
+find_package(GTest QUIET)
+if(NOT GTest_FOUND)
+  include(FetchContent)
+  FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
+  )
+  # Prevent GoogleTest from overriding compiler/linker settings on Windows.
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+endif()
+
+add_executable(TestGhostGTest
+    test/test_attribute.cpp
+    test/test_buffer.cpp
+    test/test_command_buffer.cpp
+    test/test_device.cpp
+    test/test_image.cpp
+    test/test_kernel.cpp
+    test/test_stream.cpp
+)
+target_link_libraries(TestGhostGTest ${PROJECT_NAME} GTest::gtest_main)
+include(GoogleTest)
+gtest_discover_tests(TestGhostGTest)
 
 install(TARGETS ${PROJECT_NAME}
     EXPORT GhostTargets

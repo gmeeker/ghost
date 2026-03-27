@@ -188,6 +188,7 @@ class DeviceDirectX : public Device {
   DXGI_ADAPTER_DESC1 adapterDesc;
 
   DeviceDirectX(const SharedContext& share);
+  DeviceDirectX(const GpuInfo& info);
   ~DeviceDirectX();
 
   virtual ghost::Library loadLibraryFromText(

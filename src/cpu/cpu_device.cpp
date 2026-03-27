@@ -19,12 +19,166 @@
 
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
+#include <sys/types.h>
 #elif defined(__linux__)
+#include <sys/sysinfo.h>
 #include <unistd.h>
+
+#include <fstream>
+#elif defined(_WIN32)
+#include <windows.h>
+#if defined(_M_IX86) || defined(_M_X64)
+#include <intrin.h>
+#endif
 #endif
 
 #include <algorithm>
 #include <limits>
+#include <string>
+
+namespace {
+
+std::string getCPUName() {
+#if defined(__APPLE__)
+  char name[256] = {};
+  size_t len = sizeof(name);
+  if (sysctlbyname("machdep.cpu.brand_string", name, &len, nullptr, 0) == 0)
+    return name;
+  return "CPU";
+#elif defined(__linux__)
+  std::ifstream cpuinfo("/proc/cpuinfo");
+  std::string line;
+  while (std::getline(cpuinfo, line)) {
+    if (line.rfind("model name", 0) == 0) {
+      auto pos = line.find(':');
+      if (pos != std::string::npos) {
+        auto start = line.find_first_not_of(" \t", pos + 1);
+        if (start != std::string::npos) return line.substr(start);
+      }
+    }
+  }
+  return "CPU";
+#elif defined(_WIN32)
+  // Try the registry first (works on both x86 and ARM).
+  HKEY key;
+  if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                    "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0,
+                    KEY_READ, &key) == ERROR_SUCCESS) {
+    char name[256] = {};
+    DWORD size = sizeof(name);
+    DWORD type = 0;
+    if (RegQueryValueExA(key, "ProcessorNameString", nullptr, &type,
+                         reinterpret_cast<LPBYTE>(name),
+                         &size) == ERROR_SUCCESS &&
+        type == REG_SZ) {
+      RegCloseKey(key);
+      std::string result(name);
+      auto start = result.find_first_not_of(' ');
+      return start != std::string::npos ? result.substr(start) : "CPU";
+    }
+    RegCloseKey(key);
+  }
+#if defined(_M_IX86) || defined(_M_X64)
+  {
+    int cpuInfo[4] = {};
+    __cpuid(cpuInfo, 0x80000002);
+    char brand[49] = {};
+    memcpy(brand, cpuInfo, sizeof(cpuInfo));
+    __cpuid(cpuInfo, 0x80000003);
+    memcpy(brand + 16, cpuInfo, sizeof(cpuInfo));
+    __cpuid(cpuInfo, 0x80000004);
+    memcpy(brand + 32, cpuInfo, sizeof(cpuInfo));
+    brand[48] = '\0';
+    std::string result(brand);
+    auto start = result.find_first_not_of(' ');
+    return start != std::string::npos ? result.substr(start) : "CPU";
+  }
+#endif
+  return "CPU";
+#else
+  return "CPU";
+#endif
+}
+
+std::string getCPUVendor() {
+#if defined(__APPLE__)
+  char vendor[256] = {};
+  size_t len = sizeof(vendor);
+  if (sysctlbyname("machdep.cpu.vendor", vendor, &len, nullptr, 0) == 0)
+    return vendor;
+  // Apple Silicon doesn't have machdep.cpu.vendor
+  return "Apple";
+#elif defined(__linux__)
+  std::ifstream cpuinfo("/proc/cpuinfo");
+  std::string line;
+  while (std::getline(cpuinfo, line)) {
+    if (line.rfind("vendor_id", 0) == 0) {
+      auto pos = line.find(':');
+      if (pos != std::string::npos) {
+        auto start = line.find_first_not_of(" \t", pos + 1);
+        if (start != std::string::npos) return line.substr(start);
+      }
+    }
+  }
+  return "";
+#elif defined(_WIN32)
+  // Try the registry first (works on both x86 and ARM).
+  HKEY key;
+  if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                    "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0,
+                    KEY_READ, &key) == ERROR_SUCCESS) {
+    char vendor[256] = {};
+    DWORD size = sizeof(vendor);
+    DWORD type = 0;
+    if (RegQueryValueExA(key, "VendorIdentifier", nullptr, &type,
+                         reinterpret_cast<LPBYTE>(vendor),
+                         &size) == ERROR_SUCCESS &&
+        type == REG_SZ) {
+      RegCloseKey(key);
+      return vendor;
+    }
+    RegCloseKey(key);
+  }
+#if defined(_M_IX86) || defined(_M_X64)
+  {
+    int cpuInfo[4] = {};
+    __cpuid(cpuInfo, 0);
+    char vendor[13] = {};
+    memcpy(vendor, &cpuInfo[1], 4);
+    memcpy(vendor + 4, &cpuInfo[3], 4);
+    memcpy(vendor + 8, &cpuInfo[2], 4);
+    vendor[12] = '\0';
+    return vendor;
+  }
+#endif
+  return "";
+#else
+  return "";
+#endif
+}
+
+uint64_t getSystemMemory() {
+#if defined(__APPLE__)
+  uint64_t mem = 0;
+  size_t len = sizeof(mem);
+  if (sysctlbyname("hw.memsize", &mem, &len, nullptr, 0) == 0) return mem;
+  return 0;
+#elif defined(__linux__)
+  struct sysinfo si;
+  if (sysinfo(&si) == 0)
+    return static_cast<uint64_t>(si.totalram) * si.mem_unit;
+  return 0;
+#elif defined(_WIN32)
+  MEMORYSTATUSEX status;
+  status.dwLength = sizeof(status);
+  if (GlobalMemoryStatusEx(&status)) return status.ullTotalPhys;
+  return 0;
+#else
+  return 0;
+#endif
+}
+
+}  // namespace
 
 namespace ghost {
 namespace implementation {
@@ -204,32 +358,113 @@ SubBufferCPU::SubBufferCPU(std::shared_ptr<Buffer> parent, void* ptr_,
                            size_t bytes)
     : BufferCPU(ptr_, bytes), _parent(parent) {}
 
+namespace {
+size_t alignUp(size_t value, size_t alignment) {
+  return (value + alignment - 1) & ~(alignment - 1);
+}
+
+size_t imageRowBytes(const ImageDescription& d, size_t alignment) {
+  size_t raw = d.stride.x > 0 ? static_cast<size_t>(d.stride.x)
+                              : d.size.x * d.pixelSize();
+  return alignUp(raw, alignment);
+}
+
+size_t imageDepthBytes(const ImageDescription& d, size_t rowBytes) {
+  if (d.stride.y > 0) return static_cast<size_t>(d.stride.y);
+  return d.size.y * rowBytes;
+}
+
+size_t srcRowBytes(const ImageDescription& d) {
+  return d.stride.x > 0 ? static_cast<size_t>(d.stride.x)
+                        : d.size.x * d.pixelSize();
+}
+
+size_t srcDepthBytes(const ImageDescription& d, size_t rowBytes) {
+  if (d.stride.y > 0) return static_cast<size_t>(d.stride.y);
+  return d.size.y * rowBytes;
+}
+
+void copyImageData(void* dst, size_t dstRow, size_t dstDepth, const void* src,
+                   size_t srcRow, size_t srcDepth, const ImageDescription& d) {
+  size_t copyWidth = std::min(srcRow, dstRow);
+  if (srcRow == dstRow && srcDepth == dstDepth) {
+    memcpy(dst, src, d.size.z * dstDepth);
+  } else {
+    auto d8 = static_cast<uint8_t*>(dst);
+    auto s8 = static_cast<const uint8_t*>(src);
+    for (size_t z = 0; z < d.size.z; z++) {
+      for (size_t y = 0; y < d.size.y; y++) {
+        memcpy(d8 + z * dstDepth + y * dstRow, s8 + z * srcDepth + y * srcRow,
+               copyWidth);
+      }
+    }
+  }
+}
+}  // namespace
+
 ImageCPU::ImageCPU(const DeviceCPU& dev, const ImageDescription& descr_)
-    : descr(descr_) {}
+    : descr(descr_) {
+  constexpr size_t kAlignment = 64;
+  rowBytes = imageRowBytes(descr, kAlignment);
+  depthBytes = imageDepthBytes(descr, rowBytes);
+  size_t total = descr.size.z * depthBytes;
+  data = dev.allocateHostMemory(total);
+  memset(data, 0, total);
+}
 
 ImageCPU::ImageCPU(const DeviceCPU& dev, const ImageDescription& descr_,
                    BufferCPU& buffer)
-    : descr(descr_) {}
+    : descr(descr_), data(buffer.ptr) {
+  rowBytes = srcRowBytes(descr);
+  depthBytes = srcDepthBytes(descr, rowBytes);
+}
 
 ImageCPU::ImageCPU(const DeviceCPU& dev, const ImageDescription& descr_,
                    ImageCPU& image)
-    : descr(descr_) {}
+    : descr(descr_),
+      data(image.data),
+      rowBytes(image.rowBytes),
+      depthBytes(image.depthBytes) {}
 
-void ImageCPU::copy(const ghost::Stream& s, const ghost::Image& src) {}
+void ImageCPU::copy(const ghost::Stream& s, const ghost::Image& src) {
+  auto srcImg = static_cast<const ImageCPU*>(src.impl().get());
+  copyImageData(data, rowBytes, depthBytes, srcImg->data, srcImg->rowBytes,
+                srcImg->depthBytes, descr);
+}
 
 void ImageCPU::copy(const ghost::Stream& s, const ghost::Buffer& src,
-                    const ImageDescription& descr) {}
+                    const ImageDescription& srcDescr) {
+  auto srcBuf = static_cast<const BufferCPU*>(src.impl().get());
+  size_t sRow = srcRowBytes(srcDescr);
+  size_t sDepth = srcDepthBytes(srcDescr, sRow);
+  copyImageData(data, rowBytes, depthBytes, srcBuf->ptr, sRow, sDepth, descr);
+}
 
 void ImageCPU::copy(const ghost::Stream& s, const void* src,
-                    const ImageDescription& descr) {}
+                    const ImageDescription& srcDescr) {
+  size_t sRow = srcRowBytes(srcDescr);
+  size_t sDepth = srcDepthBytes(srcDescr, sRow);
+  copyImageData(data, rowBytes, depthBytes, src, sRow, sDepth, descr);
+}
 
 void ImageCPU::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                      const ImageDescription& descr) const {}
+                      const ImageDescription& dstDescr) const {
+  auto dstBuf = static_cast<BufferCPU*>(dst.impl().get());
+  size_t dRow = srcRowBytes(dstDescr);
+  size_t dDepth = srcDepthBytes(dstDescr, dRow);
+  copyImageData(dstBuf->ptr, dRow, dDepth, data, rowBytes, depthBytes, descr);
+}
 
 void ImageCPU::copyTo(const ghost::Stream& s, void* dst,
-                      const ImageDescription& descr) const {}
+                      const ImageDescription& dstDescr) const {
+  size_t dRow = srcRowBytes(dstDescr);
+  size_t dDepth = srcDepthBytes(dstDescr, dRow);
+  copyImageData(dst, dRow, dDepth, data, rowBytes, depthBytes, descr);
+}
 
 DeviceCPU::DeviceCPU(const SharedContext& share) : cores(getNumberOfCores()) {}
+
+DeviceCPU::DeviceCPU(const GpuInfo&) : cores(getNumberOfCores()) {}
 
 ghost::Library DeviceCPU::loadLibraryFromText(
     const std::string& text, const std::string& options) const {
@@ -300,11 +535,9 @@ Attribute DeviceCPU::getAttribute(DeviceAttributeId what) const {
     case kDeviceImplementation:
       return "CPU";
     case kDeviceName:
-      // TODO
-      return "";
+      return getCPUName();
     case kDeviceVendor:
-      // TODO
-      return "";
+      return getCPUVendor();
     case kDeviceDriverVersion:
       return "";
     case kDeviceCount:
@@ -314,8 +547,7 @@ Attribute DeviceCPU::getAttribute(DeviceAttributeId what) const {
     case kDeviceUnifiedMemory:
       return true;
     case kDeviceMemory:
-      // TODO
-      return 0;
+      return getSystemMemory();
     case kDeviceLocalMemory:
       return 0;
     case kDeviceMaxThreads:
@@ -371,10 +603,18 @@ Attribute DeviceCPU::getAttribute(DeviceAttributeId what) const {
 }  // namespace implementation
 
 DeviceCPU::DeviceCPU(const SharedContext& share)
-    : Device(std::make_shared<implementation::DeviceCPU>(share)) {}
+    : Device(std::make_shared<implementation::DeviceCPU>(share)) {
+  auto cpu = static_cast<implementation::DeviceCPU*>(impl().get());
+  setDefaultStream(std::make_shared<implementation::StreamCPU>(
+      std::make_shared<implementation::ThreadPoolDefault>(*cpu)));
+}
 
-DeviceCPU::DeviceCPU(const GpuInfo&)
-    : Device(std::make_shared<implementation::DeviceCPU>(SharedContext())) {}
+DeviceCPU::DeviceCPU(const GpuInfo& info)
+    : Device(std::make_shared<implementation::DeviceCPU>(info)) {
+  auto cpu = static_cast<implementation::DeviceCPU*>(impl().get());
+  setDefaultStream(std::make_shared<implementation::StreamCPU>(
+      std::make_shared<implementation::ThreadPoolDefault>(*cpu)));
+}
 
 std::vector<GpuInfo> DeviceCPU::enumerateDevices() {
   std::vector<GpuInfo> result;

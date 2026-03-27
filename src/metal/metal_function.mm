@@ -49,7 +49,12 @@ FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name) {
   NSError *error;
   function = [library
       newFunctionWithName:[NSString stringWithUTF8String:name.c_str()]];
-  assert(function.get().functionType == MTLFunctionTypeKernel);
+  if (!function.get()) {
+    throw std::runtime_error("Metal: function not found: " + name);
+  }
+  if (function.get().functionType != MTLFunctionTypeKernel) {
+    throw std::runtime_error("Metal: function is not a kernel: " + name);
+  }
   pipeline = [library.device newComputePipelineStateWithFunction:function.get()
                                                            error:&error];
 }
@@ -80,9 +85,18 @@ FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name,
       [library newFunctionWithName:[NSString stringWithUTF8String:name.c_str()]
                     constantValues:constantValues
                              error:&error];
-  assert(function.get().functionType == MTLFunctionTypeKernel);
+  if (!function.get()) {
+    std::string msg = "Metal: function not found: " + name;
+    if (error) {
+      msg +=
+          " (" + std::string([[error localizedDescription] UTF8String]) + ")";
+    }
+    throw std::runtime_error(msg);
+  }
+  if (function.get().functionType != MTLFunctionTypeKernel) {
+    throw std::runtime_error("Metal: function is not a kernel: " + name);
+  }
   pipeline = [library.device newComputePipelineStateWithFunction:function.get()
-
                                                            error:&error];
 }
 
@@ -90,9 +104,9 @@ void FunctionMetal::execute(const ghost::Stream &s,
                             const LaunchArgs &launchArgs,
                             const std::vector<Attribute> &args) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
-  id<MTLCommandBuffer> commandBuffer = nil;
-  commandBuffer = [stream_impl->queue.get() commandBuffer];
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
   id<MTLComputeCommandEncoder> computeEncoder = nil;
   if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, macCatalyst 13.0, *)) {
     computeEncoder = [commandBuffer
@@ -181,6 +195,7 @@ void FunctionMetal::execute(const ghost::Stream &s,
                  threadsPerThreadgroup:threadgroupSize];
 
   [computeEncoder endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
 Attribute FunctionMetal::getAttribute(FunctionAttributeId what) const {
@@ -219,7 +234,7 @@ LibraryMetal::LibraryMetal(const DeviceMetal &dev) : _dev(dev) {}
 
 void LibraryMetal::loadFromText(const std::string &source,
                                 const std::string &) {
-  NSError *err;
+  NSError *err = nil;
   MTLCompileOptions *compileOptions = [MTLCompileOptions new];
 #if !__has_feature(objc_arc)
   [compileOptions autorelease];
@@ -228,6 +243,13 @@ void LibraryMetal::loadFromText(const std::string &source,
       newLibraryWithSource:[NSString stringWithUTF8String:source.c_str()]
                    options:compileOptions
                      error:&err];
+  if (!library.get()) {
+    std::string msg = "Metal: failed to compile source";
+    if (err) {
+      msg += ": " + std::string([[err localizedDescription] UTF8String]);
+    }
+    throw std::runtime_error(msg);
+  }
 }
 
 void LibraryMetal::loadFromData(const void *data, size_t len,

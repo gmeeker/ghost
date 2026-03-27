@@ -22,7 +22,7 @@
 
 namespace ghost {
 
-/// @brief SHA-1 message digest for hashing data.
+/// @brief SHA-256 message digest for hashing data.
 ///
 /// Used internally by BinaryCache to generate content-addressed keys for
 /// compiled GPU binaries. Not copyable.
@@ -32,8 +32,8 @@ class Digest {
   void* data;
 
  public:
-  /// @brief SHA-1 digest length in bytes.
-  static constexpr size_t length = 20;
+  /// @brief SHA-256 digest length in bytes.
+  static constexpr size_t length = 32;
 
   /// @brief Construct a new digest, initializing the hash state.
   Digest();
@@ -51,7 +51,7 @@ class Digest {
   void get(uint8_t digest[length]);
 
   /// @brief Finalize the hash and return the digest as a hexadecimal string.
-  /// @return A 40-character hex string representing the SHA-1 digest.
+  /// @return A 64-character hex string representing the SHA-256 digest.
   std::string get();
 
   Digest& operator=(const Digest&) = delete;

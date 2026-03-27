@@ -37,10 +37,21 @@ class EventMetal : public Event {
 class StreamMetal : public Stream {
  public:
   objc::ptr<id<MTLCommandQueue>> queue;
+  objc::ptr<id<MTLCommandBuffer>> lastCommandBuffer;
+  objc::ptr<id<MTLEvent>> syncEvent;
+  uint64_t syncCounter = 0;
 
   StreamMetal(
       objc::ptr<id<MTLCommandQueue>> queue_ = objc::ptr<id<MTLCommandQueue>>());
   StreamMetal(id<MTLDevice> dev);
+
+  // Commit a command buffer, signal the sync event, and track it for sync().
+  void commitAndTrack(id<MTLCommandBuffer> cb);
+
+  // Encode a wait for all previously committed work on a new command buffer.
+  // Must be called before encoding any operations that read untracked resources
+  // written by prior command buffers.
+  void encodeWait(id<MTLCommandBuffer> cb);
 
   virtual void sync() override;
   virtual std::shared_ptr<Event> record() override;
@@ -142,6 +153,7 @@ class DeviceMetal : public Device {
   objc::ptr<id<MTLHeap>> heap;
 
   DeviceMetal(const SharedContext& share);
+  DeviceMetal(const GpuInfo& info);
   DeviceMetal(id<MTLDevice> device);
 
   virtual ghost::Library loadLibraryFromText(

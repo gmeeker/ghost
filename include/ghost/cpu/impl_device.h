@@ -147,6 +147,9 @@ class SubBufferCPU : public BufferCPU {
 class ImageCPU : public Image {
  public:
   ImageDescription descr;
+  void* data;
+  size_t rowBytes;
+  size_t depthBytes;
 
   ImageCPU(const DeviceCPU& dev, const ImageDescription& descr);
   ImageCPU(const DeviceCPU& dev, const ImageDescription& descr,
@@ -170,6 +173,7 @@ class DeviceCPU : public Device {
   size_t cores;
 
   DeviceCPU(const SharedContext& share);
+  DeviceCPU(const GpuInfo& info);
 
   virtual ghost::Library loadLibraryFromText(
       const std::string& text, const std::string& options = "") const override;
