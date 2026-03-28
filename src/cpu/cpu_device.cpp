@@ -227,7 +227,7 @@ ThreadPoolDefault::~ThreadPoolDefault() {
   {
     std::lock_guard<std::mutex> guard(mutex);
     for (auto i = threads.begin(); i != threads.end(); ++i) {
-      ThreadWork w = {nullptr, std::vector<Attribute>(), 0, 1, false};
+      ThreadWork w = {nullptr, std::vector<Attribute>(), 0, 1, true};
       work.push(w);
     }
   }
