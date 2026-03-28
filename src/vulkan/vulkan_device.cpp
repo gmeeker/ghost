@@ -14,6 +14,7 @@
 
 #if WITH_VULKAN
 
+#include <ghost/exception.h>
 #include <ghost/vulkan/device.h>
 #include <ghost/vulkan/exception.h>
 #include <ghost/vulkan/impl_device.h>
@@ -454,17 +455,17 @@ size_t SubBufferVulkan::baseOffset() const {
 
 void SubBufferVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
                            size_t bytes) {
-  BufferVulkan::copy(s, src, 0, _offset, bytes);
+  BufferVulkan::copy(s, src, 0, 0, bytes);
 }
 
 void SubBufferVulkan::copy(const ghost::Stream& s, const void* src,
                            size_t bytes) {
-  BufferVulkan::copy(s, src, _offset, bytes);
+  BufferVulkan::copy(s, src, 0, bytes);
 }
 
 void SubBufferVulkan::copyTo(const ghost::Stream& s, void* dst,
                              size_t bytes) const {
-  BufferVulkan::copyTo(s, dst, _offset, bytes);
+  BufferVulkan::copyTo(s, dst, 0, bytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -702,21 +703,31 @@ void ImageVulkan::copy(const ghost::Stream& s, const ghost::Image& src) {
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-  // Transition back to general layout
-  VkImageMemoryBarrier postBarrier = {};
-  postBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-  postBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  postBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-  postBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  postBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  postBarrier.image = image;
-  postBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  postBarrier.subresourceRange.levelCount = 1;
-  postBarrier.subresourceRange.layerCount = 1;
+  // Transition both images back to general layout
+  VkImageMemoryBarrier postBarriers[2] = {};
+  postBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  postBarriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  postBarriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+  postBarriers[0].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  postBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  postBarriers[0].image = image;
+  postBarriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  postBarriers[0].subresourceRange.levelCount = 1;
+  postBarriers[0].subresourceRange.layerCount = 1;
+
+  postBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  postBarriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  postBarriers[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+  postBarriers[1].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  postBarriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  postBarriers[1].image = srcImg->image;
+  postBarriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  postBarriers[1].subresourceRange.levelCount = 1;
+  postBarriers[1].subresourceRange.layerCount = 1;
 
   vkCmdPipelineBarrier(stream.commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
-                       nullptr, 1, &postBarrier);
+                       nullptr, 2, postBarriers);
 }
 
 void ImageVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
@@ -919,6 +930,25 @@ void ImageVulkan::copyTo(const ghost::Stream& s, void* dst,
   vkCmdCopyImageToBuffer(stream.commandBuffer, image,
                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1,
                          &region);
+
+  // Transition image back to general layout
+  barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+  barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+  vkCmdPipelineBarrier(stream.commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 1, &barrier);
+
+  // Ensure staging buffer write is visible to host
+  VkMemoryBarrier memBarrier = {};
+  memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+  memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  memBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+  vkCmdPipelineBarrier(stream.commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &memBarrier, 0,
+                       nullptr, 0, nullptr);
 
   StreamVulkan::DeferredRead dr;
   dr.stagingBuffer = staging;
@@ -1287,8 +1317,10 @@ ghost::Image DeviceVulkan::allocateImage(const ImageDescription& descr) const {
 
 ghost::Image DeviceVulkan::sharedImage(const ImageDescription& descr,
                                        ghost::Buffer& buffer) const {
-  auto* vkBuf = static_cast<BufferVulkan*>(buffer.impl().get());
-  return ghost::Image(std::make_shared<ImageVulkan>(*this, descr, *vkBuf));
+  // Vulkan doesn't support aliasing buffer memory to an image directly
+  // like Metal/OpenCL do. Writes to the buffer would not be visible
+  // through the image, so report this as unsupported.
+  throw ghost::unsupported_error();
 }
 
 ghost::Image DeviceVulkan::sharedImage(const ImageDescription& descr,

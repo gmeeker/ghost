@@ -15,7 +15,7 @@
 #include <ghost/image.h>
 
 namespace ghost {
-size_t ImageDescription::dataSize() const {
+static size_t elementSize(DataType type) {
   switch (type) {
     case DataType_UInt8:
     case DataType_Int8:
@@ -29,7 +29,18 @@ size_t ImageDescription::dataSize() const {
     case DataType_Double:
       return sizeof(double);
   }
+  return 0;
 }
 
-size_t ImageDescription::pixelSize() const { return dataSize() * channels; }
+size_t ImageDescription::pixelSize() const { return elementSize(type) * channels; }
+
+size_t ImageDescription::dataSize() const {
+  size_t rowBytes = stride.x > 0 ? (size_t)stride.x : size.x * pixelSize();
+  size_t height = size.y > 0 ? size.y : 1;
+  size_t depth = size.z > 0 ? size.z : 1;
+  if (stride.y > 0) {
+    return (size_t)stride.y * depth;
+  }
+  return rowBytes * height * depth;
+}
 }  // namespace ghost

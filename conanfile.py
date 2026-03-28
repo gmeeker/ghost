@@ -81,8 +81,8 @@ class GhostConan(ConanFile):
             if is_apple_os(self):
                 self.requires("moltenvk/1.2.2")
             else:
-                self.requires("vulkan-headers/1.3.250.0")
-                self.requires("vulkan-loader/1.3.243.0")
+                self.requires("vulkan-headers/1.4.313.0")
+                self.requires("vulkan-loader/1.4.313.0")
 
     def build_requirements(self):
         self.test_requires("gtest/[>=1.14.0 <2]")

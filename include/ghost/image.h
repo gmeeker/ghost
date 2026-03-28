@@ -126,6 +126,7 @@ class ImageDescription {
   ImageDescription(Size3 size_, PixelOrder order_, DataType type_,
                    Stride2 stride_, Access access_ = Access_ReadWrite)
       : size(size_),
+        channels(4),
         order(order_),
         type(type_),
         stride(stride_),
