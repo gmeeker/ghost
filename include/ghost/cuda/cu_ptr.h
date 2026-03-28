@@ -91,6 +91,8 @@ class ptr {
 
   ptr(ptr& v) : value(v.value), _owned(v._owned) { v._owned = false; }
 
+  ptr(ptr&& v) : value(v.value), _owned(v._owned) { v._owned = false; }
+
   ~ptr() { destroy(); }
 
   void destroy() {
@@ -127,6 +129,14 @@ class ptr {
   }
 
   ptr& operator=(ptr& v) {
+    destroy();
+    value = v.value;
+    _owned = v._owned;
+    v._owned = false;
+    return *this;
+  }
+
+  ptr& operator=(ptr&& v) {
     destroy();
     value = v.value;
     _owned = v._owned;

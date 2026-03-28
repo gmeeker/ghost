@@ -524,7 +524,7 @@ void ImageCUDA::copyTo(const ghost::Stream& s, void* dst,
     a.srcPitch = descr.stride.x;
     a.dstXInBytes = 0;
     a.dstY = 0;
-    a.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+    a.dstMemoryType = CU_MEMORYTYPE_HOST;
     a.dstHost = dst;
     a.dstDevice = (CUdeviceptr)0;
     a.dstArray = nullptr;
@@ -539,10 +539,11 @@ void ImageCUDA::copyTo(const ghost::Stream& s, void* dst,
 }
 
 DeviceCUDA::DeviceCUDA(const SharedContext& share) {
+  CUresult err = cuInit(0);
+  checkError(err);
   context =
       cu::ptr<CUcontext>(reinterpret_cast<CUcontext>(share.device), false);
   queue = cu::ptr<CUstream>(reinterpret_cast<CUstream>(share.queue), false);
-  CUresult err;
   if (!context) {
     device = (CUdevice)0;
 #if CUDA_VERSION >= 13000
@@ -572,6 +573,8 @@ DeviceCUDA::DeviceCUDA(const GpuInfo& info) : DeviceCUDA(info.index) {}
 
 DeviceCUDA::DeviceCUDA(int deviceOrdinal) {
   CUresult err;
+  err = cuInit(0);
+  checkError(err);
   err = cuDeviceGet(&device, deviceOrdinal);
   checkError(err);
 #if CUDA_VERSION >= 13000
@@ -722,7 +725,7 @@ Attribute DeviceCUDA::getAttribute(DeviceAttributeId what) const {
       int v;
       checkError(
           cuDeviceGetAttribute(&v, CU_DEVICE_ATTRIBUTE_INTEGRATED, device));
-      return v;
+      return v != 0;
     }
     case kDeviceMemory: {
       size_t v;

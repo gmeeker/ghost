@@ -57,7 +57,7 @@ FunctionCUDA::FunctionCUDA(const DeviceCUDA& dev, CUfunction k)
 void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                            const std::vector<Attribute>& args) {
   CUresult err;
-  size_t local_mem;
+  size_t local_mem = 0;
   std::vector<void*> params;
   std::list<ptr<CUtexObject>> textures;
 
@@ -246,7 +246,8 @@ void LibraryCUDA::loadFromText(const std::string& text,
   //          << "0";
   gpu_arch << "--gpu-architecture=sm_" << _dev.computeCapability.major
            << _dev.computeCapability.minor;
-  const char* opts[] = {gpu_arch.str().c_str()};
+  std::string gpu_arch_str = gpu_arch.str();
+  const char* opts[] = {gpu_arch_str.c_str()};
   nvrtcResult compileResult = nvrtcCompileProgram(prog, 1, opts);
   size_t logSize;
   checkNVRTCError(nvrtcGetProgramLogSize(prog, &logSize));
