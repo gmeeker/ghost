@@ -32,7 +32,9 @@ static size_t elementSize(DataType type) {
   return 0;
 }
 
-size_t ImageDescription::pixelSize() const { return elementSize(type) * channels; }
+size_t ImageDescription::pixelSize() const {
+  return elementSize(type) * channels;
+}
 
 size_t ImageDescription::dataSize() const {
   size_t rowBytes = stride.x > 0 ? (size_t)stride.x : size.x * pixelSize();
