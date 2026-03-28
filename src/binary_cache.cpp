@@ -20,6 +20,13 @@
 #include <time.h>
 
 #if WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <tchar.h>
 #include <windows.h>
 #else
 #include <dirent.h>
@@ -54,20 +61,19 @@ bool BinaryCache::purgeFiles(const std::string& dirname, int days) {
   time_t oldest = time(NULL);
   oldest -= 60 * 60 * 24 * days;  // Remove anything older than 'days'.
 #if WIN32
-  std::basic_string<TCHAR> name;
-  if (!getFileName(name, "", subfolder)) return false;
+#define T(STR) STR
   HANDLE hFind = INVALID_HANDLE_VALUE;
-  WIN32_FIND_DATA finddata;
-  hFind = FindFirstFile((name + _T("\\*")).c_str(), &finddata);
+  WIN32_FIND_DATAA finddata;
+  hFind = FindFirstFileA((dirname + T("\\*")).c_str(), &finddata);
   while (hFind != INVALID_HANDLE_VALUE) {
-    std::basic_string<TCHAR> filename = name + _T("\\") + finddata.cFileName;
-    DALStructStat s;
-    if (DALStat(filename.c_str(), &s) == 0) {
+    PathString filename = dirname + T("\\") + finddata.cFileName;
+    struct _stat s;
+    if (_tstat(filename.c_str(), &s) == 0) {
       if (s.st_ctime < oldest) {
-        DeleteFile(filename.c_str());
+        DeleteFileA(filename.c_str());
       }
     }
-    if (!FindNextFile(hFind, &finddata)) {
+    if (!FindNextFileA(hFind, &finddata)) {
       FindClose(hFind);
       hFind = INVALID_HANDLE_VALUE;
     }

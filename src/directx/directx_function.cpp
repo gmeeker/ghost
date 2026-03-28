@@ -187,13 +187,10 @@ void LibraryDirectX::loadFromCache(const void* data, size_t length,
   auto& cache = Device::binaryCache();
   if (!cache.isEnabled()) return;
 
-  Digest d;
-  Device::binaryCache().makeDigest(d, _dev, 0, data, length, options);
-
-  size_t binaryLen = 0;
-  if (cache.loadBinaries(d, nullptr, binaryLen)) {
-    _bytecode.resize(binaryLen);
-    cache.loadBinaries(d, _bytecode.data(), binaryLen);
+  std::vector<std::vector<unsigned char>> binaries;
+  std::vector<size_t> sizes;
+  if (cache.loadBinaries(binaries, sizes, _dev, data, length, options)) {
+    _bytecode = std::move(binaries[0]);
   }
 }
 
@@ -202,9 +199,10 @@ void LibraryDirectX::saveToCache(const void* data, size_t length,
   auto& cache = Device::binaryCache();
   if (!cache.isEnabled()) return;
 
-  Digest d;
-  Device::binaryCache().makeDigest(d, _dev, 0, data, length, options);
-  cache.saveBinaries(d, data, length);
+  std::vector<unsigned char*> binaries = {
+      const_cast<unsigned char*>(_bytecode.data())};
+  std::vector<size_t> sizes = {_bytecode.size()};
+  cache.saveBinaries(_dev, binaries, sizes, data, length, options);
 }
 
 void LibraryDirectX::loadFromData(const void* data, size_t len,

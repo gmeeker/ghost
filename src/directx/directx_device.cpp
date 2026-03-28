@@ -18,6 +18,7 @@
 #include <ghost/directx/exception.h>
 #include <ghost/directx/impl_device.h>
 #include <ghost/directx/impl_function.h>
+#include <ghost/exception.h>
 
 #include <algorithm>
 #include <cstring>
@@ -184,7 +185,16 @@ void StreamDirectX::begin() {
       D3D12_RANGE readRange = {dr.offset, dr.offset + dr.size};
       dr.staging->Map(0, &readRange, &mapped);
       if (mapped) {
-        memcpy(dr.dstPtr, static_cast<uint8_t*>(mapped) + dr.offset, dr.size);
+        auto* src = static_cast<uint8_t*>(mapped) + dr.offset;
+        if (dr.srcRowPitch != 0 && dr.srcRowPitch != dr.dstRowPitch) {
+          auto* dstBytes = static_cast<uint8_t*>(dr.dstPtr);
+          for (size_t row = 0; row < dr.rowCount; row++) {
+            memcpy(dstBytes + row * dr.dstRowPitch, src + row * dr.srcRowPitch,
+                   dr.rowBytes);
+          }
+        } else {
+          memcpy(dr.dstPtr, src, dr.size);
+        }
         D3D12_RANGE writeRange = {0, 0};
         dr.staging->Unmap(0, &writeRange);
       }
@@ -228,7 +238,16 @@ void StreamDirectX::sync() {
       D3D12_RANGE readRange = {dr.offset, dr.offset + dr.size};
       dr.staging->Map(0, &readRange, &mapped);
       if (mapped) {
-        memcpy(dr.dstPtr, static_cast<uint8_t*>(mapped) + dr.offset, dr.size);
+        auto* src = static_cast<uint8_t*>(mapped) + dr.offset;
+        if (dr.srcRowPitch != 0 && dr.srcRowPitch != dr.dstRowPitch) {
+          auto* dstBytes = static_cast<uint8_t*>(dr.dstPtr);
+          for (size_t row = 0; row < dr.rowCount; row++) {
+            memcpy(dstBytes + row * dr.dstRowPitch, src + row * dr.srcRowPitch,
+                   dr.rowBytes);
+          }
+        } else {
+          memcpy(dr.dstPtr, src, dr.size);
+        }
         D3D12_RANGE writeRange = {0, 0};
         dr.staging->Unmap(0, &writeRange);
       }
@@ -751,6 +770,10 @@ void ImageDirectX::copyTo(const ghost::Stream& s, void* dst,
   dr.dstPtr = dst;
   dr.offset = 0;
   dr.size = readbackSize;
+  dr.srcRowPitch = alignedPitch;
+  dr.dstRowPitch = rowPitch;
+  dr.rowCount = height * std::max(d.size.z, (size_t)1);
+  dr.rowBytes = d.size.x * d.pixelSize();
   stream.deferredReads.push_back(dr);
 }
 
@@ -901,8 +924,7 @@ ghost::Image DeviceDirectX::allocateImage(const ImageDescription& descr) const {
 
 ghost::Image DeviceDirectX::sharedImage(const ImageDescription& descr,
                                         ghost::Buffer& buffer) const {
-  auto* dxBuf = static_cast<BufferDirectX*>(buffer.impl().get());
-  return ghost::Image(std::make_shared<ImageDirectX>(*this, descr, *dxBuf));
+  throw ghost::unsupported_error();
 }
 
 ghost::Image DeviceDirectX::sharedImage(const ImageDescription& descr,

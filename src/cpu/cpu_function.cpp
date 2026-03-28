@@ -24,6 +24,12 @@
 #include <vector>
 
 #if WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #else
 #include <dlfcn.h>
@@ -89,8 +95,9 @@ void LibraryCPU::loadFromFile(const std::string& filename) {
 
 ghost::Function LibraryCPU::lookupFunction(const std::string& name) const {
 #if WIN32
-  auto f = std::make_shared<FunctionCPU>(reinterpret_cast<FunctionCPU::Type>(
-      _dev, GetProcAddress((HMODULE)_module, name.c_str())));
+  auto f = std::make_shared<FunctionCPU>(
+      _dev, reinterpret_cast<FunctionCPU::Type>(
+                GetProcAddress((HMODULE)_module, name.c_str())));
   return ghost::Function(f);
 #else
   auto f = std::make_shared<FunctionCPU>(

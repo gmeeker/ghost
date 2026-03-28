@@ -15,6 +15,9 @@
 #ifndef GHOST_DIRECTX_IMPL_FUNCTION_H
 #define GHOST_DIRECTX_IMPL_FUNCTION_H
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <d3d12.h>
 #include <ghost/implementation/impl_function.h>
 #include <wrl/client.h>

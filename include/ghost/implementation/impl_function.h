@@ -103,7 +103,7 @@ class Function {
   /// @brief Dispatch the kernel, converting variadic arguments to Attribute
   /// vector.
   template <typename... ARGS>
-  void operator()(const Stream& s, const LaunchArgs& launchArgs,
+  void operator()(const ghost::Stream& s, const LaunchArgs& launchArgs,
                   ARGS&&... tail) {
     std::vector<Attribute> args;
     addArgs(args, std::forward<ARGS>(tail)...);

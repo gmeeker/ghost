@@ -15,6 +15,9 @@
 #ifndef GHOST_DIRECTX_IMPL_DEVICE_H
 #define GHOST_DIRECTX_IMPL_DEVICE_H
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <ghost/device.h>
@@ -53,6 +56,12 @@ class StreamDirectX : public Stream {
     void* dstPtr;
     size_t offset;
     size_t size;
+    // For image readbacks with pitch alignment
+    size_t srcRowPitch =
+        0;  // aligned row pitch in staging buffer (0 = flat copy)
+    size_t dstRowPitch = 0;  // actual row pitch in destination
+    size_t rowCount = 0;     // number of rows to copy
+    size_t rowBytes = 0;     // bytes per row to copy
   };
 
   const DeviceDirectX& dev;

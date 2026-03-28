@@ -26,6 +26,12 @@
 
 #include <fstream>
 #elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #if defined(_M_IX86) || defined(_M_X64)
 #include <intrin.h>
