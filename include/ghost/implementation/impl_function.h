@@ -119,12 +119,21 @@ class Library {
  public:
   Library() {}
 
+  explicit Library(bool retainBinary) : _retainBinary(retainBinary) {}
+
   Library(const Library& rhs) = delete;
 
   virtual ~Library() {}
 
   Library& operator=(const Library& rhs) = delete;
 
+  /// @brief Whether this library retains compiled binary data for getBinary().
+  bool retainBinary() const { return _retainBinary; }
+
+ private:
+  bool _retainBinary = false;
+
+ public:
   virtual ghost::Function lookupFunction(const std::string& name) const = 0;
 
   /// @brief Create a specialized function variant with compile-time constant

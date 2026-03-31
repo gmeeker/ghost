@@ -54,7 +54,7 @@ class FunctionVulkan : public Function {
 
 class LibraryVulkan : public Library {
  public:
-  LibraryVulkan(const DeviceVulkan& dev);
+  LibraryVulkan(const DeviceVulkan& dev, bool retainBinary = false);
   ~LibraryVulkan();
 
   void loadFromData(const void* data, size_t len, const std::string& options);

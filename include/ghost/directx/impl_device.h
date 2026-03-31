@@ -201,10 +201,11 @@ class DeviceDirectX : public Device {
   ~DeviceDirectX();
 
   virtual ghost::Library loadLibraryFromText(
-      const std::string& text, const std::string& options = "") const override;
+      const std::string& text, const std::string& options = "",
+      bool retainBinary = false) const override;
   virtual ghost::Library loadLibraryFromData(
-      const void* data, size_t len,
-      const std::string& options = "") const override;
+      const void* data, size_t len, const std::string& options = "",
+      bool retainBinary = false) const override;
 
   virtual SharedContext shareContext() const override;
 

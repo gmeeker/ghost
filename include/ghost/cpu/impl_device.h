@@ -179,10 +179,11 @@ class DeviceCPU : public Device {
   DeviceCPU(const GpuInfo& info);
 
   virtual ghost::Library loadLibraryFromText(
-      const std::string& text, const std::string& options = "") const override;
+      const std::string& text, const std::string& options = "",
+      bool retainBinary = false) const override;
   virtual ghost::Library loadLibraryFromData(
-      const void* data, size_t len,
-      const std::string& options = "") const override;
+      const void* data, size_t len, const std::string& options = "",
+      bool retainBinary = false) const override;
   virtual ghost::Library loadLibraryFromFile(
       const std::string& filename) const override;
 

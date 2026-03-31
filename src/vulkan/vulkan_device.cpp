@@ -1279,16 +1279,18 @@ VkFormat DeviceVulkan::getImageFormat(const ImageDescription& descr) const {
   }
 }
 
-ghost::Library DeviceVulkan::loadLibraryFromText(
-    const std::string& text, const std::string& options) const {
+ghost::Library DeviceVulkan::loadLibraryFromText(const std::string& text,
+                                                 const std::string& options,
+                                                 bool retainBinary) const {
   // Vulkan requires pre-compiled SPIR-V; runtime GLSL compilation requires
   // shaderc or glslang which are not linked by default.
   throw ghost::unsupported_error();
 }
 
-ghost::Library DeviceVulkan::loadLibraryFromData(
-    const void* data, size_t len, const std::string& options) const {
-  auto lib = std::make_shared<LibraryVulkan>(*this);
+ghost::Library DeviceVulkan::loadLibraryFromData(const void* data, size_t len,
+                                                 const std::string& options,
+                                                 bool retainBinary) const {
+  auto lib = std::make_shared<LibraryVulkan>(*this, retainBinary);
   lib->loadFromData(data, len, options);
   return ghost::Library(lib);
 }

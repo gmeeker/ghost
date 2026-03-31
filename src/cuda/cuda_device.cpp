@@ -594,16 +594,18 @@ DeviceCUDA::DeviceCUDA(int deviceOrdinal) {
                                   device));
 }
 
-ghost::Library DeviceCUDA::loadLibraryFromText(
-    const std::string& text, const std::string& options) const {
-  auto ptr = std::make_shared<implementation::LibraryCUDA>(*this);
+ghost::Library DeviceCUDA::loadLibraryFromText(const std::string& text,
+                                               const std::string& options,
+                                               bool retainBinary) const {
+  auto ptr = std::make_shared<implementation::LibraryCUDA>(*this, retainBinary);
   ptr->loadFromText(text, options);
   return ghost::Library(ptr);
 }
 
-ghost::Library DeviceCUDA::loadLibraryFromData(
-    const void* data, size_t len, const std::string& options) const {
-  auto ptr = std::make_shared<implementation::LibraryCUDA>(*this);
+ghost::Library DeviceCUDA::loadLibraryFromData(const void* data, size_t len,
+                                               const std::string& options,
+                                               bool retainBinary) const {
+  auto ptr = std::make_shared<implementation::LibraryCUDA>(*this, retainBinary);
   ptr->loadFromData(data, len, options);
   return ghost::Library(ptr);
 }

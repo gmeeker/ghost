@@ -869,15 +869,17 @@ DeviceOpenCL::DeviceOpenCL(cl_platform_id platform, cl_device_id device) {
   set_of(_extensions, getString(CL_DEVICE_EXTENSIONS));
 }
 
-ghost::Library DeviceOpenCL::loadLibraryFromText(
-    const std::string& text, const std::string& options) const {
+ghost::Library DeviceOpenCL::loadLibraryFromText(const std::string& text,
+                                                 const std::string& options,
+                                                 bool retainBinary) const {
   auto ptr = std::make_shared<implementation::LibraryOpenCL>(*this);
   ptr->loadFromText(text, options);
   return ghost::Library(ptr);
 }
 
-ghost::Library DeviceOpenCL::loadLibraryFromData(
-    const void* data, size_t len, const std::string& options) const {
+ghost::Library DeviceOpenCL::loadLibraryFromData(const void* data, size_t len,
+                                                 const std::string& options,
+                                                 bool retainBinary) const {
   auto ptr = std::make_shared<implementation::LibraryOpenCL>(*this);
   ptr->loadFromData(data, len, options);
   return ghost::Library(ptr);

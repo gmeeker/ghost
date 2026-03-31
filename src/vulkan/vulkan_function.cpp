@@ -353,8 +353,8 @@ Attribute FunctionVulkan::getAttribute(FunctionAttributeId what) const {
 // LibraryVulkan
 // ---------------------------------------------------------------------------
 
-LibraryVulkan::LibraryVulkan(const DeviceVulkan& dev)
-    : _dev(dev), _module(VK_NULL_HANDLE) {}
+LibraryVulkan::LibraryVulkan(const DeviceVulkan& dev, bool retainBinary)
+    : Library(retainBinary), _dev(dev), _module(VK_NULL_HANDLE) {}
 
 LibraryVulkan::~LibraryVulkan() {
   if (_module != VK_NULL_HANDLE)
@@ -409,9 +409,10 @@ void LibraryVulkan::loadFromData(const void* data, size_t len,
 
   checkError(vkCreateShaderModule(_dev.device, &createInfo, nullptr, &_module));
 
-  // Store SPIR-V data for getBinary()
-  auto bytes = reinterpret_cast<const uint8_t*>(data);
-  _spirvData.assign(bytes, bytes + len);
+  if (retainBinary()) {
+    auto bytes = reinterpret_cast<const uint8_t*>(data);
+    _spirvData.assign(bytes, bytes + len);
+  }
 
   saveToCache(data, len, options);
 }

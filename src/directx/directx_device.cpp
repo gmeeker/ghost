@@ -885,15 +885,17 @@ DXGI_FORMAT DeviceDirectX::getImageFormat(const ImageDescription& descr) const {
   return ::ghost::implementation::getFormat(descr);
 }
 
-ghost::Library DeviceDirectX::loadLibraryFromText(
-    const std::string& text, const std::string& options) const {
+ghost::Library DeviceDirectX::loadLibraryFromText(const std::string& text,
+                                                  const std::string& options,
+                                                  bool retainBinary) const {
   // DirectX requires pre-compiled DXIL/CSO bytecode; runtime HLSL compilation
   // requires dxcompiler.dll which is not linked by default.
   throw ghost::unsupported_error();
 }
 
-ghost::Library DeviceDirectX::loadLibraryFromData(
-    const void* data, size_t len, const std::string& options) const {
+ghost::Library DeviceDirectX::loadLibraryFromData(const void* data, size_t len,
+                                                  const std::string& options,
+                                                  bool retainBinary) const {
   auto lib = std::make_shared<LibraryDirectX>(*this);
   lib->loadFromData(data, len, options);
   return ghost::Library(lib);

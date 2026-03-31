@@ -42,7 +42,7 @@ class LibraryCUDA : public Library {
  public:
   cu::ptr<CUmodule> program;
 
-  LibraryCUDA(const DeviceCUDA& dev);
+  LibraryCUDA(const DeviceCUDA& dev, bool retainBinary = false);
 
   void loadFromText(const std::string& text, const std::string& options);
   void loadFromData(const void* data, size_t len, const std::string& options);

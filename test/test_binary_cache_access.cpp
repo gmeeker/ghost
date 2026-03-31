@@ -13,7 +13,7 @@ TEST_P(BinaryCacheAccessTest, GetBinaryAfterCompile) {
   const char* src = multConstSource();
   if (!src) GTEST_SKIP() << "No kernel source for " << BackendName(backend());
 
-  auto lib = device().loadLibraryFromText(src);
+  auto lib = device().loadLibraryFromText(src, "", true);
   auto binary = lib.getBinary();
 
   // Backends that support getBinary should return non-empty data.
@@ -28,7 +28,7 @@ TEST_P(BinaryCacheAccessTest, ReloadFromBinary) {
   if (!src) GTEST_SKIP() << "No kernel source for " << BackendName(backend());
 
   // Compile from text
-  auto lib1 = device().loadLibraryFromText(src);
+  auto lib1 = device().loadLibraryFromText(src, "", true);
   auto binary = lib1.getBinary();
   if (binary.empty()) {
     GTEST_SKIP() << "getBinary() not supported for " << BackendName(backend());

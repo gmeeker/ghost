@@ -227,7 +227,8 @@ Attribute FunctionCUDA::getAttribute(FunctionAttributeId what) const {
   }
 }
 
-LibraryCUDA::LibraryCUDA(const DeviceCUDA& dev) : program(0), _dev(dev) {}
+LibraryCUDA::LibraryCUDA(const DeviceCUDA& dev, bool retainBinary)
+    : Library(retainBinary), program(0), _dev(dev) {}
 
 void LibraryCUDA::loadFromText(const std::string& text,
                                const std::string& options) {
@@ -271,8 +272,9 @@ void LibraryCUDA::loadFromText(const std::string& text,
   // Load resulting cuBin into module
   loadFromBinary(&cuOut[0]);
 
-  // Store binary data for getBinary()
-  _binaryData.assign(cuOut.begin(), cuOut.end());
+  if (retainBinary()) {
+    _binaryData.assign(cuOut.begin(), cuOut.end());
+  }
 
   try {
     saveToCache(&cuOut[0], cuOut.size(), text.c_str(), text.size(), options);

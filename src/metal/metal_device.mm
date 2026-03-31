@@ -712,18 +712,20 @@ DeviceMetal::DeviceMetal(id<MTLDevice> device) {
   checkExists(queue);
 }
 
-ghost::Library
-DeviceMetal::loadLibraryFromText(const std::string &text,
-                                 const std::string &options) const {
-  auto ptr = std::make_shared<implementation::LibraryMetal>(*this);
+ghost::Library DeviceMetal::loadLibraryFromText(const std::string &text,
+                                                const std::string &options,
+                                                bool retainBinary) const {
+  auto ptr =
+      std::make_shared<implementation::LibraryMetal>(*this, retainBinary);
   ptr->loadFromText(text, options);
   return ghost::Library(ptr);
 }
 
-ghost::Library
-DeviceMetal::loadLibraryFromData(const void *data, size_t len,
-                                 const std::string &options) const {
-  auto ptr = std::make_shared<implementation::LibraryMetal>(*this);
+ghost::Library DeviceMetal::loadLibraryFromData(const void *data, size_t len,
+                                                const std::string &options,
+                                                bool retainBinary) const {
+  auto ptr =
+      std::make_shared<implementation::LibraryMetal>(*this, retainBinary);
   ptr->loadFromData(data, len, options);
   return ghost::Library(ptr);
 }

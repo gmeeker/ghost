@@ -31,6 +31,13 @@ class FunctionMetal : public Function {
   FunctionMetal(id<MTLLibrary> library, const std::string& name);
   FunctionMetal(id<MTLLibrary> library, const std::string& name,
                 const std::vector<Attribute>& args);
+#if defined(MAC_OS_VERSION_11_0)
+  FunctionMetal(id<MTLLibrary> library, const std::string& name,
+                id<MTLBinaryArchive> archive, bool& dirty);
+  FunctionMetal(id<MTLLibrary> library, const std::string& name,
+                const std::vector<Attribute>& args,
+                id<MTLBinaryArchive> archive, bool& dirty);
+#endif
 
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
@@ -42,7 +49,7 @@ class LibraryMetal : public Library {
  public:
   objc::ptr<id<MTLLibrary>> library;
 
-  LibraryMetal(const DeviceMetal& dev);
+  LibraryMetal(const DeviceMetal& dev, bool retainBinary = false);
 
   void loadFromText(const std::string& text, const std::string& options);
   void loadFromData(const void* data, size_t len, const std::string& options);
@@ -56,6 +63,14 @@ class LibraryMetal : public Library {
  private:
   const DeviceMetal& _dev;
   std::vector<uint8_t> _binaryData;
+#if defined(MAC_OS_VERSION_11_0)
+  objc::ptr<id<MTLBinaryArchive>> _archive;
+  std::string _archivePath;
+  mutable bool _archiveDirty = false;
+
+  void initArchive(const void* data, size_t len, const std::string& options);
+  void saveArchive() const;
+#endif
 };
 }  // namespace implementation
 }  // namespace ghost
