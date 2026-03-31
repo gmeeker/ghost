@@ -15,9 +15,12 @@
 #ifndef GHOST_CPU_DEVICE_H
 #define GHOST_CPU_DEVICE_H
 
+#include <ghost/cpu/impl_function.h>
 #include <ghost/device.h>
 #include <ghost/gpu_info.h>
 
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace ghost {
@@ -27,6 +30,19 @@ class DeviceCPU : public Device {
   DeviceCPU(const GpuInfo& info);
 
   static std::vector<GpuInfo> enumerateDevices();
+
+  /// @brief Create a library from inline C++ function pointers.
+  ///
+  /// This allows registering native C++ functions as CPU kernels without
+  /// building a separate shared library. Each function must match the
+  /// FunctionCPU::Type signature:
+  ///   void (*)(size_t i, size_t n, const std::vector<Attribute>& args)
+  /// @param functions Vector of (name, function_pointer) pairs.
+  /// @return The Library containing the registered functions.
+  Library loadLibraryFromFunctions(
+      const std::vector<
+          std::pair<std::string, implementation::FunctionCPU::Type>>&
+          functions);
 };
 }  // namespace ghost
 

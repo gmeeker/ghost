@@ -25,6 +25,8 @@ ghost::Function Library::specializeFunction(
     const std::string& name, const std::vector<Attribute>& args) const {
   throw ghost::unsupported_error();
 }
+
+std::vector<uint8_t> Library::getBinary() const { return {}; }
 }  // namespace implementation
 
 Function::Function(std::shared_ptr<implementation::Function> impl)
@@ -44,4 +46,6 @@ Library::Library(std::shared_ptr<implementation::Library> impl) : _impl(impl) {}
 Function Library::lookupFunction(const std::string& name) const {
   return _impl->lookupFunction(name);
 }
+
+std::vector<uint8_t> Library::getBinary() const { return _impl->getBinary(); }
 }  // namespace ghost

@@ -264,17 +264,48 @@ void BufferMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
   auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
   size_t effectiveSrcOff = src_impl->baseOffset() + srcOffset;
   size_t effectiveDstOff = baseOffset() + dstOffset;
-  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
-  commandBuffer.label = @"Ghost";
-  stream_impl->encodeWait(commandBuffer);
-  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
-  [blit copyFromBuffer:src_impl->mem.get()
-           sourceOffset:effectiveSrcOff
-               toBuffer:mem.get()
-      destinationOffset:effectiveDstOff
-                   size:bytes];
-  [blit endEncoding];
-  stream_impl->commitAndTrack(commandBuffer);
+
+  // Metal's copyFromBuffer has undefined behavior when source and destination
+  // regions overlap within the same buffer. Use a staging buffer in that case.
+  bool sameBuffer = (src_impl->mem.get() == mem.get());
+  bool overlaps = sameBuffer && (effectiveSrcOff < effectiveDstOff + bytes) &&
+                  (effectiveDstOff < effectiveSrcOff + bytes);
+
+  if (overlaps) {
+    id<MTLDevice> device = mem.get().device;
+    id<MTLBuffer> staging =
+        [device newBufferWithLength:bytes options:mem.get().resourceOptions];
+    id<MTLCommandBuffer> commandBuffer =
+        [stream_impl->queue.get() commandBuffer];
+    commandBuffer.label = @"Ghost";
+    stream_impl->encodeWait(commandBuffer);
+    id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+    [blit copyFromBuffer:src_impl->mem.get()
+             sourceOffset:effectiveSrcOff
+                 toBuffer:staging
+        destinationOffset:0
+                     size:bytes];
+    [blit copyFromBuffer:staging
+             sourceOffset:0
+                 toBuffer:mem.get()
+        destinationOffset:effectiveDstOff
+                     size:bytes];
+    [blit endEncoding];
+    stream_impl->commitAndTrack(commandBuffer);
+  } else {
+    id<MTLCommandBuffer> commandBuffer =
+        [stream_impl->queue.get() commandBuffer];
+    commandBuffer.label = @"Ghost";
+    stream_impl->encodeWait(commandBuffer);
+    id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+    [blit copyFromBuffer:src_impl->mem.get()
+             sourceOffset:effectiveSrcOff
+                 toBuffer:mem.get()
+        destinationOffset:effectiveDstOff
+                     size:bytes];
+    [blit endEncoding];
+    stream_impl->commitAndTrack(commandBuffer);
+  }
 }
 
 void BufferMetal::copy(const ghost::Stream &s, const void *src,

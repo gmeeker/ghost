@@ -138,6 +138,14 @@ class Library {
   /// @throws ghost::unsupported_error if not supported by the backend.
   virtual ghost::Function specializeFunction(
       const std::string& name, const std::vector<Attribute>& args) const;
+
+  /// @brief Retrieve the compiled binary data from this library.
+  ///
+  /// Returns the backend-specific compiled binary (e.g., cubin for CUDA,
+  /// metallib for Metal, device binary for OpenCL, SPIR-V for Vulkan,
+  /// DXIL for DirectX). Returns empty vector if unsupported.
+  /// @return A vector of bytes containing the compiled binary.
+  virtual std::vector<uint8_t> getBinary() const;
 };
 }  // namespace implementation
 }  // namespace ghost

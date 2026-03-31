@@ -629,6 +629,17 @@ DeviceCPU::DeviceCPU(const GpuInfo& info)
       std::make_shared<implementation::ThreadPoolDefault>(*cpu)));
 }
 
+Library DeviceCPU::loadLibraryFromFunctions(
+    const std::vector<
+        std::pair<std::string, implementation::FunctionCPU::Type>>& functions) {
+  auto cpu = static_cast<implementation::DeviceCPU*>(impl().get());
+  auto ptr = std::make_shared<implementation::InlineLibraryCPU>(*cpu);
+  for (const auto& f : functions) {
+    ptr->addFunction(f.first, f.second);
+  }
+  return ghost::Library(ptr);
+}
+
 std::vector<GpuInfo> DeviceCPU::enumerateDevices() {
   std::vector<GpuInfo> result;
   GpuInfo info;

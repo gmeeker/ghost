@@ -105,5 +105,21 @@ ghost::Function LibraryCPU::lookupFunction(const std::string& name) const {
   return ghost::Function(f);
 #endif
 }
+
+InlineLibraryCPU::InlineLibraryCPU(const DeviceCPU& dev) : _dev(dev) {}
+
+void InlineLibraryCPU::addFunction(const std::string& name,
+                                   FunctionCPU::Type fn) {
+  _functions[name] = fn;
+}
+
+ghost::Function InlineLibraryCPU::lookupFunction(
+    const std::string& name) const {
+  auto it = _functions.find(name);
+  if (it == _functions.end()) {
+    throw std::runtime_error("Function not found: " + name);
+  }
+  return ghost::Function(std::make_shared<FunctionCPU>(_dev, it->second));
+}
 }  // namespace implementation
 }  // namespace ghost

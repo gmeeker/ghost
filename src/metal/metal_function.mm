@@ -264,6 +264,9 @@ void LibraryMetal::loadFromData(const void *data, size_t len,
 #if !__has_feature(objc_arc)
     dispatch_release(d);
 #endif
+    // Store binary data for getBinary()
+    auto bytes = reinterpret_cast<const uint8_t *>(data);
+    _binaryData.assign(bytes, bytes + len);
   }
 }
 
@@ -278,6 +281,7 @@ LibraryMetal::specializeFunction(const std::string &name,
   auto f = std::make_shared<FunctionMetal>(library.get(), name, args);
   return ghost::Function(f);
 }
+std::vector<uint8_t> LibraryMetal::getBinary() const { return _binaryData; }
 } // namespace implementation
 } // namespace ghost
 #endif

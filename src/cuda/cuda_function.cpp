@@ -271,6 +271,9 @@ void LibraryCUDA::loadFromText(const std::string& text,
   // Load resulting cuBin into module
   loadFromBinary(&cuOut[0]);
 
+  // Store binary data for getBinary()
+  _binaryData.assign(cuOut.begin(), cuOut.end());
+
   try {
     saveToCache(&cuOut[0], cuOut.size(), text.c_str(), text.size(), options);
   } catch (...) {
@@ -386,6 +389,8 @@ ghost::Function LibraryCUDA::lookupFunction(const std::string& name) const {
   auto f = std::make_shared<FunctionCUDA>(_dev, kernel);
   return ghost::Function(f);
 }
+
+std::vector<uint8_t> LibraryCUDA::getBinary() const { return _binaryData; }
 }  // namespace implementation
 }  // namespace ghost
 #endif

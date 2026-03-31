@@ -86,6 +86,7 @@ class GhostConan(ConanFile):
 
     def build_requirements(self):
         self.test_requires("gtest/[>=1.14.0 <2]")
+        self.tool_requires("spirv-tools/[>=1.4.313.0 <2]")
 
     def generate(self):
         tc = CMakeToolchain(self)

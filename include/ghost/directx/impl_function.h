@@ -57,6 +57,7 @@ class LibraryDirectX : public Library {
   void loadFromData(const void* data, size_t len, const std::string& options);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
+  virtual std::vector<uint8_t> getBinary() const override;
 
  private:
   void loadFromCache(const void* data, size_t length,

@@ -53,6 +53,7 @@ class LibraryOpenCL : public Library {
                         const std::string& options);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
+  virtual std::vector<uint8_t> getBinary() const override;
 
  private:
   void checkBuildLog(cl_int err0);

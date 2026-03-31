@@ -1,0 +1,51 @@
+; SPIR-V assembly for OpenCL kernel: mult_const_f
+; Equivalent to: out[tid] = A[tid] * scale
+; Assembled via: spirv-as --target-env opencl2.0
+;
+; Uses OpenCL execution model and kernel calling convention.
+; Arguments are passed as kernel parameters (CrossWorkgroup pointers + scalar).
+
+               OpCapability Addresses
+               OpCapability Kernel
+               OpCapability Int64
+               OpMemoryModel Physical64 OpenCL
+               OpEntryPoint Kernel %main "mult_const_f" %gl_GlobalInvocationID
+               OpDecorate %gl_GlobalInvocationID BuiltIn GlobalInvocationId
+               OpDecorate %gl_GlobalInvocationID Constant
+
+       %void = OpTypeVoid
+      %float = OpTypeFloat 32
+       %uint = OpTypeInt 32 0
+      %ulong = OpTypeInt 64 0
+    %v3ulong = OpTypeVector %ulong 3
+
+%ptr_input_v3ulong = OpTypePointer Input %v3ulong
+%gl_GlobalInvocationID = OpVariable %ptr_input_v3ulong Input
+
+%ptr_cwg_float = OpTypePointer CrossWorkgroup %float
+
+   %void_fn = OpTypeFunction %void %ptr_cwg_float %ptr_cwg_float %float
+
+       %main = OpFunction %void None %void_fn
+     %out_p = OpFunctionParameter %ptr_cwg_float
+       %a_p = OpFunctionParameter %ptr_cwg_float
+      %scale = OpFunctionParameter %float
+      %entry = OpLabel
+
+               ; tid = gl_GlobalInvocationID.x
+        %gid = OpLoad %v3ulong %gl_GlobalInvocationID
+        %tid = OpCompositeExtract %ulong %gid 0
+
+               ; a_val = A[tid]
+      %a_ptr = OpInBoundsPtrAccessChain %ptr_cwg_float %a_p %tid
+      %a_val = OpLoad %float %a_ptr
+
+               ; result = a_val * scale
+     %result = OpFMul %float %a_val %scale
+
+               ; out[tid] = result
+    %out_ptr = OpInBoundsPtrAccessChain %ptr_cwg_float %out_p %tid
+               OpStore %out_ptr %result
+
+               OpReturn
+               OpFunctionEnd

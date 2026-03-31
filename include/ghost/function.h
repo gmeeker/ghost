@@ -249,6 +249,14 @@ class Library {
     return _impl->specializeFunction(name, args);
   }
 
+  /// @brief Retrieve the compiled binary data from this library.
+  ///
+  /// Returns the backend-specific compiled binary (e.g., cubin for CUDA,
+  /// metallib for Metal, device binary for OpenCL, SPIR-V for Vulkan,
+  /// DXIL for DirectX). Returns empty vector if unsupported.
+  /// @return A vector of bytes containing the compiled binary.
+  std::vector<uint8_t> getBinary() const;
+
  protected:
   /// @brief Get the backend implementation (const).
   std::shared_ptr<implementation::Library> impl() const { return _impl; }

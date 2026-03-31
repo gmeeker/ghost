@@ -275,6 +275,8 @@ ghost::Function LibraryDirectX::lookupFunction(const std::string& name) const {
       std::make_shared<FunctionDirectX>(_dev, pso, rootSig, numParams));
 }
 
+std::vector<uint8_t> LibraryDirectX::getBinary() const { return _bytecode; }
+
 }  // namespace implementation
 }  // namespace ghost
 

@@ -17,6 +17,9 @@
 
 #include <ghost/implementation/impl_function.h>
 
+#include <stdexcept>
+#include <unordered_map>
+
 namespace ghost {
 namespace implementation {
 class DeviceCPU;
@@ -50,6 +53,19 @@ class LibraryCPU : public Library {
  private:
   const DeviceCPU& _dev;
   void* _module;
+};
+
+class InlineLibraryCPU : public Library {
+ public:
+  InlineLibraryCPU(const DeviceCPU& dev);
+
+  void addFunction(const std::string& name, FunctionCPU::Type fn);
+  virtual ghost::Function lookupFunction(
+      const std::string& name) const override;
+
+ private:
+  const DeviceCPU& _dev;
+  std::unordered_map<std::string, FunctionCPU::Type> _functions;
 };
 }  // namespace implementation
 }  // namespace ghost

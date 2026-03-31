@@ -236,33 +236,52 @@ void LibraryOpenCL::loadFromText(const std::string& text,
   }
 }
 
+// SPIR-V magic number (first 4 bytes of any SPIR-V module).
+static const uint32_t kSpirvMagic = 0x07230203;
+
+static bool isSpirvData(const void* data, size_t len) {
+  if (len < 4) return false;
+  uint32_t magic;
+  memcpy(&magic, data, sizeof(magic));
+  return magic == kSpirvMagic;
+}
+
 void LibraryOpenCL::loadFromData(const void* data, size_t len,
                                  const std::string& options) {
-#if !defined(CL_VERSION_3_0)
-  (void)data;
-  (void)len;
-  (void)options;
-  checkError(CL_COMPILER_NOT_AVAILABLE);
-#else
-  opencl::ptr<cl_context> context = _dev.context;
-  if (!_dev.checkExtension("cl_khr_spir"))
-    checkError(CL_COMPILER_NOT_AVAILABLE);
-  cl_int err;
   try {
     loadFromCache(data, len, options);
   } catch (...) {
   }
   if (program.get() != nullptr) return;
-  program =
-      opencl::ptr<cl_program>(clCreateProgramWithIL(context, data, len, &err));
-  checkError(err);
-  err = clBuildProgram(program, 0, nullptr, options.c_str(), nullptr, nullptr);
-  checkBuildLog(err);
-  try {
-    saveToCache(data, len, options);
-  } catch (...) {
-  }
+
+  if (isSpirvData(data, len)) {
+    // SPIR-V / SPIR-IL — use clCreateProgramWithIL (requires CL 2.1+).
+#if defined(CL_VERSION_2_0)
+    if (_dev.checkExtension("cl_khr_spir")) {
+      cl_int err;
+      program = opencl::ptr<cl_program>(
+          clCreateProgramWithIL(_dev.context, data, len, &err));
+      checkError(err);
+      err = clBuildProgram(program, 0, nullptr, options.c_str(), nullptr,
+                           nullptr);
+      checkBuildLog(err);
+      try {
+        saveToCache(data, len, options);
+      } catch (...) {
+      }
+      return;
+    }
 #endif
+    checkError(CL_COMPILER_NOT_AVAILABLE);
+  } else {
+    // Device-specific binary — use clCreateProgramWithBinary.
+    auto bytes = reinterpret_cast<const unsigned char*>(data);
+    loadFromBinaries(&len, &bytes, options);
+    try {
+      saveToCache(data, len, options);
+    } catch (...) {
+    }
+  }
 }
 
 void LibraryOpenCL::loadFromBinaries(const size_t* lengths,
@@ -330,6 +349,34 @@ ghost::Function LibraryOpenCL::lookupFunction(const std::string& name) const {
   checkError(err);
   auto f = std::make_shared<FunctionOpenCL>(_dev, kernel);
   return ghost::Function(f);
+}
+
+std::vector<uint8_t> LibraryOpenCL::getBinary() const {
+  if (!program.get()) return {};
+
+  cl_uint numDevices = 0;
+  cl_int err = clGetProgramInfo(program, CL_PROGRAM_NUM_DEVICES,
+                                sizeof(numDevices), &numDevices, nullptr);
+  if (err != CL_SUCCESS || numDevices == 0) return {};
+
+  std::vector<size_t> sizes(numDevices);
+  err = clGetProgramInfo(program, CL_PROGRAM_BINARY_SIZES,
+                         sizeof(size_t) * numDevices, sizes.data(), nullptr);
+  if (err != CL_SUCCESS || sizes[0] == 0) return {};
+
+  // Get binary for the first device
+  std::vector<std::vector<unsigned char>> binaries(numDevices);
+  std::vector<unsigned char*> ptrs(numDevices);
+  for (cl_uint i = 0; i < numDevices; i++) {
+    binaries[i].resize(sizes[i]);
+    ptrs[i] = binaries[i].data();
+  }
+  err = clGetProgramInfo(program, CL_PROGRAM_BINARIES,
+                         sizeof(unsigned char*) * numDevices, ptrs.data(),
+                         nullptr);
+  if (err != CL_SUCCESS) return {};
+
+  return std::vector<uint8_t>(binaries[0].begin(), binaries[0].end());
 }
 }  // namespace implementation
 }  // namespace ghost

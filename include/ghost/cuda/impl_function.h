@@ -49,8 +49,10 @@ class LibraryCUDA : public Library {
   void loadFromBinary(void* binary);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
+  virtual std::vector<uint8_t> getBinary() const override;
 
  private:
+  std::vector<uint8_t> _binaryData;
   void loadFromCache(const void* data, size_t length,
                      const std::string& options);
   void saveToCache(void* binary, size_t binarySize, const void* data,

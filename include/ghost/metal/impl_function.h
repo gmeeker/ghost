@@ -51,9 +51,11 @@ class LibraryMetal : public Library {
   virtual ghost::Function specializeFunction(
       const std::string& name,
       const std::vector<Attribute>& args) const override;
+  virtual std::vector<uint8_t> getBinary() const override;
 
  private:
   const DeviceMetal& _dev;
+  std::vector<uint8_t> _binaryData;
 };
 }  // namespace implementation
 }  // namespace ghost

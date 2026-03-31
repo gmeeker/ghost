@@ -25,6 +25,7 @@
 #endif
 
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -81,7 +82,25 @@ inline std::vector<Backend> availableBackends() {
 // Backends that support loadLibraryFromText (GPU backends with runtime
 // compilation).  CPU only supports loadLibraryFromFile (shared libraries).
 // Vulkan/DirectX use binary shaders and are excluded for now.
+// CUDA requires NVRTC for runtime text compilation.
 inline std::vector<Backend> kernelBackends() {
+  std::vector<Backend> backends;
+#if WITH_METAL
+  backends.push_back(Backend::Metal);
+#endif
+#if WITH_OPENCL
+  backends.push_back(Backend::OpenCL);
+#endif
+#if WITH_CUDA_NVRTC
+  backends.push_back(Backend::CUDA);
+#endif
+  return backends;
+}
+
+// Backends that support loadLibraryFromData (pre-compiled binary loading).
+// CUDA loads PTX/FATBIN, Metal loads metallib, OpenCL loads SPIR-IL,
+// Vulkan loads SPIR-V, DirectX loads DXIL/CSO.
+inline std::vector<Backend> binaryBackends() {
   std::vector<Backend> backends;
 #if WITH_METAL
   backends.push_back(Backend::Metal);
@@ -91,6 +110,12 @@ inline std::vector<Backend> kernelBackends() {
 #endif
 #if WITH_CUDA
   backends.push_back(Backend::CUDA);
+#endif
+#if WITH_VULKAN
+  backends.push_back(Backend::Vulkan);
+#endif
+#if WITH_DIRECTX
+  backends.push_back(Backend::DirectX);
 #endif
   return backends;
 }
@@ -529,6 +554,20 @@ class GhostKernelTest : public GhostTest {
   }
 };
 
+// ---------------------------------------------------------------------------
+// File I/O helper for loading pre-compiled shader binaries in tests
+// ---------------------------------------------------------------------------
+
+inline std::vector<uint8_t> readBinaryFile(const std::string& path) {
+  std::ifstream f(path, std::ios::binary | std::ios::ate);
+  if (!f.is_open()) return {};
+  auto size = f.tellg();
+  f.seekg(0);
+  std::vector<uint8_t> data(size);
+  f.read(reinterpret_cast<char*>(data.data()), size);
+  return data;
+}
+
 }  // namespace test
 }  // namespace ghost
 
@@ -541,6 +580,11 @@ class GhostKernelTest : public GhostTest {
 #define GHOST_INSTANTIATE_KERNEL_TESTS(suite)                                \
   INSTANTIATE_TEST_SUITE_P(KernelBackends, suite,                            \
                            testing::ValuesIn(ghost::test::kernelBackends()), \
+                           ghost::test::BackendNameGenerator())
+
+#define GHOST_INSTANTIATE_BINARY_TESTS(suite)                                \
+  INSTANTIATE_TEST_SUITE_P(BinaryBackends, suite,                            \
+                           testing::ValuesIn(ghost::test::binaryBackends()), \
                            ghost::test::BackendNameGenerator())
 
 #endif  // GHOST_TEST_H

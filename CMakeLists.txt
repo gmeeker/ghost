@@ -206,11 +206,16 @@ if(NOT GTest_FOUND)
   FetchContent_MakeAvailable(googletest)
   set(GTest_FOUND TRUE)
 endif()
+option(WITH_SPIRV_ASM "Use spirv-as for SPIR-V generation (simpler build)" ON)
+
 if(GTest_FOUND)
   add_executable(TestGhostGTest
     test/test_attribute.cpp
+    test/test_binary_cache_access.cpp
+    test/test_binary_load.cpp
     test/test_buffer.cpp
     test/test_command_buffer.cpp
+    test/test_cpu_kernel.cpp
     test/test_device.cpp
     test/test_image.cpp
     test/test_kernel.cpp
@@ -219,6 +224,221 @@ if(GTest_FOUND)
   target_link_libraries(TestGhostGTest ${PROJECT_NAME} GTest::gtest_main)
   include(GoogleTest)
   gtest_discover_tests(TestGhostGTest)
+
+  # Generated headers go here
+  set(GHOST_TEST_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/test/generated)
+  file(MAKE_DIRECTORY ${GHOST_TEST_GENERATED_DIR})
+  target_include_directories(TestGhostGTest PRIVATE ${GHOST_TEST_GENERATED_DIR})
+
+  # -----------------------------------------------------------------------
+  # CPU test kernel shared library
+  # -----------------------------------------------------------------------
+  add_library(ghost_test_kernels SHARED test/kernels/cpu_kernels.cpp)
+  target_include_directories(ghost_test_kernels PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(ghost_test_kernels PRIVATE ${PROJECT_NAME})
+  set_target_properties(ghost_test_kernels PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test/shaders
+      RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test/shaders)
+  add_dependencies(TestGhostGTest ghost_test_kernels)
+  target_compile_definitions(TestGhostGTest PRIVATE
+      GHOST_TEST_CPU_LIBRARY="$<TARGET_FILE:ghost_test_kernels>")
+
+  # -----------------------------------------------------------------------
+  # CUDA PTX compilation (build-time)
+  # -----------------------------------------------------------------------
+  if(WITH_CUDA AND CUDAToolkit_FOUND)
+    find_program(NVCC_EXECUTABLE nvcc HINTS ${CUDAToolkit_BIN_DIR})
+    if(NVCC_EXECUTABLE)
+      set(CUDA_PTX_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/test/kernels/test_kernel.cu)
+      set(CUDA_PTX_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel.ptx)
+      set(CUDA_PTX_HEADER ${GHOST_TEST_GENERATED_DIR}/ghost_test_cuda_ptx.h)
+      add_custom_command(
+          OUTPUT ${CUDA_PTX_OUTPUT}
+          COMMAND ${NVCC_EXECUTABLE} -ptx -o ${CUDA_PTX_OUTPUT} ${CUDA_PTX_SOURCE}
+          DEPENDS ${CUDA_PTX_SOURCE}
+          COMMENT "Compiling CUDA kernel to PTX")
+      add_custom_command(
+          OUTPUT ${CUDA_PTX_HEADER}
+          COMMAND ${CMAKE_COMMAND}
+              -DINPUT_FILE=${CUDA_PTX_OUTPUT}
+              -DOUTPUT_FILE=${CUDA_PTX_HEADER}
+              -DVAR_NAME=ghost_test_cuda_ptx
+              -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+          DEPENDS ${CUDA_PTX_OUTPUT} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+          COMMENT "Generating CUDA PTX header")
+      add_custom_target(ghost_test_ptx DEPENDS ${CUDA_PTX_HEADER})
+      add_dependencies(TestGhostGTest ghost_test_ptx)
+      target_compile_definitions(TestGhostGTest PRIVATE
+          GHOST_TEST_CUDA_PTX="ghost_test_cuda_ptx.h")
+    endif()
+  endif()
+
+  # -----------------------------------------------------------------------
+  # Metal metallib compilation (build-time)
+  # -----------------------------------------------------------------------
+  if(WITH_METAL AND APPLE)
+    find_program(XCRUN_EXECUTABLE xcrun)
+    if(XCRUN_EXECUTABLE)
+      set(METAL_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/test/kernels/test_kernel.metal)
+      set(METAL_AIR ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel.air)
+      set(METAL_LIB ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel.metallib)
+      set(METAL_HEADER ${GHOST_TEST_GENERATED_DIR}/ghost_test_metallib.h)
+      add_custom_command(
+          OUTPUT ${METAL_AIR}
+          COMMAND ${XCRUN_EXECUTABLE} -sdk macosx metal -c ${METAL_SOURCE} -o ${METAL_AIR}
+          DEPENDS ${METAL_SOURCE}
+          COMMENT "Compiling Metal shader to AIR")
+      add_custom_command(
+          OUTPUT ${METAL_LIB}
+          COMMAND ${XCRUN_EXECUTABLE} -sdk macosx metallib ${METAL_AIR} -o ${METAL_LIB}
+          DEPENDS ${METAL_AIR}
+          COMMENT "Linking Metal library")
+      add_custom_command(
+          OUTPUT ${METAL_HEADER}
+          COMMAND ${CMAKE_COMMAND}
+              -DINPUT_FILE=${METAL_LIB}
+              -DOUTPUT_FILE=${METAL_HEADER}
+              -DVAR_NAME=ghost_test_metallib
+              -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+          DEPENDS ${METAL_LIB} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+          COMMENT "Generating Metal metallib header")
+      add_custom_target(ghost_test_metallib DEPENDS ${METAL_HEADER})
+      add_dependencies(TestGhostGTest ghost_test_metallib)
+      target_compile_definitions(TestGhostGTest PRIVATE
+          GHOST_TEST_METALLIB="ghost_test_metallib.h")
+    endif()
+  endif()
+
+  # -----------------------------------------------------------------------
+  # Vulkan SPIR-V compilation (build-time)
+  # -----------------------------------------------------------------------
+  if(WITH_VULKAN)
+    set(VULKAN_SPV_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel_vulkan.spv)
+    set(VULKAN_SPV_HEADER ${GHOST_TEST_GENERATED_DIR}/ghost_test_vulkan_spirv.h)
+    if(WITH_SPIRV_ASM)
+      find_program(SPIRV_AS_EXECUTABLE spirv-as)
+      if(SPIRV_AS_EXECUTABLE)
+        set(VULKAN_SPVASM_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/test/kernels/test_kernel_vulkan.spvasm)
+        add_custom_command(
+            OUTPUT ${VULKAN_SPV_OUTPUT}
+            COMMAND ${SPIRV_AS_EXECUTABLE} --target-env vulkan1.1
+                    ${VULKAN_SPVASM_SOURCE} -o ${VULKAN_SPV_OUTPUT}
+            DEPENDS ${VULKAN_SPVASM_SOURCE}
+            COMMENT "Assembling Vulkan SPIR-V from .spvasm")
+      endif()
+    else()
+      find_program(DXC_EXECUTABLE dxc)
+      if(DXC_EXECUTABLE)
+        set(HLSL_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/test/kernels/test_kernel.hlsl)
+        add_custom_command(
+            OUTPUT ${VULKAN_SPV_OUTPUT}
+            COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E mult_const_f -spirv
+                    -fspv-target-env=vulkan1.1 ${HLSL_SOURCE} -Fo ${VULKAN_SPV_OUTPUT}
+            DEPENDS ${HLSL_SOURCE}
+            COMMENT "Compiling HLSL to Vulkan SPIR-V")
+      endif()
+    endif()
+    if(EXISTS ${VULKAN_SPV_OUTPUT} OR TRUE)
+      add_custom_command(
+          OUTPUT ${VULKAN_SPV_HEADER}
+          COMMAND ${CMAKE_COMMAND}
+              -DINPUT_FILE=${VULKAN_SPV_OUTPUT}
+              -DOUTPUT_FILE=${VULKAN_SPV_HEADER}
+              -DVAR_NAME=ghost_test_vulkan_spirv
+              -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+          DEPENDS ${VULKAN_SPV_OUTPUT} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+          COMMENT "Generating Vulkan SPIR-V header")
+      add_custom_target(ghost_test_vulkan_spirv DEPENDS ${VULKAN_SPV_HEADER})
+      add_dependencies(TestGhostGTest ghost_test_vulkan_spirv)
+      target_compile_definitions(TestGhostGTest PRIVATE
+          GHOST_TEST_VULKAN_SPIRV="ghost_test_vulkan_spirv.h")
+    endif()
+  endif()
+
+  # -----------------------------------------------------------------------
+  # DirectX DXIL compilation (build-time)
+  # -----------------------------------------------------------------------
+  if(WITH_DIRECTX AND WIN32)
+    find_program(DXC_EXECUTABLE dxc)
+    if(DXC_EXECUTABLE)
+      set(HLSL_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/test/kernels/test_kernel.hlsl)
+      set(DXIL_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel.cso)
+      set(DXIL_HEADER ${GHOST_TEST_GENERATED_DIR}/ghost_test_directx_dxil.h)
+      add_custom_command(
+          OUTPUT ${DXIL_OUTPUT}
+          COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E mult_const_f
+                  ${HLSL_SOURCE} -Fo ${DXIL_OUTPUT}
+          DEPENDS ${HLSL_SOURCE}
+          COMMENT "Compiling HLSL to DirectX DXIL")
+      add_custom_command(
+          OUTPUT ${DXIL_HEADER}
+          COMMAND ${CMAKE_COMMAND}
+              -DINPUT_FILE=${DXIL_OUTPUT}
+              -DOUTPUT_FILE=${DXIL_HEADER}
+              -DVAR_NAME=ghost_test_directx_dxil
+              -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+          DEPENDS ${DXIL_OUTPUT} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+          COMMENT "Generating DirectX DXIL header")
+      add_custom_target(ghost_test_dxil DEPENDS ${DXIL_HEADER})
+      add_dependencies(TestGhostGTest ghost_test_dxil)
+      target_compile_definitions(TestGhostGTest PRIVATE
+          GHOST_TEST_DIRECTX_DXIL="ghost_test_directx_dxil.h")
+    endif()
+  endif()
+
+  # -----------------------------------------------------------------------
+  # OpenCL SPIR-V compilation (build-time)
+  # -----------------------------------------------------------------------
+  if(WITH_OPENCL)
+    set(OCL_SPV_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel_opencl.spv)
+    set(OCL_SPV_HEADER ${GHOST_TEST_GENERATED_DIR}/ghost_test_opencl_spirv.h)
+    if(WITH_SPIRV_ASM)
+      find_program(SPIRV_AS_EXECUTABLE spirv-as)
+      if(SPIRV_AS_EXECUTABLE)
+        set(OCL_SPVASM_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/test/kernels/test_kernel_opencl.spvasm)
+        add_custom_command(
+            OUTPUT ${OCL_SPV_OUTPUT}
+            COMMAND ${SPIRV_AS_EXECUTABLE} --target-env opencl2.0
+                    ${OCL_SPVASM_SOURCE} -o ${OCL_SPV_OUTPUT}
+            DEPENDS ${OCL_SPVASM_SOURCE}
+            COMMENT "Assembling OpenCL SPIR-V from .spvasm")
+      endif()
+    else()
+      find_program(CLANG_EXECUTABLE clang)
+      find_program(LLVM_SPIRV_EXECUTABLE llvm-spirv)
+      if(CLANG_EXECUTABLE AND LLVM_SPIRV_EXECUTABLE)
+        set(OCL_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/test/kernels/test_kernel.cl)
+        set(OCL_BC ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel.bc)
+        add_custom_command(
+            OUTPUT ${OCL_BC}
+            COMMAND ${CLANG_EXECUTABLE} -cc1 -triple spir64 -O2 -emit-llvm-bc
+                    -o ${OCL_BC} ${OCL_SOURCE}
+            DEPENDS ${OCL_SOURCE}
+            COMMENT "Compiling OpenCL C to LLVM bitcode")
+        add_custom_command(
+            OUTPUT ${OCL_SPV_OUTPUT}
+            COMMAND ${LLVM_SPIRV_EXECUTABLE} ${OCL_BC} -o ${OCL_SPV_OUTPUT}
+            DEPENDS ${OCL_BC}
+            COMMENT "Converting LLVM bitcode to SPIR-V")
+      endif()
+    endif()
+    if(EXISTS ${OCL_SPV_OUTPUT} OR TRUE)
+      add_custom_command(
+          OUTPUT ${OCL_SPV_HEADER}
+          COMMAND ${CMAKE_COMMAND}
+              -DINPUT_FILE=${OCL_SPV_OUTPUT}
+              -DOUTPUT_FILE=${OCL_SPV_HEADER}
+              -DVAR_NAME=ghost_test_opencl_spirv
+              -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+          DEPENDS ${OCL_SPV_OUTPUT} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+          COMMENT "Generating OpenCL SPIR-V header")
+      add_custom_target(ghost_test_opencl_spirv DEPENDS ${OCL_SPV_HEADER})
+      add_dependencies(TestGhostGTest ghost_test_opencl_spirv)
+      target_compile_definitions(TestGhostGTest PRIVATE
+          GHOST_TEST_OPENCL_SPIRV="ghost_test_opencl_spirv.h")
+    endif()
+  endif()
 endif()
 
 install(TARGETS ${PROJECT_NAME}

@@ -409,6 +409,10 @@ void LibraryVulkan::loadFromData(const void* data, size_t len,
 
   checkError(vkCreateShaderModule(_dev.device, &createInfo, nullptr, &_module));
 
+  // Store SPIR-V data for getBinary()
+  auto bytes = reinterpret_cast<const uint8_t*>(data);
+  _spirvData.assign(bytes, bytes + len);
+
   saveToCache(data, len, options);
 }
 
@@ -418,6 +422,8 @@ ghost::Function LibraryVulkan::lookupFunction(const std::string& name) const {
   // We pass the module but the function won't destroy it.
   return ghost::Function(std::make_shared<FunctionVulkan>(_dev, _module, name));
 }
+
+std::vector<uint8_t> LibraryVulkan::getBinary() const { return _spirvData; }
 
 }  // namespace implementation
 }  // namespace ghost
