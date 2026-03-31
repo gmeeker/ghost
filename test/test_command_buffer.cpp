@@ -267,4 +267,81 @@ TEST_P(CommandBufferTest, ManyOperations) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Indirect dispatch via command buffer
+// ---------------------------------------------------------------------------
+
+TEST_P(CommandBufferTest, DispatchIndirect) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 32;
+  std::vector<float> input(N), output(N, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  auto inBuf = device().allocateBuffer(N * sizeof(float));
+  auto outBuf = device().allocateBuffer(N * sizeof(float));
+  inBuf.copy(stream(), input.data(), N * sizeof(float));
+  stream().sync();
+
+  // Write workgroup counts (N, 1, 1) into an indirect buffer.
+  // With local_size=1, workgroup count equals total thread count.
+  uint32_t counts[3] = {static_cast<uint32_t>(N), 1, 1};
+  auto indirectBuf = device().allocateBuffer(sizeof(counts));
+  indirectBuf.copy(stream(), counts, sizeof(counts));
+  stream().sync();
+
+  CommandBuffer cb(device());
+  cb.dispatchIndirect(fn, indirectBuf, 0, outBuf, inBuf, 1.5f);
+  cb.submit(stream());
+
+  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 1.5f) << "index " << i;
+  }
+}
+
+TEST_P(CommandBufferTest, DispatchIndirectWithOffset) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 16;
+  std::vector<float> input(N), output(N, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  auto inBuf = device().allocateBuffer(N * sizeof(float));
+  auto outBuf = device().allocateBuffer(N * sizeof(float));
+  inBuf.copy(stream(), input.data(), N * sizeof(float));
+  stream().sync();
+
+  // Place a dummy entry before the real counts at offset 16.
+  uint32_t data[6] = {0, 0, 0, 0, static_cast<uint32_t>(N), 1};
+  // counts at offset 12: {N, 1, 1} — but we need 4-byte alignment.
+  // Use offset 12 for the 3 uint32_t values.
+  uint32_t fullData[6] = {99, 99, 99, static_cast<uint32_t>(N), 1, 1};
+  auto indirectBuf = device().allocateBuffer(sizeof(fullData));
+  indirectBuf.copy(stream(), fullData, sizeof(fullData));
+  stream().sync();
+
+  CommandBuffer cb(device());
+  cb.dispatchIndirect(fn, indirectBuf, 3 * sizeof(uint32_t), outBuf, inBuf,
+                      2.0f);
+  cb.submit(stream());
+
+  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 2.0f) << "index " << i;
+  }
+}
+
 GHOST_INSTANTIATE_KERNEL_TESTS(CommandBufferTest);

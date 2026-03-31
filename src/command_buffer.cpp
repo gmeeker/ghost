@@ -29,6 +29,16 @@ struct DispatchCmd {
   std::vector<std::shared_ptr<implementation::Image>> imageRefs;
 };
 
+struct DispatchIndirectCmd {
+  std::shared_ptr<implementation::Function> function;
+  std::shared_ptr<implementation::Buffer> indirectBuffer;
+  size_t indirectOffset;
+  std::vector<Attribute> args;
+  // Keep referenced objects alive until submit
+  std::vector<std::shared_ptr<implementation::Buffer>> bufferRefs;
+  std::vector<std::shared_ptr<implementation::Image>> imageRefs;
+};
+
 struct CopyBufferCmd {
   std::shared_ptr<implementation::Buffer> dst;
   std::shared_ptr<implementation::Buffer> src;
@@ -54,8 +64,9 @@ struct RecordEventCmd {
   std::shared_ptr<implementation::Event> event;
 };
 
-using Command = std::variant<DispatchCmd, CopyBufferCmd, FillBufferCmd,
-                             BarrierCmd, WaitEventCmd, RecordEventCmd>;
+using Command =
+    std::variant<DispatchCmd, DispatchIndirectCmd, CopyBufferCmd, FillBufferCmd,
+                 BarrierCmd, WaitEventCmd, RecordEventCmd>;
 
 class DefaultCommandBuffer : public CommandBuffer {
  public:
@@ -69,6 +80,25 @@ class DefaultCommandBuffer : public CommandBuffer {
     cmd.launchArgs = launchArgs;
     cmd.args = args;
     // Capture shared_ptrs to keep Buffer/Image objects alive
+    for (auto& a : cmd.args) {
+      if (a.type() == Attribute::Type_Buffer && a.asBuffer()) {
+        cmd.bufferRefs.push_back(a.asBuffer()->impl());
+      } else if (a.type() == Attribute::Type_Image && a.asImage()) {
+        cmd.imageRefs.push_back(a.asImage()->impl());
+      }
+    }
+    commands.push_back(std::move(cmd));
+  }
+
+  void dispatchIndirect(std::shared_ptr<implementation::Function> function,
+                        std::shared_ptr<implementation::Buffer> indirectBuffer,
+                        size_t indirectOffset,
+                        const std::vector<Attribute>& args) override {
+    DispatchIndirectCmd cmd;
+    cmd.function = function;
+    cmd.indirectBuffer = indirectBuffer;
+    cmd.indirectOffset = indirectOffset;
+    cmd.args = args;
     for (auto& a : cmd.args) {
       if (a.type() == Attribute::Type_Buffer && a.asBuffer()) {
         cmd.bufferRefs.push_back(a.asBuffer()->impl());
@@ -128,6 +158,9 @@ class DefaultCommandBuffer : public CommandBuffer {
             using T = std::decay_t<decltype(cmd)>;
             if constexpr (std::is_same_v<T, DispatchCmd>) {
               cmd.function->execute(stream, cmd.launchArgs, cmd.args);
+            } else if constexpr (std::is_same_v<T, DispatchIndirectCmd>) {
+              cmd.function->executeIndirect(stream, cmd.indirectBuffer,
+                                            cmd.indirectOffset, cmd.args);
             } else if constexpr (std::is_same_v<T, CopyBufferCmd>) {
               // Wrap impl ptrs in public Buffer for the copy API
               dstWrap.impl() = cmd.dst;
@@ -174,6 +207,14 @@ void CommandBuffer::dispatchImpl(Function& function,
                                  const LaunchArgs& launchArgs,
                                  const std::vector<Attribute>& args) {
   _impl->dispatch(function.impl(), launchArgs, args);
+}
+
+void CommandBuffer::dispatchIndirectImpl(Function& function,
+                                         const Buffer& indirectBuffer,
+                                         size_t indirectOffset,
+                                         const std::vector<Attribute>& args) {
+  _impl->dispatchIndirect(function.impl(), indirectBuffer.impl(),
+                          indirectOffset, args);
 }
 
 void CommandBuffer::copyBuffer(Buffer& dst, const Buffer& src, size_t bytes) {

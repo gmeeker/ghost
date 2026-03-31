@@ -44,6 +44,11 @@ class CommandBuffer {
                         const LaunchArgs& launchArgs,
                         const std::vector<Attribute>& args) = 0;
 
+  virtual void dispatchIndirect(std::shared_ptr<Function> function,
+                                std::shared_ptr<Buffer> indirectBuffer,
+                                size_t indirectOffset,
+                                const std::vector<Attribute>& args) = 0;
+
   virtual void copyBuffer(std::shared_ptr<Buffer> dst,
                           std::shared_ptr<Buffer> src, size_t srcOffset,
                           size_t dstOffset, size_t bytes) = 0;
@@ -115,6 +120,30 @@ class CommandBuffer {
     dispatchImpl(function, launchArgs, attrArgs);
   }
 
+  /// @brief Record an indirect kernel dispatch.
+  ///
+  /// The workgroup counts (X, Y, Z) are read from @p indirectBuffer at
+  /// @p indirectOffset at execution time. The buffer must contain three
+  /// consecutive @c uint32_t values. Local work size is determined by the
+  /// function/pipeline as usual.
+  ///
+  /// On backends with native indirect dispatch (Metal), this encodes a
+  /// single GPU-side indirect dispatch with no CPU round-trip. On other
+  /// backends it falls back to sync + readback + regular dispatch.
+  ///
+  /// @tparam ARGS Variadic argument types, each convertible to Attribute.
+  /// @param function The kernel to dispatch.
+  /// @param indirectBuffer Buffer containing 3x uint32_t workgroup counts.
+  /// @param indirectOffset Byte offset into indirectBuffer.
+  /// @param args Kernel arguments (buffers, images, scalars, local memory).
+  template <typename... ARGS>
+  void dispatchIndirect(Function& function, const Buffer& indirectBuffer,
+                        size_t indirectOffset, ARGS&&... args) {
+    std::vector<Attribute> attrArgs;
+    implementation::Function::addArgs(attrArgs, std::forward<ARGS>(args)...);
+    dispatchIndirectImpl(function, indirectBuffer, indirectOffset, attrArgs);
+  }
+
   /// @brief Record a device-to-device buffer copy.
   /// @param dst Destination buffer.
   /// @param src Source buffer.
@@ -155,6 +184,10 @@ class CommandBuffer {
  private:
   void dispatchImpl(Function& function, const LaunchArgs& launchArgs,
                     const std::vector<Attribute>& args);
+
+  void dispatchIndirectImpl(Function& function, const Buffer& indirectBuffer,
+                            size_t indirectOffset,
+                            const std::vector<Attribute>& args);
 
   std::shared_ptr<implementation::CommandBuffer> _impl;
 };

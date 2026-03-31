@@ -27,6 +27,20 @@ ghost::Function Library::specializeFunction(
 }
 
 std::vector<uint8_t> Library::getBinary() const { return {}; }
+
+void Function::executeIndirect(const ghost::Stream& s,
+                               const std::shared_ptr<Buffer>& indirectBuffer,
+                               size_t indirectOffset,
+                               const std::vector<Attribute>& args) {
+  // Default fallback: sync, read workgroup counts, dispatch
+  s.impl()->sync();
+  uint32_t counts[3];
+  indirectBuffer->copyTo(s, counts, indirectOffset, sizeof(counts));
+  s.impl()->sync();
+  LaunchArgs la;
+  la.global_size(counts[0], counts[1], counts[2]);
+  execute(s, la, args);
+}
 }  // namespace implementation
 
 Function::Function(std::shared_ptr<implementation::Function> impl)

@@ -42,6 +42,11 @@ class FunctionMetal : public Function {
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
 
+  virtual void executeIndirect(const ghost::Stream& s,
+                               const std::shared_ptr<Buffer>& indirectBuffer,
+                               size_t indirectOffset,
+                               const std::vector<Attribute>& args) override;
+
   virtual Attribute getAttribute(FunctionAttributeId what) const override;
 };
 

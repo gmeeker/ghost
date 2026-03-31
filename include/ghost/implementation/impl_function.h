@@ -56,6 +56,8 @@ class LaunchArgs;
 
 namespace implementation {
 
+class Buffer;
+
 /// @brief Abstract backend interface for a compiled GPU kernel function.
 ///
 /// Backend implementations derive from this class to provide kernel execution
@@ -79,6 +81,21 @@ class Function {
   /// @param args Kernel arguments as a vector of Attribute.
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) = 0;
+
+  /// @brief Execute the kernel with workgroup counts read from a GPU buffer.
+  ///
+  /// The default implementation syncs the stream, reads 3x uint32_t from
+  /// the indirect buffer, and calls execute(). Backends with native indirect
+  /// dispatch (Metal) override this for zero-CPU-roundtrip dispatch.
+  ///
+  /// @param s The stream to enqueue on.
+  /// @param indirectBuffer Buffer containing 3x uint32_t workgroup counts.
+  /// @param indirectOffset Byte offset into the indirect buffer.
+  /// @param args Kernel arguments.
+  virtual void executeIndirect(const ghost::Stream& s,
+                               const std::shared_ptr<Buffer>& indirectBuffer,
+                               size_t indirectOffset,
+                               const std::vector<Attribute>& args);
 
   virtual Attribute getAttribute(FunctionAttributeId what) const = 0;
 

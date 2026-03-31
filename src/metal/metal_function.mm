@@ -299,6 +299,116 @@ void FunctionMetal::execute(const ghost::Stream &s,
   stream_impl->commitAndTrack(commandBuffer);
 }
 
+void FunctionMetal::executeIndirect(
+    const ghost::Stream &s, const std::shared_ptr<Buffer> &indirectBuffer,
+    size_t indirectOffset, const std::vector<Attribute> &args) {
+  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
+  id<MTLComputeCommandEncoder> computeEncoder = nil;
+  if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, macCatalyst 13.0, *)) {
+    computeEncoder = [commandBuffer
+        computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+  }
+  if (!computeEncoder) {
+    computeEncoder = [commandBuffer computeCommandEncoder];
+  }
+  [computeEncoder setComputePipelineState:pipeline];
+
+  ProgramParams params;
+  size_t bufferIndex = 0;
+  size_t textureIndex = 0;
+  size_t sharedIndex = 0;
+  for (auto i = args.begin(); i != args.end(); ++i) {
+    switch (i->type()) {
+    case Attribute::Type_Float: {
+      const float *v = i->floatArray();
+      size_t count = i->count();
+      params.push_back(v, count);
+      break;
+    }
+    case Attribute::Type_Int: {
+      const int32_t *v = i->intArray();
+      size_t count = i->count();
+      params.push_back(v, count);
+      break;
+    }
+    case Attribute::Type_Bool: {
+      const bool *v = i->boolArray();
+      size_t count = i->count();
+      params.push_back(v, count);
+      break;
+    }
+    case Attribute::Type_Buffer: {
+      auto metal = static_cast<implementation::BufferMetal *>(
+          i->asBuffer()->impl().get());
+      [computeEncoder setBuffer:metal->mem.get()
+                         offset:0
+                        atIndex:bufferIndex++];
+      break;
+    }
+    case Attribute::Type_Image: {
+      auto metal =
+          static_cast<implementation::ImageMetal *>(i->asImage()->impl().get());
+      [computeEncoder setTexture:metal->mem.get() atIndex:textureIndex++];
+      break;
+    }
+    case Attribute::Type_ArgumentBuffer: {
+      auto ab = i->asArgumentBuffer();
+      if (ab->isStruct()) {
+        [computeEncoder setBytes:ab->data()
+                          length:ab->size()
+                         atIndex:bufferIndex++];
+      } else {
+        auto metal =
+            static_cast<implementation::BufferMetal *>(ab->bufferImpl().get());
+        [computeEncoder setBuffer:metal->mem.get()
+                           offset:metal->baseOffset()
+                          atIndex:bufferIndex++];
+      }
+      break;
+    }
+    case Attribute::Type_LocalMem:
+      [computeEncoder setThreadgroupMemoryLength:(size_t)i->asUInt()
+                                         atIndex:sharedIndex++];
+      break;
+    default:
+      break;
+    }
+  }
+  if (!params.empty()) {
+    [computeEncoder setBytes:params.get()
+                      length:params.size()
+                     atIndex:bufferIndex++];
+  }
+
+  auto metalBuf =
+      static_cast<implementation::BufferMetal *>(indirectBuffer.get());
+
+  // Determine threads-per-threadgroup from the pipeline.
+  // Use requiredThreadsPerThreadgroup if available (macOS 26+),
+  // otherwise default to (threadExecutionWidth, 1, 1).
+  MTLSize threadgroupSize = {pipeline.get().threadExecutionWidth, 1, 1};
+#if defined(MAC_OS_VERSION_26_0)
+  if (@available(macOS 26.0, iOS 26.0, tvOS 26.0, macCatalyst 26.0,
+                 visionOS 26.0, *)) {
+    MTLSize req = pipeline.get().requiredThreadsPerThreadgroup;
+    if (req.width > 0 && req.height > 0 && req.depth > 0) {
+      threadgroupSize = req;
+    }
+  }
+#endif
+
+  [computeEncoder
+      dispatchThreadgroupsWithIndirectBuffer:metalBuf->mem.get()
+                        indirectBufferOffset:(NSUInteger)indirectOffset
+                       threadsPerThreadgroup:threadgroupSize];
+
+  [computeEncoder endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
+}
+
 Attribute FunctionMetal::getAttribute(FunctionAttributeId what) const {
   switch (what) {
   case kFunctionLocalMemory:
