@@ -102,6 +102,102 @@ TEST_P(DeviceTest, ShareContext) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Extended device attributes (section 3a)
+// ---------------------------------------------------------------------------
+
+TEST_P(DeviceTest, MaxComputeUnits) {
+  auto attr = device().getAttribute(kDeviceMaxComputeUnits);
+  EXPECT_TRUE(attr.valid());
+  EXPECT_GT(attr.asInt(), 0);
+}
+
+TEST_P(DeviceTest, MemoryAlignment) {
+  auto attr = device().getAttribute(kDeviceMemoryAlignment);
+  EXPECT_TRUE(attr.valid());
+  EXPECT_GT(attr.asInt(), 0);
+}
+
+TEST_P(DeviceTest, BufferAlignment) {
+  auto attr = device().getAttribute(kDeviceBufferAlignment);
+  EXPECT_TRUE(attr.valid());
+  EXPECT_GT(attr.asInt(), 0);
+}
+
+TEST_P(DeviceTest, MaxBufferSize) {
+  auto attr = device().getAttribute(kDeviceMaxBufferSize);
+  EXPECT_TRUE(attr.valid());
+  EXPECT_GT(attr.asUInt64(), 0u);
+}
+
+TEST_P(DeviceTest, MaxConstantBufferSize) {
+  auto attr = device().getAttribute(kDeviceMaxConstantBufferSize);
+  EXPECT_TRUE(attr.valid());
+  // Some backends may return 0 if constant buffers aren't supported.
+  EXPECT_GE(attr.asUInt64(), 0u);
+}
+
+TEST_P(DeviceTest, TimestampPeriod) {
+  auto attr = device().getAttribute(kDeviceTimestampPeriod);
+  EXPECT_TRUE(attr.valid());
+}
+
+TEST_P(DeviceTest, SupportsProfilingTimer) {
+  auto attr = device().getAttribute(kDeviceSupportsProfilingTimer);
+  EXPECT_TRUE(attr.valid());
+  EXPECT_EQ(attr.type(), Attribute::Type_Bool);
+}
+
+// ---------------------------------------------------------------------------
+// Buffer alignment with sub-buffers
+// ---------------------------------------------------------------------------
+
+TEST_P(DeviceTest, SubBufferAtAlignment) {
+  auto alignAttr = device().getAttribute(kDeviceBufferAlignment);
+  if (!alignAttr.valid() || alignAttr.asInt() <= 0) {
+    GTEST_SKIP() << "Buffer alignment not available";
+  }
+
+  size_t alignment = static_cast<size_t>(alignAttr.asInt());
+  size_t parentSize = alignment * 4;
+  auto parent = device().allocateBuffer(parentSize);
+
+  try {
+    auto sub = parent.createSubBuffer(alignment, alignment);
+    EXPECT_EQ(sub.size(), alignment);
+  } catch (const ghost::unsupported_error&) {
+    GTEST_SKIP() << "Sub-buffers not supported";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Multiple devices of same backend
+// ---------------------------------------------------------------------------
+
+TEST_P(DeviceTest, MultipleDevicesSameBackend) {
+  std::vector<GpuInfo> devices;
+  try {
+    devices = enumerateDevices(backend());
+  } catch (const std::exception&) {
+    GTEST_SKIP() << "Enumeration failed";
+  }
+
+  if (devices.size() < 2) {
+    GTEST_SKIP() << "Only " << devices.size() << " device(s) available";
+  }
+
+  // Create two devices and verify both are functional.
+  auto dev1 = createDevice(backend());
+  auto dev2 = createDevice(backend());
+  ASSERT_NE(dev1.get(), nullptr);
+  ASSERT_NE(dev2.get(), nullptr);
+
+  auto buf1 = dev1->allocateBuffer(256);
+  auto buf2 = dev2->allocateBuffer(256);
+  EXPECT_EQ(buf1.size(), 256u);
+  EXPECT_EQ(buf2.size(), 256u);
+}
+
 GHOST_INSTANTIATE_BACKEND_TESTS(DeviceTest);
 
 // ---------------------------------------------------------------------------

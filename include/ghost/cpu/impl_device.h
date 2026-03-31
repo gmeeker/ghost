@@ -84,10 +84,13 @@ class ThreadPoolDefault : public ThreadPool {
 
 class EventCPU : public Event {
  public:
+  double _timestamp;
+
   EventCPU();
 
   virtual void wait() override;
   virtual bool isComplete() const override;
+  virtual double timestamp() const override;
 };
 
 class StreamCPU : public Stream {

@@ -269,6 +269,194 @@ extern "C" __global__ void add_buffers(float* out, const float* A, const float* 
   }
 }
 
+// mult_const_2d: out[y * W + x] = A[y * W + x] * scale
+inline const char* multConst2DKernelSource(Backend backend) {
+  switch (backend) {
+    case Backend::OpenCL:
+#if WITH_OPENCL
+      return R"(
+__kernel void mult_const_2d(__global float *out, __global const float *A, float scale, int W) {
+    int x = get_global_id(0);
+    int y = get_global_id(1);
+    int idx = y * W + x;
+    out[idx] = A[idx] * scale;
+})";
+#else
+      return nullptr;
+#endif
+    case Backend::Metal:
+#if WITH_METAL
+      return R"(
+#include <metal_stdlib>
+using namespace metal;
+struct MultConst2DParams { float scale; int W; };
+kernel void mult_const_2d(device float* out [[buffer(0)]],
+                          device const float* A [[buffer(1)]],
+                          constant MultConst2DParams& params [[buffer(2)]],
+                          uint2 gid [[thread_position_in_grid]]) {
+    int idx = int(gid.y) * params.W + int(gid.x);
+    out[idx] = A[idx] * params.scale;
+})";
+#else
+      return nullptr;
+#endif
+    case Backend::CUDA:
+#if WITH_CUDA
+      return R"(
+extern "C" __global__ void mult_const_2d(float* out, const float* A, float scale, int W) {
+    int x = threadIdx.x + blockIdx.x * blockDim.x;
+    int y = threadIdx.y + blockIdx.y * blockDim.y;
+    int idx = y * W + x;
+    out[idx] = A[idx] * scale;
+})";
+#else
+      return nullptr;
+#endif
+    default:
+      return nullptr;
+  }
+}
+
+// mult_const_3d: out[z * H * W + y * W + x] = A[...] * scale
+inline const char* multConst3DKernelSource(Backend backend) {
+  switch (backend) {
+    case Backend::OpenCL:
+#if WITH_OPENCL
+      return R"(
+__kernel void mult_const_3d(__global float *out, __global const float *A, float scale, int W, int H) {
+    int x = get_global_id(0);
+    int y = get_global_id(1);
+    int z = get_global_id(2);
+    int idx = z * H * W + y * W + x;
+    out[idx] = A[idx] * scale;
+})";
+#else
+      return nullptr;
+#endif
+    case Backend::Metal:
+#if WITH_METAL
+      return R"(
+#include <metal_stdlib>
+using namespace metal;
+struct MultConst3DParams { float scale; int W; int H; };
+kernel void mult_const_3d(device float* out [[buffer(0)]],
+                          device const float* A [[buffer(1)]],
+                          constant MultConst3DParams& params [[buffer(2)]],
+                          uint3 gid [[thread_position_in_grid]]) {
+    int idx = int(gid.z) * params.H * params.W + int(gid.y) * params.W + int(gid.x);
+    out[idx] = A[idx] * params.scale;
+})";
+#else
+      return nullptr;
+#endif
+    case Backend::CUDA:
+#if WITH_CUDA
+      return R"(
+extern "C" __global__ void mult_const_3d(float* out, const float* A, float scale, int W, int H) {
+    int x = threadIdx.x + blockIdx.x * blockDim.x;
+    int y = threadIdx.y + blockIdx.y * blockDim.y;
+    int z = threadIdx.z + blockIdx.z * blockDim.z;
+    int idx = z * H * W + y * W + x;
+    out[idx] = A[idx] * scale;
+})";
+#else
+      return nullptr;
+#endif
+    default:
+      return nullptr;
+  }
+}
+
+// local_mem_sum: uses local memory to sum elements
+inline const char* localMemKernelSource(Backend backend) {
+  switch (backend) {
+    case Backend::OpenCL:
+#if WITH_OPENCL
+      return R"(
+__kernel void local_mem_sum(__global float *out, __global const float *A,
+                            __local float *scratch) {
+    int lid = get_local_id(0);
+    int gid = get_global_id(0);
+    scratch[lid] = A[gid];
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (lid == 0) {
+        float sum = 0.0f;
+        int lsize = get_local_size(0);
+        for (int i = 0; i < lsize; i++) sum += scratch[i];
+        out[get_group_id(0)] = sum;
+    }
+})";
+#else
+      return nullptr;
+#endif
+    case Backend::Metal:
+#if WITH_METAL
+      return R"(
+#include <metal_stdlib>
+using namespace metal;
+kernel void local_mem_sum(device float* out [[buffer(0)]],
+                          device const float* A [[buffer(1)]],
+                          threadgroup float* scratch [[threadgroup(0)]],
+                          uint lid [[thread_index_in_threadgroup]],
+                          uint gid [[thread_position_in_grid]],
+                          uint group_id [[threadgroup_position_in_grid]],
+                          uint lsize [[threads_per_threadgroup]]) {
+    scratch[lid] = A[gid];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (lid == 0) {
+        float sum = 0.0f;
+        for (uint i = 0; i < lsize; i++) sum += scratch[i];
+        out[group_id] = sum;
+    }
+})";
+#else
+      return nullptr;
+#endif
+    case Backend::CUDA:
+#if WITH_CUDA
+      return R"(
+extern "C" __global__ void local_mem_sum(float* out, const float* A) {
+    extern __shared__ float scratch[];
+    int lid = threadIdx.x;
+    int gid = threadIdx.x + blockIdx.x * blockDim.x;
+    scratch[lid] = A[gid];
+    __syncthreads();
+    if (lid == 0) {
+        float sum = 0.0f;
+        for (int i = 0; i < blockDim.x; i++) sum += scratch[i];
+        out[blockIdx.x] = sum;
+    }
+})";
+#else
+      return nullptr;
+#endif
+    default:
+      return nullptr;
+  }
+}
+
+// Metal kernel with function constants for specialization testing.
+// When USE_SCALE is true, out[i] = A[i] * scale; otherwise out[i] = A[i].
+inline const char* specializedKernelSource() {
+#if WITH_METAL
+  return R"(
+#include <metal_stdlib>
+using namespace metal;
+constant bool USE_SCALE [[function_constant(0)]];
+kernel void specialized_fn(device float* out [[buffer(0)]],
+                           device const float* A [[buffer(1)]],
+                           constant float& scale [[buffer(2)]],
+                           uint index [[thread_position_in_grid]]) {
+    if (USE_SCALE)
+        out[index] = A[index] * scale;
+    else
+        out[index] = A[index];
+})";
+#else
+  return nullptr;
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // Test name generator for parameterized tests
 // ---------------------------------------------------------------------------
@@ -326,6 +514,18 @@ class GhostKernelTest : public GhostTest {
 
   const char* addBuffersSource() const {
     return addBuffersKernelSource(GetParam());
+  }
+
+  const char* multConst2DSource() const {
+    return multConst2DKernelSource(GetParam());
+  }
+
+  const char* multConst3DSource() const {
+    return multConst3DKernelSource(GetParam());
+  }
+
+  const char* localMemSource() const {
+    return localMemKernelSource(GetParam());
   }
 };
 

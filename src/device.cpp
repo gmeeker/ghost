@@ -20,6 +20,8 @@
 
 namespace ghost {
 namespace implementation {
+double Event::timestamp() const { return 0.0; }
+
 double Event::elapsed(const Event&) const { return 0.0; }
 
 std::shared_ptr<Event> Stream::record() { throw ghost::unsupported_error(); }
@@ -87,6 +89,8 @@ void Event::wait() { _impl->wait(); }
 
 bool Event::isComplete() const { return _impl->isComplete(); }
 
+double Event::timestamp() const { return _impl->timestamp(); }
+
 double Event::elapsed(const Event& start, const Event& end) {
   return start._impl->elapsed(*end._impl);
 }
@@ -134,6 +138,10 @@ void Buffer::fill(const Stream& s, size_t offset, size_t size, uint8_t value) {
   _impl->fill(s, offset, size, value);
 }
 
+void Buffer::fill(const Stream& s, size_t offset, size_t size, uint32_t value) {
+  _impl->fill(s, offset, size, &value, sizeof(value));
+}
+
 void Buffer::fill(const Stream& s, size_t offset, size_t size,
                   const void* pattern, size_t patternSize) {
   _impl->fill(s, offset, size, pattern, patternSize);
@@ -176,8 +184,7 @@ void Image::copyTo(const Stream& s, void* dst,
   _impl->copyTo(s, dst, descr);
 }
 
-Device::Device(std::shared_ptr<implementation::Device> impl)
-    : _impl(impl), _stream(nullptr) {}
+Device::Device(std::shared_ptr<implementation::Device> impl) : _impl(impl) {}
 
 void Device::setDefaultStream(std::shared_ptr<implementation::Stream> stream) {
   _stream.impl() = stream;

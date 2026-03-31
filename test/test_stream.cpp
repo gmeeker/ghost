@@ -142,4 +142,41 @@ TEST_P(EventTest, CrossStreamWait) {
   }
 }
 
+TEST_P(EventTest, RapidRecordWaitCycles) {
+  const size_t N = 256;
+  auto buf = device().allocateBuffer(N * sizeof(float));
+  std::vector<float> data(N, 1.0f);
+
+  for (int cycle = 0; cycle < 50; cycle++) {
+    buf.copy(stream(), data.data(), N * sizeof(float));
+    Event event(nullptr);
+    try {
+      event = stream().record();
+    } catch (const ghost::unsupported_error&) {
+      GTEST_SKIP() << "Events not supported";
+    }
+    event.wait();
+    EXPECT_TRUE(event.isComplete());
+  }
+}
+
+TEST_P(EventTest, EventTimestamp) {
+  const size_t N = 256;
+  auto buf = device().allocateBuffer(N * sizeof(float));
+  std::vector<float> data(N, 1.0f);
+  buf.copy(stream(), data.data(), N * sizeof(float));
+
+  Event event(nullptr);
+  try {
+    event = stream().record();
+  } catch (const ghost::unsupported_error&) {
+    GTEST_SKIP() << "Events not supported";
+  }
+  event.wait();
+
+  double ts = event.timestamp();
+  // Timestamp may be 0 on backends that don't support absolute timestamps.
+  EXPECT_GE(ts, 0.0);
+}
+
 GHOST_INSTANTIATE_BACKEND_TESTS(EventTest);

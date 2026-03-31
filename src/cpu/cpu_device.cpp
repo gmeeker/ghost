@@ -17,6 +17,8 @@
 #include <ghost/cpu/impl_function.h>
 #include <string.h>
 
+#include <chrono>
+
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
 #include <sys/types.h>
@@ -279,11 +281,16 @@ void ThreadPoolDefault::sync() {
 #endif
 }
 
-EventCPU::EventCPU() {}
+EventCPU::EventCPU() {
+  auto now = std::chrono::high_resolution_clock::now();
+  _timestamp = std::chrono::duration<double>(now.time_since_epoch()).count();
+}
 
 void EventCPU::wait() {}
 
 bool EventCPU::isComplete() const { return true; }
+
+double EventCPU::timestamp() const { return _timestamp; }
 
 StreamCPU::StreamCPU(std::shared_ptr<ThreadPool> pool_) : pool(pool_) {}
 

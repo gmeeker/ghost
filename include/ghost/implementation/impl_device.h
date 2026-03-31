@@ -155,6 +155,13 @@ class Event {
   /// @brief Query whether this event has completed without blocking.
   virtual bool isComplete() const = 0;
 
+  /// @brief Get the absolute timestamp of this event in seconds.
+  ///
+  /// The default implementation returns 0. Backends with profiling timers
+  /// override this method.
+  /// @return Timestamp in seconds, or 0 if not supported.
+  virtual double timestamp() const;
+
   /// @brief Measure elapsed time in seconds between this event and another.
   ///
   /// The default implementation returns 0. Backends with profiling timers

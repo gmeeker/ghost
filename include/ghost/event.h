@@ -31,9 +31,15 @@ class Event;
 /// - Timing measurements (elapsed())
 class Event {
  public:
+  /// @brief Default-construct a null event.
+  Event() = default;
+
   /// @brief Construct from a backend implementation.
   /// @param impl Shared pointer to the backend-specific event implementation.
   Event(std::shared_ptr<implementation::Event> impl);
+
+  /// @brief Check whether this event holds a valid implementation.
+  explicit operator bool() const { return _impl != nullptr; }
 
   /// @brief Get the backend implementation (const).
   std::shared_ptr<implementation::Event> impl() const { return _impl; }
@@ -47,6 +53,13 @@ class Event {
   /// @brief Query whether this event has completed without blocking.
   /// @return @c true if the event has completed, @c false otherwise.
   bool isComplete() const;
+
+  /// @brief Get the absolute timestamp of this event in seconds.
+  ///
+  /// Returns a backend-specific absolute time value suitable for computing
+  /// elapsed time from a single event. Returns 0 if not supported.
+  /// @return Timestamp in seconds, or 0 if timing is not supported.
+  double timestamp() const;
 
   /// @brief Measure the elapsed time in seconds between two events.
   /// @param start The earlier event.

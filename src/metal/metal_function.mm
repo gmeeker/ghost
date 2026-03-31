@@ -27,7 +27,6 @@ namespace {
 class ProgramParams {
 private:
   std::vector<uint8_t> _data;
-  static constexpr size_t Align = 16;
 
 public:
   bool empty() const { return _data.empty(); }
@@ -35,9 +34,9 @@ public:
 
   template <typename T> void push_back(const T *v, size_t count) {
     size_t i = _data.size();
-    _data.resize(i + std::max(Align, sizeof(T) * count));
-    memset(&_data[i], 0, Align);
-    memcpy(&_data[i], v, sizeof(T) * count);
+    size_t bytes = sizeof(T) * count;
+    _data.resize(i + bytes);
+    memcpy(&_data[i], v, bytes);
   }
   template <typename T> void push_back(T const &v) { push_back(&v, 1); }
   const void *get() const { return _data.empty() ? nullptr : &_data[0]; }

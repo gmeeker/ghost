@@ -177,6 +177,14 @@ bool EventOpenCL::isComplete() const {
   return status == CL_COMPLETE;
 }
 
+double EventOpenCL::timestamp() const {
+  cl_ulong time;
+  cl_int err = clGetEventProfilingInfo(event.get(), CL_PROFILING_COMMAND_END,
+                                       sizeof(time), &time, nullptr);
+  if (err != CL_SUCCESS) return 0.0;
+  return static_cast<double>(time) / 1e9;
+}
+
 double EventOpenCL::elapsed(const Event& other) const {
   auto& otherOCL = static_cast<const EventOpenCL&>(other);
   cl_ulong startTime, endTime;
@@ -414,6 +422,9 @@ void* MappedBufferOpenCL::map(const ghost::Stream& s, Access access,
       break;
     case Access_WriteOnly:
       flags = CL_MAP_WRITE_INVALIDATE_REGION;
+      break;
+    case Access_ReadWrite:
+      flags = CL_MAP_READ | CL_MAP_WRITE;
       break;
     default:
       throw ghost::unsupported_error();

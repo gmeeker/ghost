@@ -34,6 +34,7 @@ class EventOpenCL : public Event {
 
   virtual void wait() override;
   virtual bool isComplete() const override;
+  virtual double timestamp() const override;
   virtual double elapsed(const Event& other) const override;
 };
 

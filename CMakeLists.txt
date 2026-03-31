@@ -199,14 +199,15 @@ if(NOT GTest_FOUND)
   include(FetchContent)
   FetchContent_Declare(
     googletest
-    URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.15.2
   )
-  # Prevent GoogleTest from overriding compiler/linker settings on Windows.
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
+  set(GTest_FOUND TRUE)
 endif()
-
-add_executable(TestGhostGTest
+if(GTest_FOUND)
+  add_executable(TestGhostGTest
     test/test_attribute.cpp
     test/test_buffer.cpp
     test/test_command_buffer.cpp
@@ -214,10 +215,11 @@ add_executable(TestGhostGTest
     test/test_image.cpp
     test/test_kernel.cpp
     test/test_stream.cpp
-)
-target_link_libraries(TestGhostGTest ${PROJECT_NAME} GTest::gtest_main)
-include(GoogleTest)
-gtest_discover_tests(TestGhostGTest)
+  )
+  target_link_libraries(TestGhostGTest ${PROJECT_NAME} GTest::gtest_main)
+  include(GoogleTest)
+  gtest_discover_tests(TestGhostGTest)
+endif()
 
 install(TARGETS ${PROJECT_NAME}
     EXPORT GhostTargets

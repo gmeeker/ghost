@@ -35,9 +35,15 @@ namespace ghost {
 /// Device::createStream() or Device::defaultStream().
 class Stream {
  public:
+  /// @brief Default-construct a null stream.
+  Stream() = default;
+
   /// @brief Construct from a backend implementation.
   /// @param impl Shared pointer to the backend-specific stream implementation.
   Stream(std::shared_ptr<implementation::Stream> impl);
+
+  /// @brief Check whether this stream holds a valid implementation.
+  explicit operator bool() const { return _impl != nullptr; }
 
   /// @brief Get the backend implementation (const).
   std::shared_ptr<implementation::Stream> impl() const { return _impl; }
@@ -72,9 +78,15 @@ class Stream {
 /// between host and device using copy() and copyTo().
 class Buffer {
  public:
+  /// @brief Default-construct a null buffer.
+  Buffer() = default;
+
   /// @brief Construct from a backend implementation.
   /// @param impl Shared pointer to the backend-specific buffer implementation.
   Buffer(std::shared_ptr<implementation::Buffer> impl);
+
+  /// @brief Check whether this buffer holds a valid implementation.
+  explicit operator bool() const { return _impl != nullptr; }
 
   /// @brief Get the backend implementation (const).
   std::shared_ptr<implementation::Buffer> impl() const { return _impl; }
@@ -116,6 +128,9 @@ class Buffer {
   /// @brief Fill a region of this buffer with a byte value.
   void fill(const Stream& s, size_t offset, size_t size, uint8_t value);
 
+  /// @brief Fill a region of this buffer with a 32-bit value.
+  void fill(const Stream& s, size_t offset, size_t size, uint32_t value);
+
   /// @brief Fill a region of this buffer with a pattern.
   void fill(const Stream& s, size_t offset, size_t size, const void* pattern,
             size_t patternSize);
@@ -140,6 +155,9 @@ class Buffer {
 /// before it can be used by GPU kernels again.
 class MappedBuffer : public Buffer {
  public:
+  /// @brief Default-construct a null mapped buffer.
+  MappedBuffer() = default;
+
   /// @brief Construct from a backend implementation.
   /// @param impl Shared pointer to the backend-specific buffer implementation.
   MappedBuffer(std::shared_ptr<implementation::Buffer> impl);
@@ -164,9 +182,15 @@ class MappedBuffer : public Buffer {
 /// copyTo() with an ImageDescription specifying the pixel format and layout.
 class Image {
  public:
+  /// @brief Default-construct a null image.
+  Image() = default;
+
   /// @brief Construct from a backend implementation.
   /// @param impl Shared pointer to the backend-specific image implementation.
   Image(std::shared_ptr<implementation::Image> impl);
+
+  /// @brief Check whether this image holds a valid implementation.
+  explicit operator bool() const { return _impl != nullptr; }
 
   /// @brief Get the backend implementation (const).
   std::shared_ptr<implementation::Image> impl() const { return _impl; }

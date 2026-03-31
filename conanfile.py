@@ -16,7 +16,7 @@ class GhostConan(ConanFile):
     description = "Compute engine"
     topics = ("GPU", "computing")
 
-    exports_sources = "conanfile.py", "CMakeLists.txt", "src/**", "include/**", "test_package"
+    exports_sources = "LICENSE", "conanfile.py", "CMakeLists.txt", "cmake/**", "src/**", "include/**", "test/**", "test_package"
     settings = "os", "arch", "compiler", "build_type", "cuda"
     options = {"shared": [True, False],
                "fPIC": [True, False],
@@ -75,8 +75,8 @@ class GhostConan(ConanFile):
     def requirements(self):
         if self.options.get_safe("with_opencl", False):
             if not is_apple_os(self):
-                self.requires("opencl-headers/2023.04.17")
-                self.requires("opencl-icd-loader/2023.04.17")
+                self.requires("opencl-headers/2023.12.14")
+                self.requires("opencl-icd-loader/2023.12.14")
         if self.options.get_safe("with_vulkan", False):
             if is_apple_os(self):
                 self.requires("moltenvk/1.2.2")
@@ -127,3 +127,9 @@ class GhostConan(ConanFile):
         self.cpp_info.set_property("cmake_target_name", "Ghost::Ghost")
         self.cpp_info.set_property("pkg_config_name", "ghost")
         self.cpp_info.libs = ["Ghost"]
+        if self.options.get_safe("with_cuda_nvrtc", False) and self.options.get_safe("static_nvrtc", False):
+            pass # TODO
+        if self.options.get_safe("with_opencl", False):
+            self.cpp_info.frameworks.append('OpenCL')
+        if self.options.get_safe("with_metal", False):
+            self.cpp_info.frameworks += ['Metal', 'Foundation']

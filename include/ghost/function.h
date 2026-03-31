@@ -185,6 +185,16 @@ class Function {
     (*_impl)(s, launchArgs, std::forward<ARGS>(args)...);
   }
 
+  /// @brief Dispatch the kernel with a pre-built argument vector.
+  ///
+  /// Use this overload when kernel arguments are assembled dynamically
+  /// (e.g., from descriptor set bindings or push constants).
+  /// @param s The stream to enqueue the kernel on.
+  /// @param launchArgs Global and local work size configuration.
+  /// @param args Kernel arguments as a vector of Attribute.
+  void execute(const Stream& s, const LaunchArgs& launchArgs,
+               const std::vector<Attribute>& args);
+
   /// @brief Query a function attribute.
   /// @param what The attribute to query (e.g., kFunctionMaxThreads).
   /// @return The attribute value.

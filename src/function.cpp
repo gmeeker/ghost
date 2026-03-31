@@ -12,6 +12,7 @@
 // License for the specific language governing permissions and limitations under
 // the License.
 
+#include <ghost/device.h>
 #include <ghost/exception.h>
 #include <ghost/function.h>
 
@@ -28,6 +29,11 @@ ghost::Function Library::specializeFunction(
 
 Function::Function(std::shared_ptr<implementation::Function> impl)
     : _impl(impl) {}
+
+void Function::execute(const Stream& s, const LaunchArgs& launchArgs,
+                       const std::vector<Attribute>& args) {
+  _impl->execute(s, launchArgs, args);
+}
 
 Attribute Function::getAttribute(FunctionAttributeId what) const {
   return _impl->getAttribute(what);

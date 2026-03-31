@@ -200,4 +200,71 @@ TEST_P(CommandBufferTest, ResetAndReuse) {
   for (size_t i = 0; i < N; i++) EXPECT_FLOAT_EQ(output[i], 2.0f);
 }
 
+// ---------------------------------------------------------------------------
+// Command buffer with event
+// ---------------------------------------------------------------------------
+
+TEST_P(CommandBufferTest, SubmitWithEvent) {
+  const size_t N = 16;
+  std::vector<float> input(N), output(N, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto src = device().allocateBuffer(N * sizeof(float));
+  auto dst = device().allocateBuffer(N * sizeof(float));
+  src.copy(stream(), input.data(), N * sizeof(float));
+  stream().sync();
+
+  CommandBuffer cb(device());
+  cb.copyBuffer(dst, src, N * sizeof(float));
+
+  Event event(nullptr);
+  try {
+    event = cb.recordEvent();
+  } catch (const ghost::unsupported_error&) {
+    GTEST_SKIP() << "Command buffer events not supported";
+  }
+
+  cb.submit(stream());
+
+  try {
+    event.wait();
+    EXPECT_TRUE(event.isComplete());
+  } catch (const ghost::unsupported_error&) {
+    // Fallback — just sync the stream.
+    stream().sync();
+  }
+
+  dst.copyTo(stream(), output.data(), N * sizeof(float));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i)) << "index " << i;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Command buffer with many operations
+// ---------------------------------------------------------------------------
+
+TEST_P(CommandBufferTest, ManyOperations) {
+  const size_t N = 64;
+  auto buf = device().allocateBuffer(N);
+
+  CommandBuffer cb(device());
+  // Record 100 fill operations.
+  for (int i = 0; i < 100; i++) {
+    cb.fillBuffer(buf, 0, N, static_cast<uint8_t>(i));
+  }
+  cb.submit(stream());
+
+  std::vector<uint8_t> output(N, 0);
+  buf.copyTo(stream(), output.data(), N);
+  stream().sync();
+
+  // Last fill wins: value should be 99.
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_EQ(output[i], 99) << "index " << i;
+  }
+}
+
 GHOST_INSTANTIATE_KERNEL_TESTS(CommandBufferTest);
