@@ -37,6 +37,21 @@ if(WITH_DIRECTX AND WIN32)
   add_definitions(-DWITH_DIRECTX)
 endif()
 if(WITH_METAL AND APPLE)
+  find_program(XCRUN_EXECUTABLE xcrun)
+  if(XCRUN_EXECUTABLE)
+    execute_process(
+        COMMAND ${XCRUN_EXECUTABLE} -sdk macosx metal -v
+        RESULT_VARIABLE METAL_TOOLCHAIN_RESULT
+        OUTPUT_QUIET
+        ERROR_QUIET)
+    if(NOT METAL_TOOLCHAIN_RESULT EQUAL 0)
+      message(FATAL_ERROR
+          "Metal Toolchain is not installed. "
+          "Install it with: xcodebuild -downloadComponent MetalToolchain")
+    endif()
+  else()
+    message(FATAL_ERROR "xcrun not found. Please install Xcode command line tools.")
+  endif()
   add_definitions(-DWITH_METAL)
 endif()
 if(WITH_OPENCL AND OpenCL_FOUND)
@@ -287,36 +302,34 @@ if(GTest_FOUND)
   # Metal metallib compilation (build-time)
   # -----------------------------------------------------------------------
   if(WITH_METAL AND APPLE)
-    find_program(XCRUN_EXECUTABLE xcrun)
-    if(XCRUN_EXECUTABLE)
-      set(METAL_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/test/kernels/test_kernel.metal)
-      set(METAL_AIR ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel.air)
-      set(METAL_LIB ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel.metallib)
-      set(METAL_HEADER ${GHOST_TEST_GENERATED_DIR}/ghost_test_metallib.h)
-      add_custom_command(
-          OUTPUT ${METAL_AIR}
-          COMMAND ${XCRUN_EXECUTABLE} -sdk macosx metal -c ${METAL_SOURCE} -o ${METAL_AIR}
-          DEPENDS ${METAL_SOURCE}
-          COMMENT "Compiling Metal shader to AIR")
-      add_custom_command(
-          OUTPUT ${METAL_LIB}
-          COMMAND ${XCRUN_EXECUTABLE} -sdk macosx metallib ${METAL_AIR} -o ${METAL_LIB}
-          DEPENDS ${METAL_AIR}
-          COMMENT "Linking Metal library")
-      add_custom_command(
-          OUTPUT ${METAL_HEADER}
-          COMMAND ${CMAKE_COMMAND}
-              -DINPUT_FILE=${METAL_LIB}
-              -DOUTPUT_FILE=${METAL_HEADER}
-              -DVAR_NAME=ghost_test_metallib
-              -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
-          DEPENDS ${METAL_LIB} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
-          COMMENT "Generating Metal metallib header")
-      add_custom_target(ghost_test_metallib DEPENDS ${METAL_HEADER})
-      add_dependencies(TestGhostGTest ghost_test_metallib)
-      target_compile_definitions(TestGhostGTest PRIVATE
-          GHOST_TEST_METALLIB="ghost_test_metallib.h")
-    endif()
+    # XCRUN_EXECUTABLE already found and Metal toolchain validated above
+    set(METAL_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/test/kernels/test_kernel.metal)
+    set(METAL_AIR ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel.air)
+    set(METAL_LIB ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel.metallib)
+    set(METAL_HEADER ${GHOST_TEST_GENERATED_DIR}/ghost_test_metallib.h)
+    add_custom_command(
+        OUTPUT ${METAL_AIR}
+        COMMAND ${XCRUN_EXECUTABLE} -sdk macosx metal -c ${METAL_SOURCE} -o ${METAL_AIR}
+        DEPENDS ${METAL_SOURCE}
+        COMMENT "Compiling Metal shader to AIR")
+    add_custom_command(
+        OUTPUT ${METAL_LIB}
+        COMMAND ${XCRUN_EXECUTABLE} -sdk macosx metallib ${METAL_AIR} -o ${METAL_LIB}
+        DEPENDS ${METAL_AIR}
+        COMMENT "Linking Metal library")
+    add_custom_command(
+        OUTPUT ${METAL_HEADER}
+        COMMAND ${CMAKE_COMMAND}
+            -DINPUT_FILE=${METAL_LIB}
+            -DOUTPUT_FILE=${METAL_HEADER}
+            -DVAR_NAME=ghost_test_metallib
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+        DEPENDS ${METAL_LIB} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+        COMMENT "Generating Metal metallib header")
+    add_custom_target(ghost_test_metallib DEPENDS ${METAL_HEADER})
+    add_dependencies(TestGhostGTest ghost_test_metallib)
+    target_compile_definitions(TestGhostGTest PRIVATE
+        GHOST_TEST_METALLIB="ghost_test_metallib.h")
   endif()
 
   # -----------------------------------------------------------------------
