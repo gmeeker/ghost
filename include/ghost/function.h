@@ -249,6 +249,17 @@ class Library {
     return _impl->specializeFunction(name, args);
   }
 
+  /// @brief Look up a specialized function with a vector of constant values.
+  ///
+  /// Non-template overload for dynamic argument counts.
+  /// @param name The kernel function name.
+  /// @param args Specialization constant values.
+  /// @return The specialized Function object.
+  Function lookupSpecializedFunction(const std::string& name,
+                                     const std::vector<Attribute>& args) {
+    return _impl->specializeFunction(name, args);
+  }
+
   /// @brief Retrieve the compiled binary data from this library.
   ///
   /// Returns the backend-specific compiled binary (e.g., cubin for CUDA,
