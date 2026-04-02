@@ -98,6 +98,13 @@ class GhostConan(ConanFile):
                 tc.variables['WITH_CUDA_NVRTC'] = 'ON'
             if self.options.get_safe("static_nvrtc", False):
                 tc.variables['WITH_CUDA_NVRTC_STATIC'] = 'ON'
+            if self.settings.cuda:
+                if self.settings.os == "Windows":
+                    cuda_toolkit = r'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v' + str(self.settings.cuda.version)
+                else:
+                    cuda_toolkit = '/usr/local/cuda-' + str(self.settings.cuda.version)
+                if os.path.exists(cuda_toolkit):
+                    tc.variables['CUDAToolkit_ROOT'] = cuda_toolkit
         if self.options.get_safe("with_directx", False):
             tc.variables['WITH_DIRECTX'] = 'ON'
         tc.variables['WITH_OPENCL'] = 'ON' if self.options.get_safe("with_opencl", False) else 'OFF'
