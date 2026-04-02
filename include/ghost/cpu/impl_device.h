@@ -140,6 +140,15 @@ class BufferCPU : public Buffer {
       const std::shared_ptr<Buffer>& self, size_t offset, size_t size) override;
 };
 
+class MappedBufferCPU : public BufferCPU {
+ public:
+  MappedBufferCPU(const DeviceCPU& dev, size_t bytes);
+
+  virtual void* map(const ghost::Stream& s, Access access,
+                    bool sync = true) override;
+  virtual void unmap(const ghost::Stream& s) override;
+};
+
 class SubBufferCPU : public BufferCPU {
  public:
   std::shared_ptr<Buffer> _parent;

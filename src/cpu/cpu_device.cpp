@@ -367,6 +367,18 @@ std::shared_ptr<Buffer> BufferCPU::createSubBuffer(
       self, static_cast<uint8_t*>(ptr) + offset, size);
 }
 
+MappedBufferCPU::MappedBufferCPU(const DeviceCPU& dev, size_t bytes)
+    : BufferCPU(dev, bytes) {}
+
+void* MappedBufferCPU::map(const ghost::Stream& s, Access, bool sync) {
+  if (sync) {
+    s.impl()->sync();
+  }
+  return ptr;
+}
+
+void MappedBufferCPU::unmap(const ghost::Stream&) {}
+
 SubBufferCPU::SubBufferCPU(std::shared_ptr<Buffer> parent, void* ptr_,
                            size_t bytes)
     : BufferCPU(ptr_, bytes), _parent(parent) {}
@@ -522,8 +534,10 @@ ghost::Buffer DeviceCPU::allocateBuffer(size_t bytes, Access) const {
   return ghost::Buffer(ptr);
 }
 
-ghost::MappedBuffer DeviceCPU::allocateMappedBuffer(size_t, Access) const {
-  throw ghost::unsupported_error();
+ghost::MappedBuffer DeviceCPU::allocateMappedBuffer(size_t bytes,
+                                                    Access) const {
+  auto ptr = std::make_shared<implementation::MappedBufferCPU>(*this, bytes);
+  return ghost::MappedBuffer(ptr);
 }
 
 ghost::Image DeviceCPU::allocateImage(const ImageDescription& descr) const {
@@ -588,7 +602,7 @@ Attribute DeviceCPU::getAttribute(DeviceAttributeId what) const {
     case kDeviceSupportsImageFloatFiltering:
       return false;
     case kDeviceSupportsMappedBuffer:
-      return false;
+      return true;
     case kDeviceSupportsProgramConstants:
       return false;
     case kDeviceSupportsSubgroup:
