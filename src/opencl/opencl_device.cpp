@@ -1134,7 +1134,7 @@ cl_platform_id DeviceOpenCL::getPlatform() const {
 cl_ulong DeviceOpenCL::getInt(cl_device_info param_name) const {
   auto devices = getDevices();
   cl_int err;
-  cl_ulong v;
+  cl_ulong v = 0;
   err = clGetDeviceInfo(devices[0], param_name, sizeof(v), &v, nullptr);
   checkError(err);
   return v;

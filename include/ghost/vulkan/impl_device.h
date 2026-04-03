@@ -18,6 +18,7 @@
 #include <ghost/device.h>
 #include <vulkan/vulkan.h>
 
+#include <memory>
 #include <vector>
 
 namespace ghost {
@@ -78,6 +79,7 @@ class StreamVulkan : public Stream {
 class BufferVulkan : public Buffer {
  public:
   const DeviceVulkan& dev;
+  std::shared_ptr<bool> deviceAlive;
   VkBuffer buffer;
   VkDeviceMemory memory;
   size_t _size;
@@ -147,6 +149,7 @@ class MappedBufferVulkan : public BufferVulkan {
 class ImageVulkan : public Image {
  public:
   const DeviceVulkan& dev;
+  std::shared_ptr<bool> deviceAlive;
   VkImage image;
   VkDeviceMemory memory;
   VkImageView imageView;
@@ -180,6 +183,7 @@ class DeviceVulkan : public Device {
   uint32_t computeQueueFamily;
   VkDescriptorPool descriptorPool;
   bool ownsInstance;
+  std::shared_ptr<bool> alive;
 
   VkPhysicalDeviceProperties properties;
   VkPhysicalDeviceMemoryProperties memProperties;
