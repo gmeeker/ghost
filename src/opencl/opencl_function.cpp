@@ -59,6 +59,15 @@ void FunctionOpenCL::execute(const ghost::Stream& s,
         checkError(err);
         break;
       }
+      case Attribute::Type_UInt: {
+        const uint32_t* v = i->uintArray();
+        size_t count = i->count();
+        // cl_uint3 is the same as cl_uint4
+        if (count == 3) count = 4;
+        err = clSetKernelArg(kernel, idx++, sizeof(v[0]) * count, v);
+        checkError(err);
+        break;
+      }
       case Attribute::Type_Bool: {
         const bool* v = i->boolArray();
         size_t count = i->count();

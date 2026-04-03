@@ -71,6 +71,9 @@ void FunctionVulkan::createPipeline(const std::vector<Attribute>& args) {
       case Attribute::Type_Int:
         _pushConstantSize += (uint32_t)(sizeof(int32_t) * arg.count());
         break;
+      case Attribute::Type_UInt:
+        _pushConstantSize += (uint32_t)(sizeof(uint32_t) * arg.count());
+        break;
       case Attribute::Type_Bool:
         _pushConstantSize += (uint32_t)(sizeof(uint32_t) * arg.count());
         break;
@@ -245,6 +248,15 @@ void FunctionVulkan::execute(const ghost::Stream& s,
         size_t n = arg.count();
         const int32_t* vals = arg.intArray();
         size_t sz = sizeof(int32_t) * n;
+        size_t off = pushData.size();
+        pushData.resize(off + sz);
+        memcpy(pushData.data() + off, vals, sz);
+        break;
+      }
+      case Attribute::Type_UInt: {
+        size_t n = arg.count();
+        const uint32_t* vals = arg.uintArray();
+        size_t sz = sizeof(uint32_t) * n;
         size_t off = pushData.size();
         pushData.resize(off + sz);
         memcpy(pushData.data() + off, vals, sz);

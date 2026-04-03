@@ -74,6 +74,13 @@ void FunctionDirectX::execute(const ghost::Stream& s,
         memcpy(constants.data() + off, arg.intArray(), sz);
         break;
       }
+      case Attribute::Type_UInt: {
+        size_t sz = sizeof(uint32_t) * arg.count();
+        size_t off = constants.size();
+        constants.resize(off + sz);
+        memcpy(constants.data() + off, arg.uintArray(), sz);
+        break;
+      }
       case Attribute::Type_Bool: {
         for (size_t i = 0; i < arg.count(); i++) {
           uint32_t v = arg.boolArray()[i] ? 1 : 0;

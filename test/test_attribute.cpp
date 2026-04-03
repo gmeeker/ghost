@@ -54,7 +54,7 @@ TEST(AttributeTest, Int32Scalar) {
 
 TEST(AttributeTest, UInt32Scalar) {
   Attribute a(uint32_t(100));
-  EXPECT_EQ(a.type(), Attribute::Type_Int);
+  EXPECT_EQ(a.type(), Attribute::Type_UInt);
   EXPECT_EQ(a.asUInt(), 100u);
   EXPECT_EQ(a.asUInt64(), 100u);
 }
@@ -67,7 +67,7 @@ TEST(AttributeTest, Int64Scalar) {
 
 TEST(AttributeTest, UInt64Scalar) {
   Attribute a(uint64_t(9876543210ULL));
-  EXPECT_EQ(a.type(), Attribute::Type_Int);
+  EXPECT_EQ(a.type(), Attribute::Type_UInt);
   EXPECT_EQ(a.asUInt64(), 9876543210ULL);
 }
 

@@ -30,7 +30,8 @@ class Image;
 /// An Attribute can hold one of several types: string, float, integer, boolean,
 /// buffer pointer, image pointer, or a local memory size. Numeric types support
 /// up to 4-element vectors, stored in both 32-bit and 64-bit representations
-/// for convenient access.
+/// for convenient access. Kernel arguments have limited support for 64-bit
+/// types we don't define different data sizes.
 ///
 /// Attributes are used in two contexts:
 /// - As kernel arguments passed to Function::operator() and
@@ -46,8 +47,10 @@ class Attribute {
     Type_String,
     /// @brief Floating-point value(s) (up to 4 elements).
     Type_Float,
-    /// @brief Integer value(s) (up to 4 elements, signed or unsigned).
+    /// @brief Signed integer value(s) (up to 4 elements).
     Type_Int,
+    /// @brief Unsigned integer value(s) (up to 4 elements).
+    Type_UInt,
     /// @brief Boolean value(s) (up to 4 elements).
     Type_Bool,
     /// @brief Pointer to a Buffer.
@@ -194,7 +197,7 @@ class Attribute {
   }
 
   void set(const uint32_t* v, size_t num) {
-    _type = Type_Int;
+    _type = Type_UInt;
     setT(v, (uint32_t)0, _u.u, _u64.u, num);
   }
 
@@ -204,7 +207,7 @@ class Attribute {
   }
 
   void set(const uint64_t* v, size_t num) {
-    _type = Type_Int;
+    _type = Type_UInt;
     setT(v, (uint64_t)0, _u64.u, _u.u, num);
   }
 

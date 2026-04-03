@@ -78,6 +78,10 @@ FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name,
       [constantValues setConstantValue:arg.intArray()
                                   type:MTLDataTypeInt
                                atIndex:j++];
+    else if (arg.type() == Attribute::Type_UInt)
+      [constantValues setConstantValue:arg.uintArray()
+                                  type:MTLDataTypeUInt
+                               atIndex:j++];
     else if (arg.type() == Attribute::Type_Float)
       [constantValues setConstantValue:arg.floatArray()
                                   type:MTLDataTypeFloat
@@ -156,6 +160,10 @@ FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name,
       [constantValues setConstantValue:arg.intArray()
                                   type:MTLDataTypeInt
                                atIndex:j++];
+    else if (arg.type() == Attribute::Type_UInt)
+      [constantValues setConstantValue:arg.uintArray()
+                                  type:MTLDataTypeUInt
+                               atIndex:j++];
     else if (arg.type() == Attribute::Type_Float)
       [constantValues setConstantValue:arg.floatArray()
                                   type:MTLDataTypeFloat
@@ -233,6 +241,12 @@ void FunctionMetal::execute(const ghost::Stream &s,
     }
     case Attribute::Type_Int: {
       const int32_t *v = i->intArray();
+      size_t count = i->count();
+      params.push_back(v, count);
+      break;
+    }
+    case Attribute::Type_UInt: {
+      const uint32_t *v = i->uintArray();
       size_t count = i->count();
       params.push_back(v, count);
       break;
@@ -330,6 +344,12 @@ void FunctionMetal::executeIndirect(
     }
     case Attribute::Type_Int: {
       const int32_t *v = i->intArray();
+      size_t count = i->count();
+      params.push_back(v, count);
+      break;
+    }
+    case Attribute::Type_UInt: {
+      const uint32_t *v = i->uintArray();
       size_t count = i->count();
       params.push_back(v, count);
       break;
