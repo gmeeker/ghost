@@ -1002,7 +1002,8 @@ Attribute DeviceDirectX::getAttribute(DeviceAttributeId what) const {
     case kDeviceSubgroupWidth:
       return Attribute((int32_t)32);
     case kDeviceMaxComputeUnits:
-      return Attribute((int32_t)0);
+      // Not directly queryable in D3D12; return 1 as the minimum
+      return Attribute((int32_t)1);
     case kDeviceMemoryAlignment:
       return Attribute((int32_t)256);
     case kDeviceBufferAlignment:

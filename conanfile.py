@@ -100,11 +100,11 @@ class GhostConan(ConanFile):
                 tc.variables['WITH_CUDA_NVRTC_STATIC'] = 'ON'
             if self.settings.cuda:
                 if self.settings.os == "Windows":
-                    cuda_toolkit = r'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v' + str(self.settings.cuda.version)
+                    cuda_toolkit = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v' + str(self.settings.cuda.version)
                 else:
                     cuda_toolkit = '/usr/local/cuda-' + str(self.settings.cuda.version)
                 if os.path.exists(cuda_toolkit):
-                    tc.variables['CUDAToolkit_ROOT'] = cuda_toolkit
+                    tc.variables['CUDAToolkit_ROOT'] = cuda_toolkit.replace('\\', '/')
         if self.options.get_safe("with_directx", False):
             tc.variables['WITH_DIRECTX'] = 'ON'
         tc.variables['WITH_OPENCL'] = 'ON' if self.options.get_safe("with_opencl", False) else 'OFF'
@@ -112,9 +112,9 @@ class GhostConan(ConanFile):
             tc.variables['WITH_METAL'] = 'ON'
         if self.options.get_safe("with_vulkan", False):
             if is_apple_os(self):
-                tc.variables['WITH_VULKAN'] = self.dependencies["moltenvk"].package_folder
+                tc.variables['WITH_VULKAN'] = self.dependencies["moltenvk"].package_folder.replace('\\', '/')
             else:
-                tc.variables['WITH_VULKAN'] = self.dependencies["vulkan-headers"].package_folder
+                tc.variables['WITH_VULKAN'] = self.dependencies["vulkan-headers"].package_folder.replace('\\', '/')
         tc.generate()
         cd = CMakeDeps(self)
         cd.generate()
