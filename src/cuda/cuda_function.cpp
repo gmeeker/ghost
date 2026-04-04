@@ -163,19 +163,19 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
     }
   }
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
-  unsigned int global_size[3];
+  unsigned int grid_size[3];
   unsigned int local_size[3];
   for (size_t i = 0; i < 3; i++) {
-    global_size[i] = launchArgs.global_size()[i];
+    grid_size[i] = launchArgs.count(i);
     local_size[i] = launchArgs.local_size()[i];
   }
   if (launchArgs.is_cooperative()) {
-    err = cuLaunchCooperativeKernel(kernel, global_size[0], global_size[1],
-                                    global_size[2], local_size[0],
-                                    local_size[1], local_size[2], local_mem,
+    err = cuLaunchCooperativeKernel(kernel, grid_size[0], grid_size[1],
+                                    grid_size[2], local_size[0], local_size[1],
+                                    local_size[2], local_mem,
                                     stream_impl->queue, &params[0]);
   } else {
-    err = cuLaunchKernel(kernel, global_size[0], global_size[1], global_size[2],
+    err = cuLaunchKernel(kernel, grid_size[0], grid_size[1], grid_size[2],
                          local_size[0], local_size[1], local_size[2], local_mem,
                          stream_impl->queue, &params[0], nullptr);
   }

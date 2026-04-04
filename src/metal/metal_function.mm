@@ -300,9 +300,8 @@ void FunctionMetal::execute(const ghost::Stream &s,
                      atIndex:bufferIndex++];
   }
 
-  MTLSize threadgroupCount = {launchArgs.global_size()[0],
-                              launchArgs.global_size()[1],
-                              launchArgs.global_size()[2]};
+  MTLSize threadgroupCount = {launchArgs.count(0), launchArgs.count(1),
+                              launchArgs.count(2)};
   MTLSize threadgroupSize = {launchArgs.local_size()[0],
                              launchArgs.local_size()[1],
                              launchArgs.local_size()[2]};

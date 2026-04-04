@@ -101,30 +101,42 @@ TEST_P(CommandBufferTest, DispatchKernel) {
   const char* src = multConstSource();
   if (!src) GTEST_SKIP();
 
-  const size_t N = 32;
-  std::vector<float> input(N), output(N, 0.0f);
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+  const float kSentinel = -1.0f;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, kSentinel);
   for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
 
   auto lib = device().loadLibraryFromText(src);
   auto fn = lib.lookupFunction("mult_const_f");
 
-  auto inBuf = device().allocateBuffer(N * sizeof(float));
-  auto outBuf = device().allocateBuffer(N * sizeof(float));
-  inBuf.copy(stream(), input.data(), N * sizeof(float));
+  auto inBuf = device().allocateBuffer(safeN * sizeof(float));
+  auto outBuf = device().allocateBuffer(safeN * sizeof(float));
+  inBuf.copy(stream(), input.data(), safeN * sizeof(float));
+  outBuf.copy(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
   LaunchArgs la;
-  la.global_size(static_cast<uint32_t>(N)).local_size(1);
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
 
   CommandBuffer cb(device());
   cb.dispatch(fn, la, outBuf, inBuf, 1.5f);
   cb.submit(stream());
 
-  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
   for (size_t i = 0; i < N; i++) {
     EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 1.5f) << "index " << i;
+  }
+  for (size_t i = N; i < safeN; i++) {
+    if (output[i] != kSentinel) {
+      FAIL() << "workgroup count bug: write at index " << i << " (got "
+             << output[i] << ", expected sentinel " << kSentinel << ")";
+    }
   }
 }
 
@@ -136,21 +148,28 @@ TEST_P(CommandBufferTest, BarrierOrdering) {
   const char* src = multConstSource();
   if (!src) GTEST_SKIP();
 
-  const size_t N = 16;
-  std::vector<float> input(N), output(N, 0.0f);
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+  const float kSentinel = -1.0f;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, kSentinel);
   for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
 
   auto lib = device().loadLibraryFromText(src);
   auto fn = lib.lookupFunction("mult_const_f");
 
-  auto buf1 = device().allocateBuffer(N * sizeof(float));
-  auto buf2 = device().allocateBuffer(N * sizeof(float));
-  auto buf3 = device().allocateBuffer(N * sizeof(float));
-  buf1.copy(stream(), input.data(), N * sizeof(float));
+  auto buf1 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf2 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf3 = device().allocateBuffer(safeN * sizeof(float));
+  buf1.copy(stream(), input.data(), safeN * sizeof(float));
+  // Initialize buf3 with sentinel so we can detect extra writes.
+  buf3.copy(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
   LaunchArgs la;
-  la.global_size(static_cast<uint32_t>(N)).local_size(1);
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
 
   CommandBuffer cb(device());
   cb.dispatch(fn, la, buf2, buf1, 2.0f);
@@ -158,11 +177,17 @@ TEST_P(CommandBufferTest, BarrierOrdering) {
   cb.dispatch(fn, la, buf3, buf2, 3.0f);
   cb.submit(stream());
 
-  buf3.copyTo(stream(), output.data(), N * sizeof(float));
+  buf3.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
   for (size_t i = 0; i < N; i++) {
     EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 6.0f) << "index " << i;
+  }
+  for (size_t i = N; i < safeN; i++) {
+    if (output[i] != kSentinel) {
+      FAIL() << "workgroup count bug: write at index " << i << " (got "
+             << output[i] << ", expected sentinel " << kSentinel << ")";
+    }
   }
 }
 

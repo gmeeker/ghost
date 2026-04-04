@@ -42,26 +42,42 @@ TEST_P(KernelTest, MultConst1D) {
   const char* src = multConstSource();
   if (!src) GTEST_SKIP();
 
-  const size_t N = 32;
-  std::vector<float> input(N), output(N, 0.0f);
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+  // If global_size is misinterpreted as workgroup count, N * localSize threads
+  // launch.  Allocate oversized buffers so those threads write into a sentinel
+  // region instead of out-of-bounds memory.
+  const size_t safeN = N * localSize;
+  const float kSentinel = -1.0f;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, kSentinel);
   for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
 
   auto lib = device().loadLibraryFromText(src);
   auto fn = lib.lookupFunction("mult_const_f");
 
-  auto inBuf = device().allocateBuffer(N * sizeof(float));
-  auto outBuf = device().allocateBuffer(N * sizeof(float));
+  auto inBuf = device().allocateBuffer(safeN * sizeof(float));
+  auto outBuf = device().allocateBuffer(safeN * sizeof(float));
 
-  inBuf.copy(stream(), input.data(), N * sizeof(float));
+  inBuf.copy(stream(), input.data(), safeN * sizeof(float));
+  outBuf.copy(stream(), output.data(), safeN * sizeof(float));
 
   LaunchArgs la;
-  la.global_size(static_cast<uint32_t>(N)).local_size(1);
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
   fn(stream(), la, outBuf, inBuf, 1.5f);
-  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
   for (size_t i = 0; i < N; i++) {
     EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 1.5f) << "index " << i;
+  }
+  // Verify no writes beyond N (detects workgroup count bug).
+  for (size_t i = N; i < safeN; i++) {
+    if (output[i] != kSentinel) {
+      FAIL() << "workgroup count bug: write at index " << i << " (got "
+             << output[i] << ", expected sentinel " << kSentinel << ")";
+    }
   }
 }
 
@@ -69,27 +85,39 @@ TEST_P(KernelTest, MultConstScale2) {
   const char* src = multConstSource();
   if (!src) GTEST_SKIP();
 
-  const size_t N = 16;
-  std::vector<float> input(N), output(N, 0.0f);
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+  const float kSentinel = -1.0f;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, kSentinel);
   for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i + 1);
 
   auto lib = device().loadLibraryFromText(src);
   auto fn = lib.lookupFunction("mult_const_f");
 
-  auto inBuf = device().allocateBuffer(N * sizeof(float));
-  auto outBuf = device().allocateBuffer(N * sizeof(float));
+  auto inBuf = device().allocateBuffer(safeN * sizeof(float));
+  auto outBuf = device().allocateBuffer(safeN * sizeof(float));
 
-  inBuf.copy(stream(), input.data(), N * sizeof(float));
+  inBuf.copy(stream(), input.data(), safeN * sizeof(float));
+  outBuf.copy(stream(), output.data(), safeN * sizeof(float));
 
   LaunchArgs la;
-  la.global_size(static_cast<uint32_t>(N)).local_size(1);
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
   fn(stream(), la, outBuf, inBuf, 2.0f);
-  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
   for (size_t i = 0; i < N; i++) {
     EXPECT_FLOAT_EQ(output[i], static_cast<float>(i + 1) * 2.0f)
         << "index " << i;
+  }
+  for (size_t i = N; i < safeN; i++) {
+    if (output[i] != kSentinel) {
+      FAIL() << "workgroup count bug: write at index " << i << " (got "
+             << output[i] << ", expected sentinel " << kSentinel << ")";
+    }
   }
 }
 
@@ -97,8 +125,13 @@ TEST_P(KernelTest, AddBuffers) {
   const char* src = addBuffersSource();
   if (!src) GTEST_SKIP();
 
-  const size_t N = 16;
-  std::vector<float> a(N), b(N), output(N, 0.0f);
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+  const float kSentinel = -1.0f;
+
+  std::vector<float> a(safeN, 0.0f), b(safeN, 0.0f);
+  std::vector<float> output(safeN, kSentinel);
   for (size_t i = 0; i < N; i++) {
     a[i] = static_cast<float>(i);
     b[i] = static_cast<float>(i * 10);
@@ -107,21 +140,28 @@ TEST_P(KernelTest, AddBuffers) {
   auto lib = device().loadLibraryFromText(src);
   auto fn = lib.lookupFunction("add_buffers");
 
-  auto bufA = device().allocateBuffer(N * sizeof(float));
-  auto bufB = device().allocateBuffer(N * sizeof(float));
-  auto bufOut = device().allocateBuffer(N * sizeof(float));
+  auto bufA = device().allocateBuffer(safeN * sizeof(float));
+  auto bufB = device().allocateBuffer(safeN * sizeof(float));
+  auto bufOut = device().allocateBuffer(safeN * sizeof(float));
 
-  bufA.copy(stream(), a.data(), N * sizeof(float));
-  bufB.copy(stream(), b.data(), N * sizeof(float));
+  bufA.copy(stream(), a.data(), safeN * sizeof(float));
+  bufB.copy(stream(), b.data(), safeN * sizeof(float));
+  bufOut.copy(stream(), output.data(), safeN * sizeof(float));
 
   LaunchArgs la;
-  la.global_size(static_cast<uint32_t>(N)).local_size(1);
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
   fn(stream(), la, bufOut, bufA, bufB);
-  bufOut.copyTo(stream(), output.data(), N * sizeof(float));
+  bufOut.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
   for (size_t i = 0; i < N; i++) {
     EXPECT_FLOAT_EQ(output[i], static_cast<float>(i + i * 10)) << "index " << i;
+  }
+  for (size_t i = N; i < safeN; i++) {
+    if (output[i] != kSentinel) {
+      FAIL() << "workgroup count bug: write at index " << i << " (got "
+             << output[i] << ", expected sentinel " << kSentinel << ")";
+    }
   }
 }
 
@@ -133,30 +173,43 @@ TEST_P(KernelTest, MultipleDispatches) {
   const char* src = multConstSource();
   if (!src) GTEST_SKIP();
 
-  const size_t N = 16;
-  std::vector<float> input(N), output(N, 0.0f);
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+  const float kSentinel = -1.0f;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, kSentinel);
   for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
 
   auto lib = device().loadLibraryFromText(src);
   auto fn = lib.lookupFunction("mult_const_f");
 
-  auto buf1 = device().allocateBuffer(N * sizeof(float));
-  auto buf2 = device().allocateBuffer(N * sizeof(float));
-  auto buf3 = device().allocateBuffer(N * sizeof(float));
+  auto buf1 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf2 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf3 = device().allocateBuffer(safeN * sizeof(float));
 
-  buf1.copy(stream(), input.data(), N * sizeof(float));
+  buf1.copy(stream(), input.data(), safeN * sizeof(float));
+  // Initialize buf3 with sentinel so we can detect extra writes.
+  buf3.copy(stream(), output.data(), safeN * sizeof(float));
 
   LaunchArgs la;
-  la.global_size(static_cast<uint32_t>(N)).local_size(1);
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
 
   // Chain: buf1 * 2.0 -> buf2, buf2 * 3.0 -> buf3.
   fn(stream(), la, buf2, buf1, 2.0f);
   fn(stream(), la, buf3, buf2, 3.0f);
-  buf3.copyTo(stream(), output.data(), N * sizeof(float));
+  buf3.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
   for (size_t i = 0; i < N; i++) {
     EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 6.0f) << "index " << i;
+  }
+  for (size_t i = N; i < safeN; i++) {
+    if (output[i] != kSentinel) {
+      FAIL() << "workgroup count bug: write at index " << i << " (got "
+             << output[i] << ", expected sentinel " << kSentinel << ")";
+    }
   }
 }
 
@@ -210,26 +263,41 @@ TEST_P(KernelTest, MultConst2D) {
   if (!src)
     GTEST_SKIP() << "No 2D kernel source for " << BackendName(backend());
 
-  const uint32_t W = 8, H = 4;
+  const uint32_t W = 32, H = 16;
+  const uint32_t localW = 8, localH = 8;
   const size_t N = W * H;
-  std::vector<float> input(N), output(N, 0.0f);
+  // With the bug, Metal/CUDA dispatch W*H threadgroups of localW*localH each.
+  // Max thread coords: x in [0, W*localW), y in [0, H*localH).
+  // Max linear index = (H*localH - 1) * W + (W*localW - 1).
+  const size_t safeN = static_cast<size_t>(H * localH) * W + W * localW;
+  const float kSentinel = -1.0f;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, kSentinel);
   for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
 
   auto lib = device().loadLibraryFromText(src);
   auto fn = lib.lookupFunction("mult_const_2d");
 
-  auto inBuf = device().allocateBuffer(N * sizeof(float));
-  auto outBuf = device().allocateBuffer(N * sizeof(float));
-  inBuf.copy(stream(), input.data(), N * sizeof(float));
+  auto inBuf = device().allocateBuffer(safeN * sizeof(float));
+  auto outBuf = device().allocateBuffer(safeN * sizeof(float));
+  inBuf.copy(stream(), input.data(), safeN * sizeof(float));
+  outBuf.copy(stream(), output.data(), safeN * sizeof(float));
 
   LaunchArgs la;
-  la.global_size(W, H).local_size(1, 1);
+  la.global_size(W, H).local_size(localW, localH);
   fn(stream(), la, outBuf, inBuf, 2.0f, static_cast<int32_t>(W));
-  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
   for (size_t i = 0; i < N; i++) {
     EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 2.0f) << "index " << i;
+  }
+  for (size_t i = N; i < safeN; i++) {
+    if (output[i] != kSentinel) {
+      FAIL() << "workgroup count bug: write at index " << i << " (got "
+             << output[i] << ", expected sentinel " << kSentinel << ")";
+    }
   }
 }
 
@@ -242,27 +310,42 @@ TEST_P(KernelTest, MultConst3D) {
   if (!src)
     GTEST_SKIP() << "No 3D kernel source for " << BackendName(backend());
 
-  const uint32_t W = 4, H = 3, D = 2;
+  const uint32_t W = 16, H = 8, D = 4;
+  const uint32_t localW = 8, localH = 4, localD = 2;
   const size_t N = W * H * D;
-  std::vector<float> input(N), output(N, 0.0f);
+  // With the bug: x in [0, W*localW), y in [0, H*localH), z in [0, D*localD).
+  // Max index = (D*localD-1)*H*W + (H*localH-1)*W + (W*localW-1).
+  const size_t safeN = static_cast<size_t>(D * localD - 1) * H * W +
+                       static_cast<size_t>(H * localH - 1) * W + W * localW;
+  const float kSentinel = -1.0f;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, kSentinel);
   for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
 
   auto lib = device().loadLibraryFromText(src);
   auto fn = lib.lookupFunction("mult_const_3d");
 
-  auto inBuf = device().allocateBuffer(N * sizeof(float));
-  auto outBuf = device().allocateBuffer(N * sizeof(float));
-  inBuf.copy(stream(), input.data(), N * sizeof(float));
+  auto inBuf = device().allocateBuffer(safeN * sizeof(float));
+  auto outBuf = device().allocateBuffer(safeN * sizeof(float));
+  inBuf.copy(stream(), input.data(), safeN * sizeof(float));
+  outBuf.copy(stream(), output.data(), safeN * sizeof(float));
 
   LaunchArgs la;
-  la.global_size(W, H, D).local_size(1, 1, 1);
+  la.global_size(W, H, D).local_size(localW, localH, localD);
   fn(stream(), la, outBuf, inBuf, 3.0f, static_cast<int32_t>(W),
      static_cast<int32_t>(H));
-  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
   for (size_t i = 0; i < N; i++) {
     EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 3.0f) << "index " << i;
+  }
+  for (size_t i = N; i < safeN; i++) {
+    if (output[i] != kSentinel) {
+      FAIL() << "workgroup count bug: write at index " << i << " (got "
+             << output[i] << ", expected sentinel " << kSentinel << ")";
+    }
   }
 }
 
@@ -275,18 +358,26 @@ TEST_P(KernelTest, LocalMemoryArgument) {
   if (!src)
     GTEST_SKIP() << "No local mem kernel for " << BackendName(backend());
 
-  const uint32_t localSize = 4;
-  const uint32_t numGroups = 2;
+  const uint32_t localSize = 32;
+  const uint32_t numGroups = 4;
   const uint32_t N = localSize * numGroups;
-  std::vector<float> input(N), output(numGroups, 0.0f);
+  // With the bug, N workgroups launch (instead of numGroups).  Each group
+  // writes to out[group_id] and reads A[gid] where gid spans N*localSize.
+  const uint32_t safeGroups = N;  // buggy workgroup count
+  const size_t safeInput = static_cast<size_t>(N) * localSize;
+  const float kSentinel = -1.0f;
+
+  std::vector<float> input(safeInput, 0.0f);
+  std::vector<float> output(safeGroups, kSentinel);
   for (uint32_t i = 0; i < N; i++) input[i] = static_cast<float>(i + 1);
 
   auto lib = device().loadLibraryFromText(src);
   auto fn = lib.lookupFunction("local_mem_sum");
 
-  auto inBuf = device().allocateBuffer(N * sizeof(float));
-  auto outBuf = device().allocateBuffer(numGroups * sizeof(float));
-  inBuf.copy(stream(), input.data(), N * sizeof(float));
+  auto inBuf = device().allocateBuffer(safeInput * sizeof(float));
+  auto outBuf = device().allocateBuffer(safeGroups * sizeof(float));
+  inBuf.copy(stream(), input.data(), safeInput * sizeof(float));
+  outBuf.copy(stream(), output.data(), safeGroups * sizeof(float));
 
   LaunchArgs la;
   la.global_size(N).local_size(localSize);
@@ -301,13 +392,21 @@ TEST_P(KernelTest, LocalMemoryArgument) {
        Attribute().localMem(localSize * sizeof(float)));
   }
 
-  outBuf.copyTo(stream(), output.data(), numGroups * sizeof(float));
+  outBuf.copyTo(stream(), output.data(), safeGroups * sizeof(float));
   stream().sync();
 
-  // Group 0: sum of {1,2,3,4} = 10
-  EXPECT_FLOAT_EQ(output[0], 10.0f);
-  // Group 1: sum of {5,6,7,8} = 26
-  EXPECT_FLOAT_EQ(output[1], 26.0f);
+  for (uint32_t g = 0; g < numGroups; g++) {
+    float expected = 0.0f;
+    for (uint32_t i = 0; i < localSize; i++)
+      expected += static_cast<float>(g * localSize + i + 1);
+    EXPECT_FLOAT_EQ(output[g], expected) << "group " << g;
+  }
+  for (uint32_t g = numGroups; g < safeGroups; g++) {
+    if (output[g] != kSentinel) {
+      FAIL() << "workgroup count bug: write at group " << g << " (got "
+             << output[g] << ", expected sentinel " << kSentinel << ")";
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -391,16 +490,22 @@ TEST_P(KernelTest, ArgumentBufferStruct) {
   const char* src = multConstSource();
   if (!src) GTEST_SKIP();
 
-  const size_t N = 16;
-  std::vector<float> input(N), output(N, 0.0f);
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+  const float kSentinel = -1.0f;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, kSentinel);
   for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
 
   auto lib = device().loadLibraryFromText(src);
   auto fn = lib.lookupFunction("mult_const_f");
 
-  auto inBuf = device().allocateBuffer(N * sizeof(float));
-  auto outBuf = device().allocateBuffer(N * sizeof(float));
-  inBuf.copy(stream(), input.data(), N * sizeof(float));
+  auto inBuf = device().allocateBuffer(safeN * sizeof(float));
+  auto outBuf = device().allocateBuffer(safeN * sizeof(float));
+  inBuf.copy(stream(), input.data(), safeN * sizeof(float));
+  outBuf.copy(stream(), output.data(), safeN * sizeof(float));
 
   // Use execute() with vector<Attribute> to pass args including an
   // ArgumentBuffer for the scale parameter.
@@ -410,16 +515,22 @@ TEST_P(KernelTest, ArgumentBufferStruct) {
   EXPECT_GE(ab.size(), sizeof(float));
 
   LaunchArgs la;
-  la.global_size(static_cast<uint32_t>(N)).local_size(1);
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
 
   // Pass arguments manually via execute().
   fn.execute(stream(), la,
              {Attribute(&outBuf), Attribute(&inBuf), Attribute(2.5f)});
-  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
   for (size_t i = 0; i < N; i++) {
     EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 2.5f) << "index " << i;
+  }
+  for (size_t i = N; i < safeN; i++) {
+    if (output[i] != kSentinel) {
+      FAIL() << "workgroup count bug: write at index " << i << " (got "
+             << output[i] << ", expected sentinel " << kSentinel << ")";
+    }
   }
 }
 
@@ -487,41 +598,63 @@ TEST_P(KernelTest, FunctionSpecialization) {
   const char* src = specializedKernelSource();
   if (!src) GTEST_SKIP();
 
-  const size_t N = 16;
-  std::vector<float> input(N), output(N, 0.0f);
+  const size_t N = 128;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+  const float kSentinel = -1.0f;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, kSentinel);
   for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i + 1);
 
   auto lib = device().loadLibraryFromText(src);
 
-  auto inBuf = device().allocateBuffer(N * sizeof(float));
-  auto outBuf = device().allocateBuffer(N * sizeof(float));
-  inBuf.copy(stream(), input.data(), N * sizeof(float));
+  auto inBuf = device().allocateBuffer(safeN * sizeof(float));
+  auto outBuf = device().allocateBuffer(safeN * sizeof(float));
+  inBuf.copy(stream(), input.data(), safeN * sizeof(float));
+  outBuf.copy(stream(), output.data(), safeN * sizeof(float));
 
   LaunchArgs la;
-  la.global_size(static_cast<uint32_t>(N)).local_size(1);
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
 
   // Specialize with USE_SCALE = true (function_constant(0)).
   {
+    // Re-fill output with sentinel before each dispatch.
+    outBuf.copy(stream(), output.data(), safeN * sizeof(float));
     auto fn = lib.lookupSpecializedFunction("specialized_fn", true);
     fn(stream(), la, outBuf, inBuf, 3.0f);
-    outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+    outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
     stream().sync();
 
     for (size_t i = 0; i < N; i++) {
       EXPECT_FLOAT_EQ(output[i], static_cast<float>(i + 1) * 3.0f)
           << "index " << i;
     }
+    for (size_t i = N; i < safeN; i++) {
+      if (output[i] != kSentinel) {
+        FAIL() << "workgroup count bug: write at index " << i << " (got "
+               << output[i] << ", expected sentinel " << kSentinel << ")";
+      }
+    }
   }
 
   // Specialize with USE_SCALE = false.
   {
+    std::fill(output.begin(), output.end(), kSentinel);
+    outBuf.copy(stream(), output.data(), safeN * sizeof(float));
     auto fn = lib.lookupSpecializedFunction("specialized_fn", false);
     fn(stream(), la, outBuf, inBuf, 3.0f);
-    outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+    outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
     stream().sync();
 
     for (size_t i = 0; i < N; i++) {
       EXPECT_FLOAT_EQ(output[i], static_cast<float>(i + 1)) << "index " << i;
+    }
+    for (size_t i = N; i < safeN; i++) {
+      if (output[i] != kSentinel) {
+        FAIL() << "workgroup count bug: write at index " << i << " (got "
+               << output[i] << ", expected sentinel " << kSentinel << ")";
+      }
     }
   }
 }
