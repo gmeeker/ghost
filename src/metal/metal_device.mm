@@ -397,7 +397,8 @@ void BufferMetal::fill(const ghost::Stream &s, size_t offset, size_t size,
 std::shared_ptr<Buffer>
 BufferMetal::createSubBuffer(const std::shared_ptr<Buffer> &self, size_t offset,
                              size_t size) {
-  return std::make_shared<SubBufferMetal>(self, mem, offset, size);
+  return std::make_shared<SubBufferMetal>(self, mem, baseOffset() + offset,
+                                          size);
 }
 
 SubBufferMetal::SubBufferMetal(std::shared_ptr<Buffer> parent,

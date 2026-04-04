@@ -261,7 +261,7 @@ void FunctionMetal::execute(const ghost::Stream &s,
       auto metal = static_cast<implementation::BufferMetal *>(
           i->asBuffer()->impl().get());
       [computeEncoder setBuffer:metal->mem.get()
-                         offset:0
+                         offset:metal->baseOffset()
                         atIndex:bufferIndex++];
       break;
     }
@@ -363,7 +363,7 @@ void FunctionMetal::executeIndirect(
       auto metal = static_cast<implementation::BufferMetal *>(
           i->asBuffer()->impl().get());
       [computeEncoder setBuffer:metal->mem.get()
-                         offset:0
+                         offset:metal->baseOffset()
                         atIndex:bufferIndex++];
       break;
     }

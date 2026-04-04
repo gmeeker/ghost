@@ -121,7 +121,8 @@ void FunctionDirectX::execute(const ghost::Stream& s,
         auto* dxBuf = static_cast<BufferDirectX*>(buf->impl().get());
         dxBuf->transitionTo(cmdList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         cmdList->SetComputeRootUnorderedAccessView(
-            rootIdx++, dxBuf->resource->GetGPUVirtualAddress());
+            rootIdx++,
+            dxBuf->resource->GetGPUVirtualAddress() + dxBuf->baseOffset());
         break;
       }
       case Attribute::Type_Image: {

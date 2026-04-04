@@ -441,7 +441,8 @@ void BufferVulkan::fill(const ghost::Stream& s, size_t offset, size_t sz,
 
 std::shared_ptr<Buffer> BufferVulkan::createSubBuffer(
     const std::shared_ptr<Buffer>& self, size_t offset, size_t sz) {
-  return std::make_shared<SubBufferVulkan>(self, dev, buffer, offset, sz);
+  return std::make_shared<SubBufferVulkan>(self, dev, buffer,
+                                           baseOffset() + offset, sz);
 }
 
 // ---------------------------------------------------------------------------

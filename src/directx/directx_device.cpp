@@ -429,7 +429,8 @@ void BufferDirectX::fill(const ghost::Stream& s, size_t offset, size_t sz,
 
 std::shared_ptr<Buffer> BufferDirectX::createSubBuffer(
     const std::shared_ptr<Buffer>& self, size_t offset, size_t sz) {
-  return std::make_shared<SubBufferDirectX>(self, dev, resource, offset, sz);
+  return std::make_shared<SubBufferDirectX>(self, dev, resource,
+                                            baseOffset() + offset, sz);
 }
 
 // ---------------------------------------------------------------------------
