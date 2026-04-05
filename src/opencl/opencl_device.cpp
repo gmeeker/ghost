@@ -388,13 +388,27 @@ std::shared_ptr<Buffer> BufferOpenCL::createSubBuffer(
   cl_mem sub = clCreateSubBuffer(mem, CL_MEM_READ_WRITE,
                                  CL_BUFFER_CREATE_TYPE_REGION, &region, &err);
   checkError(err);
-  return std::make_shared<SubBufferOpenCL>(self, opencl::ptr<cl_mem>(sub),
-                                           size);
+  return std::make_shared<SubBufferOpenCL>(self, opencl::ptr<cl_mem>(sub), size,
+                                           offset);
 }
 
 SubBufferOpenCL::SubBufferOpenCL(std::shared_ptr<Buffer> parent,
-                                 opencl::ptr<cl_mem> mem_, size_t bytes)
-    : BufferOpenCL(mem_, bytes), _parent(parent) {}
+                                 opencl::ptr<cl_mem> mem_, size_t bytes,
+                                 size_t offset)
+    : BufferOpenCL(mem_, bytes), _parent(parent), _offset(offset) {}
+
+std::shared_ptr<Buffer> SubBufferOpenCL::createSubBuffer(
+    const std::shared_ptr<Buffer>& self, size_t offset, size_t size) {
+  // OpenCL forbids creating a sub-buffer from a sub-buffer
+  // (CL_INVALID_MEM_OBJECT). Walk up to the root buffer and accumulate offsets.
+  size_t totalOffset = _offset + offset;
+  auto root = _parent;
+  while (auto* sub = dynamic_cast<SubBufferOpenCL*>(root.get())) {
+    totalOffset += sub->_offset;
+    root = sub->_parent;
+  }
+  return root->createSubBuffer(root, totalOffset, size);
+}
 
 MappedBufferOpenCL::MappedBufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes,
                                        size_t allocSize)

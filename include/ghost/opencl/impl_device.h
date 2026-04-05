@@ -94,9 +94,13 @@ class BufferOpenCL : public Buffer {
 class SubBufferOpenCL : public BufferOpenCL {
  public:
   std::shared_ptr<Buffer> _parent;
+  size_t _offset;
 
   SubBufferOpenCL(std::shared_ptr<Buffer> parent, opencl::ptr<cl_mem> mem_,
-                  size_t bytes);
+                  size_t bytes, size_t offset);
+
+  virtual std::shared_ptr<Buffer> createSubBuffer(
+      const std::shared_ptr<Buffer>& self, size_t offset, size_t size) override;
 };
 
 class MappedBufferOpenCL : public BufferOpenCL {
