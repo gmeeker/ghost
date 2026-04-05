@@ -764,7 +764,7 @@ void ImageVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
                        nullptr, 1, &barrier);
 
   VkBufferImageCopy region = {};
-  region.bufferOffset = 0;
+  region.bufferOffset = srcBuf->baseOffset();
   region.bufferRowLength =
       d.stride.x > 0 ? (uint32_t)(d.stride.x / d.pixelSize()) : 0;
   region.bufferImageHeight = 0;
@@ -872,7 +872,7 @@ void ImageVulkan::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
   VkBufferImageCopy region = {};
-  region.bufferOffset = 0;
+  region.bufferOffset = dstBuf->baseOffset();
   region.bufferRowLength =
       d.stride.x > 0 ? (uint32_t)(d.stride.x / d.pixelSize()) : 0;
   region.bufferImageHeight = 0;
@@ -968,6 +968,106 @@ void ImageVulkan::copyTo(const ghost::Stream& s, void* dst,
   dr.offset = 0;
   dr.size = dataSize;
   stream.deferredReads.push_back(dr);
+}
+
+void ImageVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
+                       const ImageDescription& d, const Size3& imageOrigin) {
+  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto* srcBuf = static_cast<BufferVulkan*>(src.impl().get());
+
+  stream.begin();
+
+  VkImageMemoryBarrier barrier = {};
+  barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  barrier.srcAccessMask = 0;
+  barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.image = image;
+  barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  barrier.subresourceRange.levelCount = 1;
+  barrier.subresourceRange.layerCount = 1;
+
+  vkCmdPipelineBarrier(stream.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 1, &barrier);
+
+  VkBufferImageCopy region = {};
+  region.bufferOffset = srcBuf->baseOffset();
+  region.bufferRowLength =
+      d.stride.x > 0 ? (uint32_t)(d.stride.x / d.pixelSize()) : 0;
+  region.bufferImageHeight = 0;
+  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  region.imageSubresource.layerCount = 1;
+  region.imageOffset.x = (int32_t)imageOrigin.x;
+  region.imageOffset.y = (int32_t)imageOrigin.y;
+  region.imageOffset.z = (int32_t)imageOrigin.z;
+  region.imageExtent.width = (uint32_t)d.size.x;
+  region.imageExtent.height = std::max((uint32_t)d.size.y, 1u);
+  region.imageExtent.depth = std::max((uint32_t)d.size.z, 1u);
+
+  vkCmdCopyBufferToImage(stream.commandBuffer, srcBuf->buffer, image,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+  barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+  barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+  vkCmdPipelineBarrier(stream.commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 1, &barrier);
+}
+
+void ImageVulkan::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+                         const ImageDescription& d,
+                         const Size3& imageOrigin) const {
+  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto* dstBuf = static_cast<BufferVulkan*>(dst.impl().get());
+
+  stream.begin();
+
+  VkImageMemoryBarrier barrier = {};
+  barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  barrier.image = image;
+  barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  barrier.subresourceRange.levelCount = 1;
+  barrier.subresourceRange.layerCount = 1;
+
+  vkCmdPipelineBarrier(
+      stream.commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+  VkBufferImageCopy region = {};
+  region.bufferOffset = dstBuf->baseOffset();
+  region.bufferRowLength =
+      d.stride.x > 0 ? (uint32_t)(d.stride.x / d.pixelSize()) : 0;
+  region.bufferImageHeight = 0;
+  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  region.imageSubresource.layerCount = 1;
+  region.imageOffset.x = (int32_t)imageOrigin.x;
+  region.imageOffset.y = (int32_t)imageOrigin.y;
+  region.imageOffset.z = (int32_t)imageOrigin.z;
+  region.imageExtent.width = (uint32_t)d.size.x;
+  region.imageExtent.height = std::max((uint32_t)d.size.y, 1u);
+  region.imageExtent.depth = std::max((uint32_t)d.size.z, 1u);
+
+  vkCmdCopyImageToBuffer(stream.commandBuffer, image,
+                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstBuf->buffer,
+                         1, &region);
+
+  barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+  barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+  vkCmdPipelineBarrier(stream.commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 1, &barrier);
 }
 
 // ---------------------------------------------------------------------------

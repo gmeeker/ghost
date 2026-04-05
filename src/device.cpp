@@ -81,6 +81,17 @@ void Device::freeHostMemory(void* ptr) const {
 size_t Device::getMemoryPoolSize() const { return _poolSize; }
 
 void Device::setMemoryPoolSize(size_t bytes) { _poolSize = bytes; }
+
+void Image::copy(const ghost::Stream& s, const ghost::Buffer& src,
+                 const ImageDescription& descr, const Size3& imageOrigin) {
+  throw ghost::unsupported_error();
+}
+
+void Image::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+                   const ImageDescription& descr,
+                   const Size3& imageOrigin) const {
+  throw ghost::unsupported_error();
+}
 }  // namespace implementation
 
 Event::Event(std::shared_ptr<implementation::Event> impl) : _impl(impl) {}
@@ -182,6 +193,16 @@ void Image::copyTo(const Stream& s, Buffer& dst,
 void Image::copyTo(const Stream& s, void* dst,
                    const ImageDescription& descr) const {
   _impl->copyTo(s, dst, descr);
+}
+
+void Image::copy(const Stream& s, const Buffer& src,
+                 const ImageDescription& descr, const Size3& imageOrigin) {
+  _impl->copy(s, src, descr, imageOrigin);
+}
+
+void Image::copyTo(const Stream& s, Buffer& dst, const ImageDescription& descr,
+                   const Size3& imageOrigin) const {
+  _impl->copyTo(s, dst, descr, imageOrigin);
 }
 
 Device::Device(std::shared_ptr<implementation::Device> impl) : _impl(impl) {}

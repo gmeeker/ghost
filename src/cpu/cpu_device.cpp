@@ -487,6 +487,32 @@ void ImageCPU::copyTo(const ghost::Stream& s, void* dst,
   copyImageData(dst, dRow, dDepth, data, rowBytes, depthBytes, descr);
 }
 
+void ImageCPU::copy(const ghost::Stream& s, const ghost::Buffer& src,
+                    const ImageDescription& srcDescr,
+                    const Size3& imageOrigin) {
+  auto srcBuf = static_cast<const BufferCPU*>(src.impl().get());
+  size_t sRow = srcRowBytes(srcDescr);
+  size_t sDepth = srcDepthBytes(srcDescr, sRow);
+  size_t pixSize = descr.pixelSize();
+  auto dst8 = static_cast<uint8_t*>(data) + imageOrigin.z * depthBytes +
+              imageOrigin.y * rowBytes + imageOrigin.x * pixSize;
+  copyImageData(dst8, rowBytes, depthBytes, srcBuf->ptr, sRow, sDepth,
+                srcDescr);
+}
+
+void ImageCPU::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+                      const ImageDescription& dstDescr,
+                      const Size3& imageOrigin) const {
+  auto dstBuf = static_cast<BufferCPU*>(dst.impl().get());
+  size_t dRow = srcRowBytes(dstDescr);
+  size_t dDepth = srcDepthBytes(dstDescr, dRow);
+  size_t pixSize = descr.pixelSize();
+  auto src8 = static_cast<const uint8_t*>(data) + imageOrigin.z * depthBytes +
+              imageOrigin.y * rowBytes + imageOrigin.x * pixSize;
+  copyImageData(dstBuf->ptr, dRow, dDepth, src8, rowBytes, depthBytes,
+                dstDescr);
+}
+
 DeviceCPU::DeviceCPU(const SharedContext& share) : cores(getNumberOfCores()) {}
 
 DeviceCPU::DeviceCPU(const GpuInfo&) : cores(getNumberOfCores()) {}

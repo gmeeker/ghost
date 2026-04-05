@@ -183,6 +183,12 @@ class ImageDirectX : public Image {
                       const ImageDescription& descr) const override;
   virtual void copyTo(const ghost::Stream& s, void* dst,
                       const ImageDescription& descr) const override;
+  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+                    const ImageDescription& descr,
+                    const Size3& imageOrigin) override;
+  virtual void copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+                      const ImageDescription& descr,
+                      const Size3& imageOrigin) const override;
 
   void transitionTo(ID3D12GraphicsCommandList* cmdList,
                     D3D12_RESOURCE_STATES newState);

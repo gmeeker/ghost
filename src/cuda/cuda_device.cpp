@@ -538,6 +538,121 @@ void ImageCUDA::copyTo(const ghost::Stream& s, void* dst,
   }
 }
 
+void ImageCUDA::copy(const ghost::Stream& s, const ghost::Buffer& src,
+                     const ImageDescription& d, const Size3& imageOrigin) {
+  auto src_impl = static_cast<implementation::BufferCUDA*>(src.impl().get());
+  if (descr.size.z > 1) {
+    CUDA_MEMCPY3D a;
+    a.srcXInBytes = 0;
+    a.srcY = 0;
+    a.srcZ = 0;
+    a.srcLOD = 0;
+    a.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+    a.srcHost = nullptr;
+    a.srcDevice = src_impl->mem;
+    a.srcArray = nullptr;
+    a.srcPitch = d.stride.x;
+    a.srcHeight = d.stride.y;
+    a.dstXInBytes = imageOrigin.x * descr.pixelSize();
+    a.dstY = imageOrigin.y;
+    a.dstZ = imageOrigin.z;
+    a.dstLOD = 0;
+    a.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+    a.dstHost = nullptr;
+    a.dstDevice = mem;
+    a.dstArray = nullptr;
+    a.dstPitch = descr.stride.x;
+    a.dstHeight = descr.stride.y;
+    a.WidthInBytes = d.size.x * d.pixelSize();
+    a.Height = d.size.y;
+    a.Depth = d.size.z;
+    auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    CUresult err;
+    err = cuMemcpy3DAsync(&a, stream_impl->queue);
+    checkError(err);
+  } else {
+    CUDA_MEMCPY2D a;
+    a.srcXInBytes = 0;
+    a.srcY = 0;
+    a.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+    a.srcHost = nullptr;
+    a.srcDevice = src_impl->mem;
+    a.srcArray = nullptr;
+    a.srcPitch = d.stride.x;
+    a.dstXInBytes = imageOrigin.x * descr.pixelSize();
+    a.dstY = imageOrigin.y;
+    a.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+    a.dstHost = nullptr;
+    a.dstDevice = mem;
+    a.dstArray = nullptr;
+    a.dstPitch = descr.stride.x;
+    a.WidthInBytes = d.size.x * d.pixelSize();
+    a.Height = d.size.y;
+    auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    CUresult err;
+    err = cuMemcpy2DAsync(&a, stream_impl->queue);
+    checkError(err);
+  }
+}
+
+void ImageCUDA::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+                       const ImageDescription& d,
+                       const Size3& imageOrigin) const {
+  auto dst_impl = static_cast<implementation::BufferCUDA*>(dst.impl().get());
+  if (descr.size.z > 1) {
+    CUDA_MEMCPY3D a;
+    a.srcXInBytes = imageOrigin.x * descr.pixelSize();
+    a.srcY = imageOrigin.y;
+    a.srcZ = imageOrigin.z;
+    a.srcLOD = 0;
+    a.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+    a.srcHost = nullptr;
+    a.srcDevice = mem;
+    a.srcArray = nullptr;
+    a.srcPitch = descr.stride.x;
+    a.srcHeight = descr.stride.y;
+    a.dstXInBytes = 0;
+    a.dstY = 0;
+    a.dstZ = 0;
+    a.dstLOD = 0;
+    a.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+    a.dstHost = nullptr;
+    a.dstDevice = dst_impl->mem;
+    a.dstArray = nullptr;
+    a.dstPitch = d.stride.x;
+    a.dstHeight = d.stride.y;
+    a.WidthInBytes = d.size.x * d.pixelSize();
+    a.Height = d.size.y;
+    a.Depth = d.size.z;
+    auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    CUresult err;
+    err = cuMemcpy3DAsync(&a, stream_impl->queue);
+    checkError(err);
+  } else {
+    CUDA_MEMCPY2D a;
+    a.srcXInBytes = imageOrigin.x * descr.pixelSize();
+    a.srcY = imageOrigin.y;
+    a.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+    a.srcHost = nullptr;
+    a.srcDevice = mem;
+    a.srcArray = nullptr;
+    a.srcPitch = descr.stride.x;
+    a.dstXInBytes = 0;
+    a.dstY = 0;
+    a.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+    a.dstHost = nullptr;
+    a.dstDevice = dst_impl->mem;
+    a.dstArray = nullptr;
+    a.dstPitch = d.stride.x;
+    a.WidthInBytes = d.size.x * d.pixelSize();
+    a.Height = d.size.y;
+    auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    CUresult err;
+    err = cuMemcpy2DAsync(&a, stream_impl->queue);
+    checkError(err);
+  }
+}
+
 DeviceCUDA::DeviceCUDA(const SharedContext& share) {
   CUresult err = cuInit(0);
   checkError(err);

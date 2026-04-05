@@ -94,6 +94,10 @@ getTextureDescriptor(const ImageDescription &descr, bool isPrivate = true) {
                                                          width:descr.size.x
                                                         height:descr.size.y
                                                      mipmapped:NO];
+  if (descr.size.z > 1) {
+    d.get().textureType = MTLTextureType3D;
+    d.get().depth = descr.size.z;
+  }
   switch (descr.access) {
   case Access_ReadOnly:
     d.get().usage = MTLTextureUsageShaderRead;
@@ -121,6 +125,10 @@ getTextureDescriptor(id<MTLResource> resource, const ImageDescription &descr) {
                                                          width:descr.size.x
                                                         height:descr.size.y
                                                      mipmapped:NO];
+  if (descr.size.z > 1) {
+    d.get().textureType = MTLTextureType3D;
+    d.get().depth = descr.size.z;
+  }
   switch (descr.access) {
   case Access_ReadOnly:
     d.get().usage = MTLTextureUsageShaderRead;
@@ -545,7 +553,7 @@ void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
   MTLOrigin dst_origin = {0, 0, 0};
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
   [blit copyFromBuffer:src_impl->mem.get()
-             sourceOffset:0
+             sourceOffset:src_impl->baseOffset()
         sourceBytesPerRow:descr_.stride.x
       sourceBytesPerImage:descr_.stride.y
                sourceSize:region.size
@@ -610,7 +618,7 @@ void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
                   sourceOrigin:region.origin
                     sourceSize:region.size
                       toBuffer:dst_impl->mem.get()
-             destinationOffset:0
+             destinationOffset:dst_impl->baseOffset()
         destinationBytesPerRow:descr_.stride.x
       destinationBytesPerImage:descr_.stride.y];
   [blit endEncoding];
@@ -656,6 +664,54 @@ void ImageMetal::copyTo(const ghost::Stream &s, void *dst,
   [commandBuffer commit];
   [commandBuffer waitUntilCompleted];
   memcpy(dst, [staging contents], dataSize);
+}
+
+void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
+                      const ImageDescription &descr_,
+                      const Size3 &imageOrigin) {
+  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
+  MTLRegion region = {{0, 0, 0}, {descr_.size.x, descr_.size.y, descr_.size.z}};
+  MTLOrigin dst_origin = {imageOrigin.x, imageOrigin.y, imageOrigin.z};
+  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+  [blit copyFromBuffer:src_impl->mem.get()
+             sourceOffset:src_impl->baseOffset()
+        sourceBytesPerRow:descr_.stride.x
+      sourceBytesPerImage:descr_.stride.y
+               sourceSize:region.size
+                toTexture:mem.get()
+         destinationSlice:0
+         destinationLevel:0
+        destinationOrigin:dst_origin];
+  [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
+}
+
+void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
+                        const ImageDescription &descr_,
+                        const Size3 &imageOrigin) const {
+  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  auto dst_impl = static_cast<implementation::BufferMetal *>(dst.impl().get());
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
+  MTLRegion region = {{imageOrigin.x, imageOrigin.y, imageOrigin.z},
+                      {descr_.size.x, descr_.size.y, descr_.size.z}};
+  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+  [blit copyFromTexture:mem.get()
+                   sourceSlice:0
+                   sourceLevel:0
+                  sourceOrigin:region.origin
+                    sourceSize:region.size
+                      toBuffer:dst_impl->mem.get()
+             destinationOffset:dst_impl->baseOffset()
+        destinationBytesPerRow:descr_.stride.x
+      destinationBytesPerImage:descr_.stride.y];
+  [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
 DeviceMetal::DeviceMetal(const SharedContext &share) {

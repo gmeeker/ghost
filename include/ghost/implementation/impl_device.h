@@ -291,6 +291,12 @@ class Image {
                       const ImageDescription& descr) const = 0;
   virtual void copyTo(const ghost::Stream& s, void* dst,
                       const ImageDescription& descr) const = 0;
+
+  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+                    const ImageDescription& descr, const Size3& imageOrigin);
+  virtual void copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+                      const ImageDescription& descr,
+                      const Size3& imageOrigin) const;
 };
 
 /// @brief Abstract backend interface for a GPU device.

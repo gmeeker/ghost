@@ -228,6 +228,24 @@ class Image {
   /// @param descr Image description specifying dimensions and format.
   void copyTo(const Stream& s, void* dst, const ImageDescription& descr) const;
 
+  /// @brief Copy a region from a buffer into this image at the given origin.
+  /// @param s The stream to enqueue the copy on.
+  /// @param src Source buffer containing pixel data.
+  /// @param descr Image description specifying the region dimensions and
+  /// format.
+  /// @param imageOrigin Destination origin within this image (x, y, z).
+  void copy(const Stream& s, const Buffer& src, const ImageDescription& descr,
+            const Size3& imageOrigin);
+
+  /// @brief Copy a region from this image at the given origin into a buffer.
+  /// @param s The stream to enqueue the copy on.
+  /// @param[out] dst Destination buffer.
+  /// @param descr Image description specifying the region dimensions and
+  /// format.
+  /// @param imageOrigin Source origin within this image (x, y, z).
+  void copyTo(const Stream& s, Buffer& dst, const ImageDescription& descr,
+              const Size3& imageOrigin) const;
+
  private:
   std::shared_ptr<implementation::Image> _impl;
 };

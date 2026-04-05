@@ -586,6 +586,38 @@ void ImageOpenCL::copyTo(const ghost::Stream& s, void* dst,
   stream_impl->addEvent();
 }
 
+void ImageOpenCL::copy(const ghost::Stream& s, const ghost::Buffer& src,
+                       const ImageDescription& descr,
+                       const Size3& imageOrigin) {
+  auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
+  auto src_impl = static_cast<implementation::BufferOpenCL*>(src.impl().get());
+  cl_int err;
+  size_t src_offset = 0;
+  size_t dst_origin[] = {imageOrigin.x, imageOrigin.y, imageOrigin.z};
+  size_t region[] = {descr.size.x, descr.size.y, descr.size.z};
+  err = clEnqueueCopyBufferToImage(
+      stream_impl->queue, src_impl->mem, mem, src_offset, dst_origin, region,
+      stream_impl->events.size(), stream_impl->events, stream_impl->event());
+  checkError(err);
+  stream_impl->addEvent();
+}
+
+void ImageOpenCL::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+                         const ImageDescription& descr,
+                         const Size3& imageOrigin) const {
+  auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
+  auto dst_impl = static_cast<implementation::BufferOpenCL*>(dst.impl().get());
+  cl_int err;
+  size_t src_origin[] = {imageOrigin.x, imageOrigin.y, imageOrigin.z};
+  size_t dst_offset = 0;
+  size_t region[] = {descr.size.x, descr.size.y, descr.size.z};
+  err = clEnqueueCopyImageToBuffer(
+      stream_impl->queue, mem, dst_impl->mem, src_origin, region, dst_offset,
+      stream_impl->events.size(), stream_impl->events, stream_impl->event());
+  checkError(err);
+  stream_impl->addEvent();
+}
+
 // ---------------------------------------------------------------------------
 // BufferPool
 // ---------------------------------------------------------------------------
