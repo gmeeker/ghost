@@ -51,6 +51,17 @@ class GhostConan(ConanFile):
     def _supports_opencl(self):
         return self.settings.os in ("Windows", "Linux", "Macos")
 
+    @property
+    def cuda_toolkit_path(self):
+        if self.settings.os == "Windows":
+            cuda_toolkit = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v' + str(self.settings.cuda.version)
+        else:
+            cuda_toolkit = '/usr/local/cuda-' + str(self.settings.cuda.version)
+        if os.path.exists(cuda_toolkit):
+            return cuda_toolkit
+        else:
+            return None
+
     def configure(self):
         if not self._supports_cuda() or not self.options.get_safe("with_cuda", False):
             self.settings.rm_safe("cuda")
@@ -58,10 +69,9 @@ class GhostConan(ConanFile):
     def config_options(self):
         if self.settings.os == 'Windows':
             self.options.rm_safe("fPIC")
-        if not self._supports_cuda():
+        if not (self._supports_cuda() and self.settings.cuda):
             self.options.rm_safe("with_cuda")
-        elif not self.settings.cuda:
-            self.options.rm_safe("with_cuda")
+            self.options.rm_safe("with_cuda_nvrtc")
         if not self._supports_directx():
             self.options.rm_safe("with_directx")
         if not is_apple_os(self):
@@ -99,11 +109,8 @@ class GhostConan(ConanFile):
             if self.options.get_safe("static_nvrtc", False):
                 tc.variables['WITH_CUDA_NVRTC_STATIC'] = 'ON'
             if self.settings.cuda:
-                if self.settings.os == "Windows":
-                    cuda_toolkit = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v' + str(self.settings.cuda.version)
-                else:
-                    cuda_toolkit = '/usr/local/cuda-' + str(self.settings.cuda.version)
-                if os.path.exists(cuda_toolkit):
+                cuda_toolkit = self.cuda_toolkit_path
+                if cuda_toolkit:
                     tc.variables['CUDAToolkit_ROOT'] = cuda_toolkit.replace('\\', '/')
         if self.options.get_safe("with_directx", False):
             tc.variables['WITH_DIRECTX'] = 'ON'
@@ -135,8 +142,18 @@ class GhostConan(ConanFile):
         self.cpp_info.set_property("cmake_target_name", "Ghost::Ghost")
         self.cpp_info.set_property("pkg_config_name", "ghost")
         self.cpp_info.libs = ["Ghost"]
-        if self.options.get_safe("with_cuda_nvrtc", False) and self.options.get_safe("static_nvrtc", False):
-            pass # TODO
+        if self.options.get_safe("with_cuda_nvrtc", False) and not self.options.shared:
+            if self.options.get_safe("static_nvrtc", False):
+                self.cpp_info.libs += ['nvrtc_static', 'nvrtc-builtins_static', 'nvptxcompiler_static']
+            else:
+                self.cpp_info.libs += ['nvrtc']
+            cuda_toolkit = self.cuda_toolkit_path
+            if cuda_toolkit:
+                if self.settings.os == "Windows":
+                    libpath = os.path.join(cuda_toolkit, 'lib', 'x64')
+                else:
+                    libpath = os.path.join(cuda_toolkit, 'lib64')
+                self.cpp_info.libdirs += [libpath]
         if self.options.get_safe("with_opencl", False):
             self.cpp_info.frameworks.append('OpenCL')
         if self.options.get_safe("with_metal", False):
