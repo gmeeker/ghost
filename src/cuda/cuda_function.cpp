@@ -253,8 +253,16 @@ void LibraryCUDA::loadFromText(const std::string& text,
   gpu_arch << "--gpu-architecture=sm_" << _dev.computeCapability.major
            << _dev.computeCapability.minor;
   std::string gpu_arch_str = gpu_arch.str();
-  const char* opts[] = {gpu_arch_str.c_str()};
-  nvrtcResult compileResult = nvrtcCompileProgram(prog, 1, opts);
+  const char* opts[] = {
+#ifdef WITH_CUDA_NVRTC_INCLUDE_PATH
+      "-I" WITH_CUDA_NVRTC_INCLUDE_PATH,
+#endif
+#ifdef WITH_CUDA_NVRTC_STD_INCLUDE_PATH
+      "-I" WITH_CUDA_NVRTC_STD_INCLUDE_PATH,
+#endif
+      gpu_arch_str.c_str()};
+  nvrtcResult compileResult =
+      nvrtcCompileProgram(prog, sizeof(opts) / sizeof(opts[0]), opts);
   size_t logSize;
   checkNVRTCError(nvrtcGetProgramLogSize(prog, &logSize));
   std::vector<char> log(logSize);

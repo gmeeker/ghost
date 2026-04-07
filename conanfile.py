@@ -112,6 +112,13 @@ class GhostConan(ConanFile):
                 cuda_toolkit = self.cuda_toolkit_path
                 if cuda_toolkit:
                     tc.variables['CUDAToolkit_ROOT'] = cuda_toolkit.replace('\\', '/')
+                    include_path = os.path.join(cuda_toolkit, 'include')
+                    if os.path.exists(include_path):
+                        tc.variables['WITH_CUDA_NVRTC_INCLUDE_PATH'] = include_path.replace('\\', '/')
+                    if os.path.exists(os.path.join(include_path, 'cuda', 'std')):
+                        tc.variables['WITH_CUDA_NVRTC_STD_INCLUDE_PATH'] = os.path.join(include_path, 'cuda', 'std').replace('\\', '/')
+                    elif os.path.exists(os.path.join(include_path, 'cccl', 'cuda', 'std')):
+                        tc.variables['WITH_CUDA_NVRTC_STD_INCLUDE_PATH'] = os.path.join(include_path, 'cccl', 'cuda', 'std').replace('\\', '/')
         if self.options.get_safe("with_directx", False):
             tc.variables['WITH_DIRECTX'] = 'ON'
         tc.variables['WITH_OPENCL'] = 'ON' if self.options.get_safe("with_opencl", False) else 'OFF'
