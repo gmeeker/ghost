@@ -56,8 +56,9 @@ class LibraryMetal : public Library {
 
   LibraryMetal(const DeviceMetal& dev, bool retainBinary = false);
 
-  void loadFromText(const std::string& text, const std::string& options);
-  void loadFromData(const void* data, size_t len, const std::string& options);
+  void loadFromText(const std::string& text, const CompilerOptions& options);
+  void loadFromData(const void* data, size_t len,
+                    const CompilerOptions& options);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
   virtual ghost::Function specializeFunction(
@@ -73,7 +74,8 @@ class LibraryMetal : public Library {
   std::string _archivePath;
   mutable bool _archiveDirty = false;
 
-  void initArchive(const void* data, size_t len, const std::string& options);
+  void initArchive(const void* data, size_t len,
+                   const CompilerOptions& options);
   void saveArchive() const;
 #endif
 };

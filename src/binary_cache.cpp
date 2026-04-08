@@ -15,9 +15,12 @@
 #include <ghost/binary_cache.h>
 #include <ghost/device.h>
 #include <ghost/digest.h>
+#include <ghost/implementation/impl_function.h>
 #include <ghost/io.h>
 #include <string.h>
 #include <time.h>
+
+#include <sstream>
 
 #if WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -38,11 +41,48 @@
 #include <vector>
 
 namespace ghost {
+
+std::string CompilerOptions::buildFlags() const {
+  std::ostringstream result;
+  result << flags;
+  for (auto& arg : arguments) {
+    if (result.tellp() > 0) result << ' ';
+    result << arg;
+  }
+  for (auto& def : defines) {
+    if (result.tellp() > 0) result << ' ';
+    result << "-D" << def.first;
+    if (!def.second.empty()) result << '=' << def.second;
+  }
+  return result.str();
+}
+
+void CompilerOptions::updateDigest(Digest& d) const {
+  static const char sep = '\0';
+  if (!flags.empty()) d.update(flags.c_str(), flags.size());
+  for (auto& arg : arguments) {
+    d.update(&sep, 1);
+    d.update(arg.c_str(), arg.size());
+  }
+  for (auto& def : defines) {
+    d.update(&sep, 1);
+    d.update(def.first.c_str(), def.first.size());
+    d.update("=", 1);
+    d.update(def.second.c_str(), def.second.size());
+  }
+  for (auto& hdr : headers) {
+    d.update(&sep, 1);
+    d.update(hdr.first.c_str(), hdr.first.size());
+    d.update(&sep, 1);
+    d.update(hdr.second.c_str(), hdr.second.size());
+  }
+}
+
 bool BinaryCache::isEnabled() const { return !cachePath.empty(); }
 
 void BinaryCache::makeDigest(Digest& d, const implementation::Device& dev,
                              size_t count, const void* data, size_t length,
-                             const std::string& options) {
+                             const CompilerOptions& options) {
   for (size_t i = 0; i < count; i++) {
     std::string vendor = dev.getAttribute(kDeviceVendor).asString();
     std::string name = dev.getAttribute(kDeviceName).asString();
@@ -53,7 +93,7 @@ void BinaryCache::makeDigest(Digest& d, const implementation::Device& dev,
     if (!driverVersion.empty())
       d.update(driverVersion.c_str(), driverVersion.size());
   }
-  if (!options.empty()) d.update(options.c_str(), options.size());
+  options.updateDigest(d);
   if (data) d.update(data, length);
 }
 
@@ -108,11 +148,11 @@ void BinaryCache::purgeBinaries(const implementation::Device& dev,
 bool BinaryCache::loadBinaries(
     std::vector<std::vector<unsigned char>>& binaries,
     std::vector<size_t>& sizes, const implementation::Device& dev,
-    const void* data, size_t length, const std::string& options) const {
+    const void* data, size_t length, const CompilerOptions& options) const {
   if (cachePath.empty()) return false;
   size_t count = (size_t)dev.getAttribute(kDeviceCount).asInt();
   Digest f, d;
-  makeDigest(d, dev, count, nullptr, 0, "");
+  makeDigest(d, dev, count, nullptr, 0, CompilerOptions());
   makeDigest(f, dev, count, data, length, options);
   FileWrapper file;
   file = fopen(
@@ -156,10 +196,10 @@ void BinaryCache::saveBinaries(const implementation::Device& dev,
                                const std::vector<unsigned char*>& binaries,
                                const std::vector<size_t>& sizes,
                                const void* data, size_t length,
-                               const std::string& options) const {
+                               const CompilerOptions& options) const {
   if (cachePath.empty()) return;
   Digest f, d;
-  makeDigest(d, dev, binaries.size(), nullptr, 0, "");
+  makeDigest(d, dev, binaries.size(), nullptr, 0, CompilerOptions());
   makeDigest(f, dev, binaries.size(), data, length, options);
   size_t i;
 

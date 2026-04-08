@@ -316,10 +316,12 @@ class Device {
  public:
   static BinaryCache& binaryCache();
   virtual ghost::Library loadLibraryFromText(
-      const std::string& text, const std::string& options = "",
+      const std::string& text,
+      const CompilerOptions& options = CompilerOptions(),
       bool retainBinary = false) const = 0;
   virtual ghost::Library loadLibraryFromData(
-      const void* data, size_t len, const std::string& options = "",
+      const void* data, size_t len,
+      const CompilerOptions& options = CompilerOptions(),
       bool retainBinary = false) const = 0;
 
   /// @brief Load a GPU program from a file path.

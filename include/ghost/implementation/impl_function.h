@@ -49,6 +49,38 @@ enum FunctionAttributeId {
   kFunctionPrivateMemory,
 };
 
+class Digest;
+
+/// @brief Device specific compiler options.
+///
+/// Some fields may be ignored by some devices, loading binary formats may
+/// ignore all of them. 'defines' should be used by all devices, if possible.
+/// 'arguments' is preferred over 'flags' unless you know both are supported.
+class CompilerOptions {
+ public:
+  CompilerOptions() = default;
+
+  explicit CompilerOptions(const std::string& flags) : flags(flags) {}
+
+  /// @brief Build a combined flags string from all fields.
+  ///
+  /// Concatenates flags, arguments, and defines (as -Dkey=value) into a
+  /// single command-line string suitable for backends like OpenCL.
+  std::string buildFlags() const;
+
+  /// @brief Update a digest with all fields for binary cache hashing.
+  void updateDigest(Digest& d) const;
+
+  /// @brief Command line style arguments "-Ipath1 -Ipath2".
+  std::string flags;
+  /// @brief Like 'flags' but some devices require the arguments to be split.
+  std::vector<std::string> arguments;
+  /// @brief Pairs of defines, -Dfirst=second or -Dfirst if second is empty.
+  std::vector<std::pair<std::string, std::string>> defines;
+  /// @brief Header file name and contents for NVRTC only.
+  std::vector<std::pair<std::string, std::string>> headers;
+};
+
 class Function;
 class Library;
 class Stream;

@@ -191,7 +191,7 @@ LibraryDirectX::LibraryDirectX(const DeviceDirectX& dev) : _dev(dev) {}
 LibraryDirectX::~LibraryDirectX() {}
 
 void LibraryDirectX::loadFromCache(const void* data, size_t length,
-                                   const std::string& options) {
+                                   const CompilerOptions& options) {
   auto& cache = Device::binaryCache();
   if (!cache.isEnabled()) return;
 
@@ -203,7 +203,7 @@ void LibraryDirectX::loadFromCache(const void* data, size_t length,
 }
 
 void LibraryDirectX::saveToCache(const void* data, size_t length,
-                                 const std::string& options) const {
+                                 const CompilerOptions& options) const {
   auto& cache = Device::binaryCache();
   if (!cache.isEnabled()) return;
 
@@ -214,7 +214,7 @@ void LibraryDirectX::saveToCache(const void* data, size_t length,
 }
 
 void LibraryDirectX::loadFromData(const void* data, size_t len,
-                                  const std::string& options) {
+                                  const CompilerOptions& options) {
   // Try cache first
   loadFromCache(data, len, options);
   if (!_bytecode.empty()) return;

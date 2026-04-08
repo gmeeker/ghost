@@ -916,7 +916,7 @@ DeviceOpenCL::DeviceOpenCL(cl_platform_id platform, cl_device_id device) {
 }
 
 ghost::Library DeviceOpenCL::loadLibraryFromText(const std::string& text,
-                                                 const std::string& options,
+                                                 const CompilerOptions& options,
                                                  bool retainBinary) const {
   auto ptr = std::make_shared<implementation::LibraryOpenCL>(*this);
   ptr->loadFromText(text, options);
@@ -924,7 +924,7 @@ ghost::Library DeviceOpenCL::loadLibraryFromText(const std::string& text,
 }
 
 ghost::Library DeviceOpenCL::loadLibraryFromData(const void* data, size_t len,
-                                                 const std::string& options,
+                                                 const CompilerOptions& options,
                                                  bool retainBinary) const {
   auto ptr = std::make_shared<implementation::LibraryOpenCL>(*this);
   ptr->loadFromData(data, len, options);

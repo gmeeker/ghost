@@ -465,7 +465,7 @@ LibraryMetal::LibraryMetal(const DeviceMetal &dev, bool retainBinary)
 
 #if defined(MAC_OS_VERSION_11_0)
 void LibraryMetal::initArchive(const void *data, size_t len,
-                               const std::string &options) {
+                               const CompilerOptions &options) {
   if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
     if (!_dev.binaryCache().isEnabled())
       return;
@@ -506,12 +506,21 @@ void LibraryMetal::saveArchive() const {
 #endif
 
 void LibraryMetal::loadFromText(const std::string &source,
-                                const std::string &options) {
+                                const CompilerOptions &options) {
   NSError *err = nil;
   MTLCompileOptions *compileOptions = [MTLCompileOptions new];
 #if !__has_feature(objc_arc)
   [compileOptions autorelease];
 #endif
+  if (!options.defines.empty()) {
+    NSMutableDictionary *macros = [NSMutableDictionary dictionary];
+    for (auto &def : options.defines) {
+      NSString *key = [NSString stringWithUTF8String:def.first.c_str()];
+      NSString *val = [NSString stringWithUTF8String:def.second.c_str()];
+      macros[key] = val;
+    }
+    compileOptions.preprocessorMacros = macros;
+  }
   library = [_dev.dev.get()
       newLibraryWithSource:[NSString stringWithUTF8String:source.c_str()]
                    options:compileOptions
@@ -529,7 +538,7 @@ void LibraryMetal::loadFromText(const std::string &source,
 }
 
 void LibraryMetal::loadFromData(const void *data, size_t len,
-                                const std::string &options) {
+                                const CompilerOptions &options) {
   if (data == nullptr) {
     library = [_dev.dev.get() newDefaultLibrary];
   } else {

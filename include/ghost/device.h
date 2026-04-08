@@ -298,9 +298,10 @@ class Device {
   /// @param retainBinary If true, retain compiled binary for
   /// Library::getBinary().
   /// @return The compiled Library.
-  Library loadLibraryFromText(const std::string& text,
-                              const std::string& options = "",
-                              bool retainBinary = false) const;
+  Library loadLibraryFromText(
+      const std::string& text,
+      const CompilerOptions& options = CompilerOptions(),
+      bool retainBinary = false) const;
 
   /// @brief Load a GPU program from pre-compiled binary data.
   /// @param data Pointer to the binary data.
@@ -308,9 +309,10 @@ class Device {
   /// @param options Backend-specific options (default empty).
   /// @param retainBinary If true, retain binary data for Library::getBinary().
   /// @return The loaded Library.
-  Library loadLibraryFromData(const void* data, size_t len,
-                              const std::string& options = "",
-                              bool retainBinary = false) const;
+  Library loadLibraryFromData(
+      const void* data, size_t len,
+      const CompilerOptions& options = CompilerOptions(),
+      bool retainBinary = false) const;
 
   /// @brief Create a new stream for enqueuing operations.
   /// @return A new Stream.

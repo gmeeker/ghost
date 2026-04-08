@@ -225,7 +225,7 @@ void LibraryOpenCL::checkBuildLog(cl_int err0) {
 }
 
 void LibraryOpenCL::loadFromText(const std::string& text,
-                                 const std::string& options) {
+                                 const CompilerOptions& options) {
   opencl::ptr<cl_context> context = _dev.context;
   cl_int err;
   try {
@@ -237,7 +237,8 @@ void LibraryOpenCL::loadFromText(const std::string& text,
   program = opencl::ptr<cl_program>(
       clCreateProgramWithSource(context, 1, &progtext, nullptr, &err));
   checkError(err);
-  err = clBuildProgram(program, 0, nullptr, options.c_str(), nullptr, nullptr);
+  std::string flags = options.buildFlags();
+  err = clBuildProgram(program, 0, nullptr, flags.c_str(), nullptr, nullptr);
   checkBuildLog(err);
   try {
     saveToCache(text.c_str(), text.size(), options);
@@ -256,7 +257,7 @@ static bool isSpirvData(const void* data, size_t len) {
 }
 
 void LibraryOpenCL::loadFromData(const void* data, size_t len,
-                                 const std::string& options) {
+                                 const CompilerOptions& options) {
   try {
     loadFromCache(data, len, options);
   } catch (...) {
@@ -271,8 +272,9 @@ void LibraryOpenCL::loadFromData(const void* data, size_t len,
       program = opencl::ptr<cl_program>(
           clCreateProgramWithIL(_dev.context, data, len, &err));
       checkError(err);
-      err = clBuildProgram(program, 0, nullptr, options.c_str(), nullptr,
-                           nullptr);
+      std::string flags = options.buildFlags();
+      err =
+          clBuildProgram(program, 0, nullptr, flags.c_str(), nullptr, nullptr);
       checkBuildLog(err);
       try {
         saveToCache(data, len, options);
@@ -295,7 +297,7 @@ void LibraryOpenCL::loadFromData(const void* data, size_t len,
 
 void LibraryOpenCL::loadFromBinaries(const size_t* lengths,
                                      const unsigned char** binaries,
-                                     const std::string& options) {
+                                     const CompilerOptions& options) {
   opencl::ptr<cl_context> context = _dev.context;
   cl_int err;
   auto devices = _dev.getDevices();
@@ -303,12 +305,13 @@ void LibraryOpenCL::loadFromBinaries(const size_t* lengths,
       clCreateProgramWithBinary(context, (cl_uint)devices.size(), &devices[0],
                                 lengths, binaries, nullptr, &err));
   checkError(err);
-  err = clBuildProgram(program, 0, nullptr, options.c_str(), nullptr, nullptr);
+  std::string flags = options.buildFlags();
+  err = clBuildProgram(program, 0, nullptr, flags.c_str(), nullptr, nullptr);
   checkBuildLog(err);
 }
 
 void LibraryOpenCL::loadFromCache(const void* data, size_t length,
-                                  const std::string& options) {
+                                  const CompilerOptions& options) {
   std::vector<std::vector<unsigned char>> binaries;
   std::vector<size_t> sizes;
   if (_dev.binaryCache().loadBinaries(binaries, sizes, _dev, data, length,
@@ -321,7 +324,7 @@ void LibraryOpenCL::loadFromCache(const void* data, size_t length,
 }
 
 void LibraryOpenCL::saveToCache(const void* data, size_t length,
-                                const std::string& options) const {
+                                const CompilerOptions& options) const {
   if (!_dev.binaryCache().isEnabled()) return;
   auto devices = _dev.getDevices();
   size_t i, numDevs;

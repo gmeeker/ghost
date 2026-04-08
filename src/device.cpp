@@ -224,13 +224,13 @@ Library Device::loadLibraryFromFile(const std::string& filename) {
 }
 
 Library Device::loadLibraryFromText(const std::string& text,
-                                    const std::string& options,
+                                    const CompilerOptions& options,
                                     bool retainBinary) const {
   return _impl->loadLibraryFromText(text, options, retainBinary);
 }
 
 Library Device::loadLibraryFromData(const void* data, size_t len,
-                                    const std::string& options,
+                                    const CompilerOptions& options,
                                     bool retainBinary) const {
   return _impl->loadLibraryFromData(data, len, options, retainBinary);
 }

@@ -236,33 +236,56 @@ LibraryCUDA::LibraryCUDA(const DeviceCUDA& dev, bool retainBinary)
     : Library(retainBinary), program(0), _dev(dev) {}
 
 void LibraryCUDA::loadFromText(const std::string& text,
-                               const std::string& options) {
+                               const CompilerOptions& options) {
 #if WITH_CUDA_NVRTC
   try {
     loadFromCache(text.c_str(), text.size(), options);
   } catch (...) {
   }
   if (program.get() != nullptr) return;
+
+  // Build header arrays from options.headers for NVRTC.
+  std::vector<const char*> headerSources, headerNames;
+  for (auto& h : options.headers) {
+    headerNames.push_back(h.first.c_str());
+    headerSources.push_back(h.second.c_str());
+  }
   ptr<nvrtcProgram> prog;
-  checkNVRTCError(
-      nvrtcCreateProgram(&prog, text.c_str(), "ghost.cu", 0, NULL, NULL));
+  checkNVRTCError(nvrtcCreateProgram(
+      &prog, text.c_str(), "ghost.cu", (int)headerNames.size(),
+      headerSources.empty() ? NULL : &headerSources[0],
+      headerNames.empty() ? NULL : &headerNames[0]));
+
+  // Build compiler options: hardcoded paths + gpu arch + user arguments +
+  // defines.
+  std::vector<std::string> optStrings;
+#ifdef WITH_CUDA_NVRTC_INCLUDE_PATH
+  optStrings.push_back("-I" WITH_CUDA_NVRTC_INCLUDE_PATH);
+#endif
+#ifdef WITH_CUDA_NVRTC_STD_INCLUDE_PATH
+  optStrings.push_back("-I" WITH_CUDA_NVRTC_STD_INCLUDE_PATH);
+#endif
   std::stringstream gpu_arch;
   // If we want PTX:
   // gpu_arch << "--gpu-architecture=compute_" << _dev.computeCapability.major
   //          << "0";
   gpu_arch << "--gpu-architecture=sm_" << _dev.computeCapability.major
            << _dev.computeCapability.minor;
-  std::string gpu_arch_str = gpu_arch.str();
-  const char* opts[] = {
-#ifdef WITH_CUDA_NVRTC_INCLUDE_PATH
-      "-I" WITH_CUDA_NVRTC_INCLUDE_PATH,
-#endif
-#ifdef WITH_CUDA_NVRTC_STD_INCLUDE_PATH
-      "-I" WITH_CUDA_NVRTC_STD_INCLUDE_PATH,
-#endif
-      gpu_arch_str.c_str()};
+  optStrings.push_back(gpu_arch.str());
+  for (auto& arg : options.arguments) {
+    optStrings.push_back(arg);
+  }
+  for (auto& def : options.defines) {
+    std::string d = "-D" + def.first;
+    if (!def.second.empty()) d += "=" + def.second;
+    optStrings.push_back(d);
+  }
+  std::vector<const char*> opts;
+  for (auto& s : optStrings) {
+    opts.push_back(s.c_str());
+  }
   nvrtcResult compileResult =
-      nvrtcCompileProgram(prog, sizeof(opts) / sizeof(opts[0]), opts);
+      nvrtcCompileProgram(prog, (int)opts.size(), opts.data());
   size_t logSize;
   checkNVRTCError(nvrtcGetProgramLogSize(prog, &logSize));
   std::vector<char> log(logSize);
@@ -301,19 +324,19 @@ void LibraryCUDA::loadFromText(const std::string& text,
 }
 
 void LibraryCUDA::loadFromData(const void* data, size_t len,
-                               const std::string& options_) {
+                               const CompilerOptions& options) {
   CUjitInputType inputType = CU_JIT_INPUT_FATBINARY;
   if (len == 0) {
     len = strlen(reinterpret_cast<const char*>(data));
     inputType = CU_JIT_INPUT_PTX;
   }
   try {
-    loadFromCache(data, len, options_);
+    loadFromCache(data, len, options);
   } catch (...) {
   }
   if (program.get() != nullptr) return;
 
-  CUjit_option options[6];
+  CUjit_option jitOptions[6];
   void* optionVals[6];
   float walltime;
   std::vector<char> error_log, info_log;
@@ -325,27 +348,27 @@ void LibraryCUDA::loadFromData(const void* data, size_t len,
 
   // Setup linker options
   // Return walltime from JIT compilation
-  options[0] = CU_JIT_WALL_TIME;
+  jitOptions[0] = CU_JIT_WALL_TIME;
   optionVals[0] = (void*)&walltime;
   // Pass a buffer for info messages
-  options[1] = CU_JIT_INFO_LOG_BUFFER;
+  jitOptions[1] = CU_JIT_INFO_LOG_BUFFER;
   optionVals[1] = (void*)&info_log[0];
   // Pass the size of the info buffer
-  options[2] = CU_JIT_INFO_LOG_BUFFER_SIZE_BYTES;
+  jitOptions[2] = CU_JIT_INFO_LOG_BUFFER_SIZE_BYTES;
   optionVals[2] = (void*)info_log.size();
   // Pass a buffer for error message
-  options[3] = CU_JIT_ERROR_LOG_BUFFER;
+  jitOptions[3] = CU_JIT_ERROR_LOG_BUFFER;
   optionVals[3] = (void*)&error_log[0];
   // Pass the size of the error buffer
-  options[4] = CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES;
+  jitOptions[4] = CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES;
   optionVals[4] = (void*)error_log.size();
   // Make the linker verbose
-  options[5] = CU_JIT_LOG_VERBOSE;
+  jitOptions[5] = CU_JIT_LOG_VERBOSE;
   optionVals[5] = (void*)1;
 
   // Create a pending linker invocation
   cu::ptr<CUlinkState> lState;
-  checkError(cuLinkCreate(6, options, optionVals, &lState));
+  checkError(cuLinkCreate(6, jitOptions, optionVals, &lState));
 
   myErr = cuLinkAddData(lState, inputType, const_cast<void*>(data), len, 0, 0,
                         0, 0);
@@ -365,7 +388,7 @@ void LibraryCUDA::loadFromData(const void* data, size_t len,
   loadFromBinary(cuOut);
 
   try {
-    saveToCache(cuOut, outSize, data, len, options_);
+    saveToCache(cuOut, outSize, data, len, options);
   } catch (...) {
   }
 }
@@ -377,7 +400,7 @@ void LibraryCUDA::loadFromBinary(void* binary) {
 }
 
 void LibraryCUDA::loadFromCache(const void* data, size_t length,
-                                const std::string& options) {
+                                const CompilerOptions& options) {
   std::vector<std::vector<unsigned char>> binaries;
   std::vector<size_t> sizes;
   if (_dev.binaryCache().loadBinaries(binaries, sizes, _dev, data, length,
@@ -387,7 +410,8 @@ void LibraryCUDA::loadFromCache(const void* data, size_t length,
 }
 
 void LibraryCUDA::saveToCache(void* binary, size_t binarySize, const void* data,
-                              size_t length, const std::string& options) const {
+                              size_t length,
+                              const CompilerOptions& options) const {
   if (!_dev.binaryCache().isEnabled()) return;
   std::vector<size_t> sizes = {binarySize};
   std::vector<unsigned char*> binaries = {

@@ -770,7 +770,7 @@ DeviceMetal::DeviceMetal(id<MTLDevice> device) {
 }
 
 ghost::Library DeviceMetal::loadLibraryFromText(const std::string &text,
-                                                const std::string &options,
+                                                const CompilerOptions &options,
                                                 bool retainBinary) const {
   auto ptr =
       std::make_shared<implementation::LibraryMetal>(*this, retainBinary);
@@ -779,7 +779,7 @@ ghost::Library DeviceMetal::loadLibraryFromText(const std::string &text,
 }
 
 ghost::Library DeviceMetal::loadLibraryFromData(const void *data, size_t len,
-                                                const std::string &options,
+                                                const CompilerOptions &options,
                                                 bool retainBinary) const {
   auto ptr =
       std::make_shared<implementation::LibraryMetal>(*this, retainBinary);

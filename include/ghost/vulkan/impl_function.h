@@ -57,16 +57,17 @@ class LibraryVulkan : public Library {
   LibraryVulkan(const DeviceVulkan& dev, bool retainBinary = false);
   ~LibraryVulkan();
 
-  void loadFromData(const void* data, size_t len, const std::string& options);
+  void loadFromData(const void* data, size_t len,
+                    const CompilerOptions& options);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
   virtual std::vector<uint8_t> getBinary() const override;
 
  private:
   void loadFromCache(const void* data, size_t length,
-                     const std::string& options);
+                     const CompilerOptions& options);
   void saveToCache(const void* data, size_t length,
-                   const std::string& options) const;
+                   const CompilerOptions& options) const;
 
   const DeviceVulkan& _dev;
   VkShaderModule _module;

@@ -518,13 +518,13 @@ DeviceCPU::DeviceCPU(const SharedContext& share) : cores(getNumberOfCores()) {}
 DeviceCPU::DeviceCPU(const GpuInfo&) : cores(getNumberOfCores()) {}
 
 ghost::Library DeviceCPU::loadLibraryFromText(const std::string& text,
-                                              const std::string& options,
+                                              const CompilerOptions& options,
                                               bool retainBinary) const {
   throw ghost::unsupported_error();
 }
 
 ghost::Library DeviceCPU::loadLibraryFromData(const void* data, size_t len,
-                                              const std::string& options,
+                                              const CompilerOptions& options,
                                               bool retainBinary) const {
   throw ghost::unsupported_error();
 }

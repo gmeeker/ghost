@@ -21,6 +21,8 @@
 #include <vector>
 
 namespace ghost {
+class CompilerOptions;
+
 namespace implementation {
 class Device;
 }
@@ -57,7 +59,7 @@ class BinaryCache {
   /// @param options Compiler options string included in the digest.
   static void makeDigest(Digest& d, const implementation::Device& dev,
                          size_t count, const void* data, size_t length,
-                         const std::string& options);
+                         const CompilerOptions& options);
 
   /// @brief Check whether the binary cache is enabled.
   /// @return @c true if @c cachePath is non-empty.
@@ -79,7 +81,7 @@ class BinaryCache {
   bool loadBinaries(std::vector<std::vector<unsigned char>>& binaries,
                     std::vector<size_t>& sizes,
                     const implementation::Device& dev, const void* data,
-                    size_t length, const std::string& options) const;
+                    size_t length, const CompilerOptions& options) const;
 
   /// @brief Save compiled binaries to the cache.
   /// @param dev The device the binaries were compiled for.
@@ -91,7 +93,7 @@ class BinaryCache {
   void saveBinaries(const implementation::Device& dev,
                     const std::vector<unsigned char*>& binaries,
                     const std::vector<size_t>& sizes, const void* data,
-                    size_t length, const std::string& options) const;
+                    size_t length, const CompilerOptions& options) const;
 };
 
 }  // namespace ghost

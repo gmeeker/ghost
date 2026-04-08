@@ -710,7 +710,7 @@ DeviceCUDA::DeviceCUDA(int deviceOrdinal) {
 }
 
 ghost::Library DeviceCUDA::loadLibraryFromText(const std::string& text,
-                                               const std::string& options,
+                                               const CompilerOptions& options,
                                                bool retainBinary) const {
   auto ptr = std::make_shared<implementation::LibraryCUDA>(*this, retainBinary);
   ptr->loadFromText(text, options);
@@ -718,7 +718,7 @@ ghost::Library DeviceCUDA::loadLibraryFromText(const std::string& text,
 }
 
 ghost::Library DeviceCUDA::loadLibraryFromData(const void* data, size_t len,
-                                               const std::string& options,
+                                               const CompilerOptions& options,
                                                bool retainBinary) const {
   auto ptr = std::make_shared<implementation::LibraryCUDA>(*this, retainBinary);
   ptr->loadFromData(data, len, options);

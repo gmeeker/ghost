@@ -374,7 +374,7 @@ LibraryVulkan::~LibraryVulkan() {
 }
 
 void LibraryVulkan::loadFromCache(const void* data, size_t length,
-                                  const std::string& options) {
+                                  const CompilerOptions& options) {
   auto& cache = Device::binaryCache();
   if (!cache.isEnabled()) return;
 
@@ -397,7 +397,7 @@ void LibraryVulkan::loadFromCache(const void* data, size_t length,
 }
 
 void LibraryVulkan::saveToCache(const void* data, size_t length,
-                                const std::string& options) const {
+                                const CompilerOptions& options) const {
   auto& cache = Device::binaryCache();
   if (!cache.isEnabled()) return;
 
@@ -408,7 +408,7 @@ void LibraryVulkan::saveToCache(const void* data, size_t length,
 }
 
 void LibraryVulkan::loadFromData(const void* data, size_t len,
-                                 const std::string& options) {
+                                 const CompilerOptions& options) {
   // Try cache first
   loadFromCache(data, len, options);
   if (_module != VK_NULL_HANDLE) return;

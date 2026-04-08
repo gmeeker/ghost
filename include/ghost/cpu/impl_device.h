@@ -194,10 +194,12 @@ class DeviceCPU : public Device {
   DeviceCPU(const GpuInfo& info);
 
   virtual ghost::Library loadLibraryFromText(
-      const std::string& text, const std::string& options = "",
+      const std::string& text,
+      const CompilerOptions& options = CompilerOptions(),
       bool retainBinary = false) const override;
   virtual ghost::Library loadLibraryFromData(
-      const void* data, size_t len, const std::string& options = "",
+      const void* data, size_t len,
+      const CompilerOptions& options = CompilerOptions(),
       bool retainBinary = false) const override;
   virtual ghost::Library loadLibraryFromFile(
       const std::string& filename) const override;

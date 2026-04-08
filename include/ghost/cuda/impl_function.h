@@ -44,8 +44,9 @@ class LibraryCUDA : public Library {
 
   LibraryCUDA(const DeviceCUDA& dev, bool retainBinary = false);
 
-  void loadFromText(const std::string& text, const std::string& options);
-  void loadFromData(const void* data, size_t len, const std::string& options);
+  void loadFromText(const std::string& text, const CompilerOptions& options);
+  void loadFromData(const void* data, size_t len,
+                    const CompilerOptions& options);
   void loadFromBinary(void* binary);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
@@ -54,9 +55,9 @@ class LibraryCUDA : public Library {
  private:
   std::vector<uint8_t> _binaryData;
   void loadFromCache(const void* data, size_t length,
-                     const std::string& options);
+                     const CompilerOptions& options);
   void saveToCache(void* binary, size_t binarySize, const void* data,
-                   size_t length, const std::string& options) const;
+                   size_t length, const CompilerOptions& options) const;
   const DeviceCUDA& _dev;
 };
 }  // namespace implementation

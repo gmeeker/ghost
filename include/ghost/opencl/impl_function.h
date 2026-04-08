@@ -47,10 +47,11 @@ class LibraryOpenCL : public Library {
 
   LibraryOpenCL(const DeviceOpenCL& dev);
 
-  void loadFromText(const std::string& text, const std::string& options);
-  void loadFromData(const void* data, size_t len, const std::string& options);
+  void loadFromText(const std::string& text, const CompilerOptions& options);
+  void loadFromData(const void* data, size_t len,
+                    const CompilerOptions& options);
   void loadFromBinaries(const size_t* lengths, const unsigned char** binaries,
-                        const std::string& options);
+                        const CompilerOptions& options);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
   virtual std::vector<uint8_t> getBinary() const override;
@@ -58,9 +59,9 @@ class LibraryOpenCL : public Library {
  private:
   void checkBuildLog(cl_int err0);
   void loadFromCache(const void* data, size_t length,
-                     const std::string& options);
+                     const CompilerOptions& options);
   void saveToCache(const void* data, size_t length,
-                   const std::string& options) const;
+                   const CompilerOptions& options) const;
   const DeviceOpenCL& _dev;
 };
 }  // namespace implementation
