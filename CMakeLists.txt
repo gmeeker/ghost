@@ -144,6 +144,7 @@ set(GHOST_SOURCES
     src/argument_buffer.cpp
     src/binary_cache.cpp
     src/command_buffer.cpp
+    src/create_device.cpp
     src/device.cpp
     src/digest.cpp
     src/function.cpp

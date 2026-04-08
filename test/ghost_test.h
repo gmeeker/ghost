@@ -33,51 +33,12 @@
 namespace ghost {
 namespace test {
 
-// ---------------------------------------------------------------------------
-// Backend enumeration
-// ---------------------------------------------------------------------------
+using ghost::availableBackends;
+using ghost::Backend;
+using ghost::backendName;
+using ghost::createDevice;
 
-enum class Backend { CPU, Metal, OpenCL, CUDA, Vulkan, DirectX };
-
-inline std::string BackendName(Backend b) {
-  switch (b) {
-    case Backend::CPU:
-      return "CPU";
-    case Backend::Metal:
-      return "Metal";
-    case Backend::OpenCL:
-      return "OpenCL";
-    case Backend::CUDA:
-      return "CUDA";
-    case Backend::Vulkan:
-      return "Vulkan";
-    case Backend::DirectX:
-      return "DirectX";
-  }
-  return "Unknown";
-}
-
-// Backends compiled into this build.
-inline std::vector<Backend> availableBackends() {
-  return {
-      Backend::CPU,
-#if WITH_METAL
-      Backend::Metal,
-#endif
-#if WITH_OPENCL
-      Backend::OpenCL,
-#endif
-#if WITH_CUDA
-      Backend::CUDA,
-#endif
-#if WITH_VULKAN
-      Backend::Vulkan,
-#endif
-#if WITH_DIRECTX
-      Backend::DirectX,
-#endif
-  };
-}
+inline std::string BackendName(Backend b) { return backendName(b); }
 
 // Backends that support loadLibraryFromText (GPU backends with runtime
 // compilation).  CPU only supports loadLibraryFromFile (shared libraries).
@@ -118,48 +79,6 @@ inline std::vector<Backend> binaryBackends() {
   backends.push_back(Backend::DirectX);
 #endif
   return backends;
-}
-
-// ---------------------------------------------------------------------------
-// Device factory
-// ---------------------------------------------------------------------------
-
-inline std::unique_ptr<Device> createDevice(Backend backend) {
-  switch (backend) {
-    case Backend::CPU:
-      return std::make_unique<DeviceCPU>();
-    case Backend::Metal:
-#if WITH_METAL
-      return std::make_unique<DeviceMetal>();
-#else
-      return nullptr;
-#endif
-    case Backend::OpenCL:
-#if WITH_OPENCL
-      return std::make_unique<DeviceOpenCL>();
-#else
-      return nullptr;
-#endif
-    case Backend::CUDA:
-#if WITH_CUDA
-      return std::make_unique<DeviceCUDA>();
-#else
-      return nullptr;
-#endif
-    case Backend::Vulkan:
-#if WITH_VULKAN
-      return std::make_unique<DeviceVulkan>();
-#else
-      return nullptr;
-#endif
-    case Backend::DirectX:
-#if WITH_DIRECTX
-      return std::make_unique<DeviceDirectX>();
-#else
-      return nullptr;
-#endif
-  }
-  return nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -503,7 +422,7 @@ __kernel void scaled_fn(__global float* out, __global const float* in, uint n) {
 
 struct BackendNameGenerator {
   std::string operator()(const testing::TestParamInfo<Backend>& info) const {
-    return BackendName(info.param);
+    return backendName(info.param);
   }
 };
 
@@ -517,10 +436,10 @@ class GhostTest : public testing::TestWithParam<Backend> {
     try {
       device_ = createDevice(GetParam());
       if (!device_) {
-        GTEST_SKIP() << BackendName(GetParam()) << " not compiled";
+        GTEST_SKIP() << backendName(GetParam()) << " not compiled";
       }
     } catch (const std::exception& e) {
-      GTEST_SKIP() << BackendName(GetParam()) << " unavailable: " << e.what();
+      GTEST_SKIP() << backendName(GetParam()) << " unavailable: " << e.what();
     }
   }
 

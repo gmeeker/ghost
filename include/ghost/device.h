@@ -24,6 +24,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace ghost {
 
@@ -388,6 +389,35 @@ class Device {
   std::shared_ptr<implementation::Device> _impl;
   Stream _stream;
 };
+/// @brief Enumeration of GPU compute backends.
+enum class Backend { CPU, Metal, OpenCL, CUDA, Vulkan, DirectX };
+
+/// @brief Get the human-readable name of a backend.
+/// @param backend The backend to name.
+/// @return String name (e.g., "Metal", "CUDA").
+std::string backendName(Backend backend);
+
+/// @brief List all backends compiled into this build.
+/// @return Vector of available Backend values.
+std::vector<Backend> availableBackends();
+
+/// @brief Create a device for a specific backend.
+/// @param backend The backend to use.
+/// @return A Device instance, or nullptr if the backend is not compiled in
+///         or no suitable hardware is available.
+std::unique_ptr<Device> createDevice(Backend backend);
+
+/// @brief Create a device using the best available GPU backend.
+///
+/// Tries backends in platform-preferred order:
+/// - macOS: Metal, OpenCL, Vulkan
+/// - Windows: CUDA, DirectX, OpenCL, Vulkan
+/// - Linux: CUDA, OpenCL, Vulkan
+///
+/// @param allowCPU If true, falls back to CPU when no GPU backend succeeds.
+/// @return A Device instance, or nullptr if no suitable backend is found.
+std::unique_ptr<Device> createDevice(bool allowCPU = false);
+
 }  // namespace ghost
 
 #endif
