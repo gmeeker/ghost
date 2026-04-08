@@ -208,8 +208,9 @@ class Function {
 ///
 /// Libraries are created by Device::loadLibraryFromText(),
 /// loadLibraryFromData(), or loadLibraryFromFile(). Use lookupFunction() to
-/// obtain individual kernels, or lookupSpecializedFunction() to create function
-/// specializations with compile-time constant values (supported on Metal).
+/// obtain individual kernels, lookupSpecializedFunction() to create function
+/// specializations with compile-time constant values (Metal, Vulkan), or
+/// setGlobals() to set named global constants (CUDA, OpenCL).
 class Library {
  public:
   /// @brief Construct from a backend implementation.
@@ -259,6 +260,22 @@ class Library {
                                      const std::vector<Attribute>& args) {
     return _impl->specializeFunction(name, args);
   }
+
+  /// @brief Set named global constants on this library.
+  ///
+  /// The semantics are backend-specific:
+  /// - CUDA: writes to __constant__ device globals via cuModuleGetGlobal +
+  ///   cuMemcpyHtoD.
+  /// - OpenCL: recompiles from source with -D defines (only if loaded from
+  ///   source text; throws unsupported_error for binary/SPIR-V).
+  ///
+  /// Previously looked-up functions may be invalidated by this call.
+  ///
+  /// @param globals Name/value pairs where names match kernel global variable
+  ///   names or preprocessor define names.
+  /// @throws ghost::unsupported_error if not supported by the backend.
+  void setGlobals(
+      const std::vector<std::pair<std::string, Attribute>>& globals);
 
   /// @brief Retrieve the compiled binary data from this library.
   ///

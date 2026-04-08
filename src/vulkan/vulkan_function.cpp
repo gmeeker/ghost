@@ -42,6 +42,68 @@ FunctionVulkan::FunctionVulkan(const DeviceVulkan& dev, VkShaderModule module,
       _numImages(0),
       _pushConstantSize(0) {}
 
+FunctionVulkan::FunctionVulkan(const DeviceVulkan& dev, VkShaderModule module,
+                               const std::string& entryPoint,
+                               const std::vector<Attribute>& specConstants)
+    : _dev(dev),
+      _module(module),
+      _entryPoint(entryPoint),
+      _descriptorSetLayout(VK_NULL_HANDLE),
+      _pipelineLayout(VK_NULL_HANDLE),
+      _pipeline(VK_NULL_HANDLE),
+      _pipelineCreated(false),
+      _numBuffers(0),
+      _numImages(0),
+      _pushConstantSize(0) {
+  buildSpecializationData(specConstants);
+}
+
+void FunctionVulkan::buildSpecializationData(
+    const std::vector<Attribute>& specConstants) {
+  uint32_t offset = 0;
+  for (uint32_t i = 0; i < (uint32_t)specConstants.size(); i++) {
+    auto& attr = specConstants[i];
+    VkSpecializationMapEntry entry = {};
+    entry.constantID = i;
+    entry.offset = offset;
+    switch (attr.type()) {
+      case Attribute::Type_Bool: {
+        entry.size = sizeof(uint32_t);
+        uint32_t v = attr.boolArray()[0] ? VK_TRUE : VK_FALSE;
+        size_t pos = _specData.size();
+        _specData.resize(pos + sizeof(uint32_t));
+        memcpy(_specData.data() + pos, &v, sizeof(uint32_t));
+        break;
+      }
+      case Attribute::Type_Int: {
+        entry.size = sizeof(int32_t);
+        size_t pos = _specData.size();
+        _specData.resize(pos + sizeof(int32_t));
+        memcpy(_specData.data() + pos, attr.intArray(), sizeof(int32_t));
+        break;
+      }
+      case Attribute::Type_UInt: {
+        entry.size = sizeof(uint32_t);
+        size_t pos = _specData.size();
+        _specData.resize(pos + sizeof(uint32_t));
+        memcpy(_specData.data() + pos, attr.uintArray(), sizeof(uint32_t));
+        break;
+      }
+      case Attribute::Type_Float: {
+        entry.size = sizeof(float);
+        size_t pos = _specData.size();
+        _specData.resize(pos + sizeof(float));
+        memcpy(_specData.data() + pos, attr.floatArray(), sizeof(float));
+        break;
+      }
+      default:
+        continue;
+    }
+    offset += (uint32_t)entry.size;
+    _specEntries.push_back(entry);
+  }
+}
+
 FunctionVulkan::~FunctionVulkan() {
   if (_pipeline != VK_NULL_HANDLE)
     vkDestroyPipeline(_dev.device, _pipeline, nullptr);
@@ -153,6 +215,15 @@ void FunctionVulkan::createPipeline(const std::vector<Attribute>& args) {
   pipelineInfo.stage.module = _module;
   pipelineInfo.stage.pName = _entryPoint.c_str();
   pipelineInfo.layout = _pipelineLayout;
+
+  VkSpecializationInfo specInfo = {};
+  if (!_specEntries.empty()) {
+    specInfo.mapEntryCount = (uint32_t)_specEntries.size();
+    specInfo.pMapEntries = _specEntries.data();
+    specInfo.dataSize = _specData.size();
+    specInfo.pData = _specData.data();
+    pipelineInfo.stage.pSpecializationInfo = &specInfo;
+  }
 
   checkError(vkCreateComputePipelines(_dev.device, VK_NULL_HANDLE, 1,
                                       &pipelineInfo, nullptr, &_pipeline));
@@ -434,6 +505,12 @@ ghost::Function LibraryVulkan::lookupFunction(const std::string& name) const {
   // The FunctionVulkan does NOT own the shader module (LibraryVulkan does).
   // We pass the module but the function won't destroy it.
   return ghost::Function(std::make_shared<FunctionVulkan>(_dev, _module, name));
+}
+
+ghost::Function LibraryVulkan::specializeFunction(
+    const std::string& name, const std::vector<Attribute>& args) const {
+  return ghost::Function(
+      std::make_shared<FunctionVulkan>(_dev, _module, name, args));
 }
 
 std::vector<uint8_t> LibraryVulkan::getBinary() const { return _spirvData; }

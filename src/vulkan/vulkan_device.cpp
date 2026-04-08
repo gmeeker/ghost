@@ -1521,7 +1521,7 @@ Attribute DeviceVulkan::getAttribute(DeviceAttributeId what) const {
     case kDeviceSupportsMappedBuffer:
       return Attribute(true);
     case kDeviceSupportsProgramConstants:
-      return Attribute(false);
+      return Attribute(true);
     case kDeviceSupportsSubgroup:
       return Attribute(true);
     case kDeviceSupportsSubgroupShuffle:

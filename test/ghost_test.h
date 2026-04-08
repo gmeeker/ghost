@@ -482,6 +482,21 @@ kernel void specialized_fn(device float* out [[buffer(0)]],
 #endif
 }
 
+// OpenCL kernel for setGlobals testing.
+// SCALE_FACTOR is injected as a -D define by setGlobals().
+inline const char* setGlobalsKernelSource(Backend b) {
+  if (b == Backend::OpenCL)
+    return R"(
+#ifndef SCALE_FACTOR
+#define SCALE_FACTOR 1.0f
+#endif
+__kernel void scaled_fn(__global float* out, __global const float* in, uint n) {
+    uint i = get_global_id(0);
+    if (i < n) out[i] = in[i] * SCALE_FACTOR;
+})";
+  return nullptr;
+}
+
 // ---------------------------------------------------------------------------
 // Test name generator for parameterized tests
 // ---------------------------------------------------------------------------

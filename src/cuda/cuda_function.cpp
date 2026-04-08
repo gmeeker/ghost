@@ -429,6 +429,54 @@ ghost::Function LibraryCUDA::lookupFunction(const std::string& name) const {
   return ghost::Function(f);
 }
 
+void LibraryCUDA::setGlobals(
+    const std::vector<std::pair<std::string, Attribute>>& globals) {
+  for (auto& g : globals) {
+    CUdeviceptr dptr;
+    size_t dsize;
+    checkError(
+        cuModuleGetGlobal(&dptr, &dsize, program.get(), g.first.c_str()));
+    auto& attr = g.second;
+    switch (attr.type()) {
+      case Attribute::Type_Float: {
+        size_t sz = sizeof(float) * attr.count();
+        if (sz > dsize)
+          throw std::runtime_error("CUDA global '" + g.first +
+                                   "': size mismatch");
+        checkError(cuMemcpyHtoD(dptr, attr.floatArray(), sz));
+        break;
+      }
+      case Attribute::Type_Int: {
+        size_t sz = sizeof(int32_t) * attr.count();
+        if (sz > dsize)
+          throw std::runtime_error("CUDA global '" + g.first +
+                                   "': size mismatch");
+        checkError(cuMemcpyHtoD(dptr, attr.intArray(), sz));
+        break;
+      }
+      case Attribute::Type_UInt: {
+        size_t sz = sizeof(uint32_t) * attr.count();
+        if (sz > dsize)
+          throw std::runtime_error("CUDA global '" + g.first +
+                                   "': size mismatch");
+        checkError(cuMemcpyHtoD(dptr, attr.uintArray(), sz));
+        break;
+      }
+      case Attribute::Type_Bool: {
+        // CUDA __constant__ bool may be 1 byte; copy as-is
+        size_t sz = sizeof(bool) * attr.count();
+        if (sz > dsize)
+          throw std::runtime_error("CUDA global '" + g.first +
+                                   "': size mismatch");
+        checkError(cuMemcpyHtoD(dptr, attr.boolArray(), sz));
+        break;
+      }
+      default:
+        throw std::runtime_error("CUDA setGlobals: unsupported attribute type");
+    }
+  }
+}
+
 std::vector<uint8_t> LibraryCUDA::getBinary() const { return _binaryData; }
 }  // namespace implementation
 }  // namespace ghost

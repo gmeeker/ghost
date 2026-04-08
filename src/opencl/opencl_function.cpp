@@ -16,6 +16,7 @@
 
 #include <ghost/argument_buffer.h>
 #include <ghost/digest.h>
+#include <ghost/exception.h>
 #include <ghost/function.h>
 #include <ghost/io.h>
 #include <ghost/opencl/device.h>
@@ -232,7 +233,14 @@ void LibraryOpenCL::loadFromText(const std::string& text,
     loadFromCache(text.c_str(), text.size(), options);
   } catch (...) {
   }
-  if (program.get() != nullptr) return;
+  if (program.get() != nullptr) {
+    if (!_hasSource) {
+      _sourceText = text;
+      _originalOptions = options;
+      _hasSource = true;
+    }
+    return;
+  }
   const char* progtext = text.c_str();
   program = opencl::ptr<cl_program>(
       clCreateProgramWithSource(context, 1, &progtext, nullptr, &err));
@@ -240,6 +248,11 @@ void LibraryOpenCL::loadFromText(const std::string& text,
   std::string flags = options.buildFlags();
   err = clBuildProgram(program, 0, nullptr, flags.c_str(), nullptr, nullptr);
   checkBuildLog(err);
+  if (!_hasSource) {
+    _sourceText = text;
+    _originalOptions = options;
+    _hasSource = true;
+  }
   try {
     saveToCache(text.c_str(), text.size(), options);
   } catch (...) {
@@ -390,6 +403,44 @@ std::vector<uint8_t> LibraryOpenCL::getBinary() const {
 
   return std::vector<uint8_t>(binaries[0].begin(), binaries[0].end());
 }
+
+void LibraryOpenCL::setGlobals(
+    const std::vector<std::pair<std::string, Attribute>>& globals) {
+  if (!_hasSource) throw ghost::unsupported_error();
+
+  // Build new options with additional defines
+  CompilerOptions opts = _originalOptions;
+  for (auto& g : globals) {
+    std::string value;
+    auto& attr = g.second;
+    switch (attr.type()) {
+      case Attribute::Type_Float:
+        value = std::to_string(attr.floatArray()[0]);
+        // Ensure the value has a decimal point for OpenCL
+        if (value.find('.') == std::string::npos) value += ".0";
+        value += "f";
+        break;
+      case Attribute::Type_Int:
+        value = std::to_string(attr.intArray()[0]);
+        break;
+      case Attribute::Type_UInt:
+        value = std::to_string(attr.uintArray()[0]) + "u";
+        break;
+      case Attribute::Type_Bool:
+        value = attr.boolArray()[0] ? "1" : "0";
+        break;
+      default:
+        throw std::runtime_error(
+            "OpenCL setGlobals: unsupported attribute type");
+    }
+    opts.defines.push_back({g.first, value});
+  }
+
+  // Recompile from source with new defines
+  program = opencl::ptr<cl_program>();  // release old program
+  loadFromText(_sourceText, opts);
+}
+
 }  // namespace implementation
 }  // namespace ghost
 #endif

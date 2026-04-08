@@ -189,13 +189,32 @@ class Library {
   /// values.
   ///
   /// The default implementation throws ghost::unsupported_error. Backends
-  /// that support function constants (e.g., Metal) override this method.
+  /// that support function constants (e.g., Metal, Vulkan) override this
+  /// method.
   /// @param name The kernel function name.
   /// @param args Specialization constant values.
   /// @return The specialized Function.
   /// @throws ghost::unsupported_error if not supported by the backend.
   virtual ghost::Function specializeFunction(
       const std::string& name, const std::vector<Attribute>& args) const;
+
+  /// @brief Set named global constants on this library.
+  ///
+  /// The semantics are backend-specific:
+  /// - CUDA: writes to __constant__ device globals via cuModuleGetGlobal +
+  ///   cuMemcpyHtoD.
+  /// - OpenCL: recompiles from source with -D defines (only if the library
+  ///   was loaded from source text; throws unsupported_error for
+  ///   binary/SPIR-V).
+  ///
+  /// Previously looked-up functions may be invalidated by this call (e.g.,
+  /// OpenCL recompilation replaces the program).
+  ///
+  /// @param globals Name/value pairs where names match kernel global variable
+  ///   names or preprocessor define names.
+  /// @throws ghost::unsupported_error if not supported by the backend.
+  virtual void setGlobals(
+      const std::vector<std::pair<std::string, Attribute>>& globals);
 
   /// @brief Retrieve the compiled binary data from this library.
   ///

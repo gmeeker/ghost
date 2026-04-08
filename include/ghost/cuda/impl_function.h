@@ -50,6 +50,8 @@ class LibraryCUDA : public Library {
   void loadFromBinary(void* binary);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
+  virtual void setGlobals(
+      const std::vector<std::pair<std::string, Attribute>>& globals) override;
   virtual std::vector<uint8_t> getBinary() const override;
 
  private:

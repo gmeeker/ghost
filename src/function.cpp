@@ -26,6 +26,11 @@ ghost::Function Library::specializeFunction(
   throw ghost::unsupported_error();
 }
 
+void Library::setGlobals(
+    const std::vector<std::pair<std::string, Attribute>>& globals) {
+  throw ghost::unsupported_error();
+}
+
 std::vector<uint8_t> Library::getBinary() const { return {}; }
 
 void Function::executeIndirect(const ghost::Stream& s,
@@ -59,6 +64,11 @@ Library::Library(std::shared_ptr<implementation::Library> impl) : _impl(impl) {}
 
 Function Library::lookupFunction(const std::string& name) const {
   return _impl->lookupFunction(name);
+}
+
+void Library::setGlobals(
+    const std::vector<std::pair<std::string, Attribute>>& globals) {
+  _impl->setGlobals(globals);
 }
 
 std::vector<uint8_t> Library::getBinary() const { return _impl->getBinary(); }

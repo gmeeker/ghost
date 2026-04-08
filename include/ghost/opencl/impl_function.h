@@ -54,6 +54,8 @@ class LibraryOpenCL : public Library {
                         const CompilerOptions& options);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
+  virtual void setGlobals(
+      const std::vector<std::pair<std::string, Attribute>>& globals) override;
   virtual std::vector<uint8_t> getBinary() const override;
 
  private:
@@ -63,6 +65,9 @@ class LibraryOpenCL : public Library {
   void saveToCache(const void* data, size_t length,
                    const CompilerOptions& options) const;
   const DeviceOpenCL& _dev;
+  std::string _sourceText;
+  CompilerOptions _originalOptions;
+  bool _hasSource = false;
 };
 }  // namespace implementation
 }  // namespace ghost

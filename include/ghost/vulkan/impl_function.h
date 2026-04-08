@@ -29,6 +29,9 @@ class FunctionVulkan : public Function {
  public:
   FunctionVulkan(const DeviceVulkan& dev, VkShaderModule module,
                  const std::string& entryPoint);
+  FunctionVulkan(const DeviceVulkan& dev, VkShaderModule module,
+                 const std::string& entryPoint,
+                 const std::vector<Attribute>& specConstants);
   ~FunctionVulkan();
 
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
@@ -38,6 +41,7 @@ class FunctionVulkan : public Function {
 
  private:
   void createPipeline(const std::vector<Attribute>& args);
+  void buildSpecializationData(const std::vector<Attribute>& specConstants);
 
   const DeviceVulkan& _dev;
   VkShaderModule _module;
@@ -50,6 +54,9 @@ class FunctionVulkan : public Function {
   uint32_t _numBuffers;
   uint32_t _numImages;
   uint32_t _pushConstantSize;
+
+  std::vector<uint8_t> _specData;
+  std::vector<VkSpecializationMapEntry> _specEntries;
 };
 
 class LibraryVulkan : public Library {
@@ -61,6 +68,9 @@ class LibraryVulkan : public Library {
                     const CompilerOptions& options);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
+  virtual ghost::Function specializeFunction(
+      const std::string& name,
+      const std::vector<Attribute>& args) const override;
   virtual std::vector<uint8_t> getBinary() const override;
 
  private:
