@@ -399,26 +399,26 @@ size_t imageDepthBytes(const ImageDescription& d, size_t rowBytes) {
   return d.size.y * rowBytes;
 }
 
-size_t srcRowBytes(const ImageDescription& d) {
-  return d.stride.x > 0 ? static_cast<size_t>(d.stride.x)
-                        : d.size.x * d.pixelSize();
+size_t layoutRowBytes(const BufferLayout& layout, size_t pixelSize) {
+  return layout.stride.x > 0 ? static_cast<size_t>(layout.stride.x)
+                             : layout.size.x * pixelSize;
 }
 
-size_t srcDepthBytes(const ImageDescription& d, size_t rowBytes) {
-  if (d.stride.y > 0) return static_cast<size_t>(d.stride.y);
-  return d.size.y * rowBytes;
+size_t layoutDepthBytes(const BufferLayout& layout, size_t rowBytes) {
+  if (layout.stride.y > 0) return static_cast<size_t>(layout.stride.y);
+  return layout.size.y * rowBytes;
 }
 
 void copyImageData(void* dst, size_t dstRow, size_t dstDepth, const void* src,
-                   size_t srcRow, size_t srcDepth, const ImageDescription& d) {
+                   size_t srcRow, size_t srcDepth, const Size3& size) {
   size_t copyWidth = std::min(srcRow, dstRow);
   if (srcRow == dstRow && srcDepth == dstDepth) {
-    memcpy(dst, src, d.size.z * dstDepth);
+    memcpy(dst, src, size.z * dstDepth);
   } else {
     auto d8 = static_cast<uint8_t*>(dst);
     auto s8 = static_cast<const uint8_t*>(src);
-    for (size_t z = 0; z < d.size.z; z++) {
-      for (size_t y = 0; y < d.size.y; y++) {
+    for (size_t z = 0; z < size.z; z++) {
+      for (size_t y = 0; y < size.y; y++) {
         memcpy(d8 + z * dstDepth + y * dstRow, s8 + z * srcDepth + y * srcRow,
                copyWidth);
       }
@@ -440,8 +440,8 @@ ImageCPU::ImageCPU(const DeviceCPU& dev, const ImageDescription& descr_)
 ImageCPU::ImageCPU(const DeviceCPU& dev, const ImageDescription& descr_,
                    BufferCPU& buffer)
     : descr(descr_), data(buffer.ptr) {
-  rowBytes = srcRowBytes(descr);
-  depthBytes = srcDepthBytes(descr, rowBytes);
+  rowBytes = layoutRowBytes(descr, descr.pixelSize());
+  depthBytes = layoutDepthBytes(descr, rowBytes);
 }
 
 ImageCPU::ImageCPU(const DeviceCPU& dev, const ImageDescription& descr_,
@@ -454,63 +454,83 @@ ImageCPU::ImageCPU(const DeviceCPU& dev, const ImageDescription& descr_,
 void ImageCPU::copy(const ghost::Stream& s, const ghost::Image& src) {
   auto srcImg = static_cast<const ImageCPU*>(src.impl().get());
   copyImageData(data, rowBytes, depthBytes, srcImg->data, srcImg->rowBytes,
-                srcImg->depthBytes, descr);
+                srcImg->depthBytes, descr.size);
 }
 
 void ImageCPU::copy(const ghost::Stream& s, const ghost::Buffer& src,
-                    const ImageDescription& srcDescr) {
+                    const BufferLayout& layout) {
   auto srcBuf = static_cast<const BufferCPU*>(src.impl().get());
-  size_t sRow = srcRowBytes(srcDescr);
-  size_t sDepth = srcDepthBytes(srcDescr, sRow);
-  copyImageData(data, rowBytes, depthBytes, srcBuf->ptr, sRow, sDepth, descr);
+  size_t sRow = layoutRowBytes(layout, descr.pixelSize());
+  size_t sDepth = layoutDepthBytes(layout, sRow);
+  copyImageData(data, rowBytes, depthBytes, srcBuf->ptr, sRow, sDepth,
+                descr.size);
 }
 
 void ImageCPU::copy(const ghost::Stream& s, const void* src,
-                    const ImageDescription& srcDescr) {
-  size_t sRow = srcRowBytes(srcDescr);
-  size_t sDepth = srcDepthBytes(srcDescr, sRow);
-  copyImageData(data, rowBytes, depthBytes, src, sRow, sDepth, descr);
+                    const BufferLayout& layout) {
+  size_t sRow = layoutRowBytes(layout, descr.pixelSize());
+  size_t sDepth = layoutDepthBytes(layout, sRow);
+  copyImageData(data, rowBytes, depthBytes, src, sRow, sDepth, descr.size);
 }
 
 void ImageCPU::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                      const ImageDescription& dstDescr) const {
+                      const BufferLayout& layout) const {
   auto dstBuf = static_cast<BufferCPU*>(dst.impl().get());
-  size_t dRow = srcRowBytes(dstDescr);
-  size_t dDepth = srcDepthBytes(dstDescr, dRow);
-  copyImageData(dstBuf->ptr, dRow, dDepth, data, rowBytes, depthBytes, descr);
+  size_t dRow = layoutRowBytes(layout, descr.pixelSize());
+  size_t dDepth = layoutDepthBytes(layout, dRow);
+  copyImageData(dstBuf->ptr, dRow, dDepth, data, rowBytes, depthBytes,
+                descr.size);
 }
 
 void ImageCPU::copyTo(const ghost::Stream& s, void* dst,
-                      const ImageDescription& dstDescr) const {
-  size_t dRow = srcRowBytes(dstDescr);
-  size_t dDepth = srcDepthBytes(dstDescr, dRow);
-  copyImageData(dst, dRow, dDepth, data, rowBytes, depthBytes, descr);
+                      const BufferLayout& layout) const {
+  size_t dRow = layoutRowBytes(layout, descr.pixelSize());
+  size_t dDepth = layoutDepthBytes(layout, dRow);
+  copyImageData(dst, dRow, dDepth, data, rowBytes, depthBytes, descr.size);
 }
 
 void ImageCPU::copy(const ghost::Stream& s, const ghost::Buffer& src,
-                    const ImageDescription& srcDescr,
-                    const Size3& imageOrigin) {
+                    const BufferLayout& layout, const Origin3& imageOrigin) {
   auto srcBuf = static_cast<const BufferCPU*>(src.impl().get());
-  size_t sRow = srcRowBytes(srcDescr);
-  size_t sDepth = srcDepthBytes(srcDescr, sRow);
+  size_t sRow = layoutRowBytes(layout, descr.pixelSize());
+  size_t sDepth = layoutDepthBytes(layout, sRow);
   size_t pixSize = descr.pixelSize();
   auto dst8 = static_cast<uint8_t*>(data) + imageOrigin.z * depthBytes +
               imageOrigin.y * rowBytes + imageOrigin.x * pixSize;
   copyImageData(dst8, rowBytes, depthBytes, srcBuf->ptr, sRow, sDepth,
-                srcDescr);
+                layout.size);
 }
 
 void ImageCPU::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                      const ImageDescription& dstDescr,
-                      const Size3& imageOrigin) const {
+                      const BufferLayout& layout,
+                      const Origin3& imageOrigin) const {
   auto dstBuf = static_cast<BufferCPU*>(dst.impl().get());
-  size_t dRow = srcRowBytes(dstDescr);
-  size_t dDepth = srcDepthBytes(dstDescr, dRow);
+  size_t dRow = layoutRowBytes(layout, descr.pixelSize());
+  size_t dDepth = layoutDepthBytes(layout, dRow);
   size_t pixSize = descr.pixelSize();
   auto src8 = static_cast<const uint8_t*>(data) + imageOrigin.z * depthBytes +
               imageOrigin.y * rowBytes + imageOrigin.x * pixSize;
   copyImageData(dstBuf->ptr, dRow, dDepth, src8, rowBytes, depthBytes,
-                dstDescr);
+                layout.size);
+}
+
+void ImageCPU::copy(const ghost::Stream& s, const ghost::Image& src,
+                    const Size3& region, const Origin3& srcOrigin,
+                    const Origin3& dstOrigin) {
+  auto srcImg = static_cast<const ImageCPU*>(src.impl().get());
+  size_t pixSize = descr.pixelSize();
+  auto src8 = static_cast<const uint8_t*>(srcImg->data) +
+              srcOrigin.z * srcImg->depthBytes +
+              srcOrigin.y * srcImg->rowBytes + srcOrigin.x * pixSize;
+  auto dst8 = static_cast<uint8_t*>(data) + dstOrigin.z * depthBytes +
+              dstOrigin.y * rowBytes + dstOrigin.x * pixSize;
+  size_t copyWidth = region.x * pixSize;
+  for (size_t z = 0; z < region.z; z++) {
+    for (size_t y = 0; y < region.y; y++) {
+      memcpy(dst8 + z * depthBytes + y * rowBytes,
+             src8 + z * srcImg->depthBytes + y * srcImg->rowBytes, copyWidth);
+    }
+  }
 }
 
 DeviceCPU::DeviceCPU(const SharedContext& share) : cores(getNumberOfCores()) {}

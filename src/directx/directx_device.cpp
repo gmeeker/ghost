@@ -596,8 +596,45 @@ void ImageDirectX::copy(const ghost::Stream& s, const ghost::Image& src) {
   srcImg->transitionTo(cmdList, D3D12_RESOURCE_STATE_COMMON);
 }
 
+void ImageDirectX::copy(const ghost::Stream& s, const ghost::Image& src,
+                        const Size3& region, const Origin3& srcOrigin,
+                        const Origin3& dstOrigin) {
+  auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
+  auto* srcImg = static_cast<ImageDirectX*>(src.impl().get());
+
+  stream.begin();
+  auto* cmdList = stream.commandList.Get();
+
+  srcImg->transitionTo(cmdList, D3D12_RESOURCE_STATE_COPY_SOURCE);
+  transitionTo(cmdList, D3D12_RESOURCE_STATE_COPY_DEST);
+
+  D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+  srcLoc.pResource = srcImg->resource.Get();
+  srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+  srcLoc.SubresourceIndex = 0;
+
+  D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+  dstLoc.pResource = resource.Get();
+  dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+  dstLoc.SubresourceIndex = 0;
+
+  D3D12_BOX srcBox = {};
+  srcBox.left = (UINT)srcOrigin.x;
+  srcBox.top = (UINT)srcOrigin.y;
+  srcBox.front = (UINT)srcOrigin.z;
+  srcBox.right = (UINT)(srcOrigin.x + region.x);
+  srcBox.bottom = (UINT)(srcOrigin.y + std::max(region.y, (size_t)1));
+  srcBox.back = (UINT)(srcOrigin.z + std::max(region.z, (size_t)1));
+
+  cmdList->CopyTextureRegion(&dstLoc, (UINT)dstOrigin.x, (UINT)dstOrigin.y,
+                             (UINT)dstOrigin.z, &srcLoc, &srcBox);
+
+  transitionTo(cmdList, D3D12_RESOURCE_STATE_COMMON);
+  srcImg->transitionTo(cmdList, D3D12_RESOURCE_STATE_COMMON);
+}
+
 void ImageDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
-                        const ImageDescription& d) {
+                        const BufferLayout& layout) {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
   auto* srcBuf = static_cast<BufferDirectX*>(src.impl().get());
 
@@ -616,12 +653,15 @@ void ImageDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
   srcLoc.pResource = srcBuf->resource.Get();
   srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
   srcLoc.PlacedFootprint.Offset = srcBuf->baseOffset();
-  srcLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(d);
-  srcLoc.PlacedFootprint.Footprint.Width = (UINT)d.size.x;
-  srcLoc.PlacedFootprint.Footprint.Height = (UINT)std::max(d.size.y, (size_t)1);
-  srcLoc.PlacedFootprint.Footprint.Depth = (UINT)std::max(d.size.z, (size_t)1);
+  srcLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(descr);
+  srcLoc.PlacedFootprint.Footprint.Width = (UINT)layout.size.x;
+  srcLoc.PlacedFootprint.Footprint.Height =
+      (UINT)std::max(layout.size.y, (size_t)1);
+  srcLoc.PlacedFootprint.Footprint.Depth =
+      (UINT)std::max(layout.size.z, (size_t)1);
   srcLoc.PlacedFootprint.Footprint.RowPitch =
-      d.stride.x > 0 ? (UINT)d.stride.x : (UINT)(d.size.x * d.pixelSize());
+      layout.stride.x > 0 ? (UINT)layout.stride.x
+                          : (UINT)(layout.size.x * descr.pixelSize());
   // Align row pitch to 256 bytes
   srcLoc.PlacedFootprint.Footprint.RowPitch =
       (srcLoc.PlacedFootprint.Footprint.RowPitch + 255) & ~255u;
@@ -633,13 +673,14 @@ void ImageDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
 }
 
 void ImageDirectX::copy(const ghost::Stream& s, const void* src,
-                        const ImageDescription& d) {
+                        const BufferLayout& layout) {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
 
-  size_t rowPitch = d.stride.x > 0 ? d.stride.x : d.size.x * d.pixelSize();
+  size_t rowPitch =
+      layout.stride.x > 0 ? layout.stride.x : layout.size.x * descr.pixelSize();
   rowPitch = (rowPitch + 255) & ~(size_t)255;  // D3D12 alignment requirement
-  size_t height = std::max(d.size.y, (size_t)1);
-  size_t uploadSize = rowPitch * height * std::max(d.size.z, (size_t)1);
+  size_t height = std::max(layout.size.y, (size_t)1);
+  size_t uploadSize = rowPitch * height * std::max(layout.size.z, (size_t)1);
 
   auto uploadBuf = dev.createCommittedBuffer(uploadSize, D3D12_HEAP_TYPE_UPLOAD,
                                              D3D12_RESOURCE_FLAG_NONE,
@@ -650,15 +691,16 @@ void ImageDirectX::copy(const ghost::Stream& s, const void* src,
   D3D12_RANGE readRange = {0, 0};
   checkHR(uploadBuf->Map(0, &readRange, &mapped));
 
-  size_t srcRowPitch = d.stride.x > 0 ? d.stride.x : d.size.x * d.pixelSize();
+  size_t srcRowPitch =
+      layout.stride.x > 0 ? layout.stride.x : layout.size.x * descr.pixelSize();
   auto* dstBytes = static_cast<uint8_t*>(mapped);
   auto* srcBytes = static_cast<const uint8_t*>(src);
 
-  for (size_t z = 0; z < std::max(d.size.z, (size_t)1); z++) {
+  for (size_t z = 0; z < std::max(layout.size.z, (size_t)1); z++) {
     for (size_t y = 0; y < height; y++) {
       memcpy(dstBytes + z * rowPitch * height + y * rowPitch,
              srcBytes + z * srcRowPitch * height + y * srcRowPitch,
-             d.size.x * d.pixelSize());
+             layout.size.x * descr.pixelSize());
     }
   }
   uploadBuf->Unmap(0, nullptr);
@@ -677,10 +719,11 @@ void ImageDirectX::copy(const ghost::Stream& s, const void* src,
   srcLoc.pResource = uploadBuf.Get();
   srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
   srcLoc.PlacedFootprint.Offset = 0;
-  srcLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(d);
-  srcLoc.PlacedFootprint.Footprint.Width = (UINT)d.size.x;
+  srcLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(descr);
+  srcLoc.PlacedFootprint.Footprint.Width = (UINT)layout.size.x;
   srcLoc.PlacedFootprint.Footprint.Height = (UINT)height;
-  srcLoc.PlacedFootprint.Footprint.Depth = (UINT)std::max(d.size.z, (size_t)1);
+  srcLoc.PlacedFootprint.Footprint.Depth =
+      (UINT)std::max(layout.size.z, (size_t)1);
   srcLoc.PlacedFootprint.Footprint.RowPitch = (UINT)rowPitch;
 
   cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
@@ -691,7 +734,7 @@ void ImageDirectX::copy(const ghost::Stream& s, const void* src,
 }
 
 void ImageDirectX::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                          const ImageDescription& d) const {
+                          const BufferLayout& layout) const {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
   auto* dstBuf = static_cast<BufferDirectX*>(dst.impl().get());
 
@@ -711,11 +754,14 @@ void ImageDirectX::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
   dstLoc.pResource = dstBuf->resource.Get();
   dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
   dstLoc.PlacedFootprint.Offset = dstBuf->baseOffset();
-  dstLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(d);
-  dstLoc.PlacedFootprint.Footprint.Width = (UINT)d.size.x;
-  dstLoc.PlacedFootprint.Footprint.Height = (UINT)std::max(d.size.y, (size_t)1);
-  dstLoc.PlacedFootprint.Footprint.Depth = (UINT)std::max(d.size.z, (size_t)1);
-  size_t rowPitch = d.stride.x > 0 ? d.stride.x : d.size.x * d.pixelSize();
+  dstLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(descr);
+  dstLoc.PlacedFootprint.Footprint.Width = (UINT)layout.size.x;
+  dstLoc.PlacedFootprint.Footprint.Height =
+      (UINT)std::max(layout.size.y, (size_t)1);
+  dstLoc.PlacedFootprint.Footprint.Depth =
+      (UINT)std::max(layout.size.z, (size_t)1);
+  size_t rowPitch =
+      layout.stride.x > 0 ? layout.stride.x : layout.size.x * descr.pixelSize();
   dstLoc.PlacedFootprint.Footprint.RowPitch =
       (UINT)((rowPitch + 255) & ~(size_t)255);
 
@@ -727,13 +773,15 @@ void ImageDirectX::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
 }
 
 void ImageDirectX::copyTo(const ghost::Stream& s, void* dst,
-                          const ImageDescription& d) const {
+                          const BufferLayout& layout) const {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
 
-  size_t rowPitch = d.stride.x > 0 ? d.stride.x : d.size.x * d.pixelSize();
+  size_t rowPitch =
+      layout.stride.x > 0 ? layout.stride.x : layout.size.x * descr.pixelSize();
   size_t alignedPitch = (rowPitch + 255) & ~(size_t)255;
-  size_t height = std::max(d.size.y, (size_t)1);
-  size_t readbackSize = alignedPitch * height * std::max(d.size.z, (size_t)1);
+  size_t height = std::max(layout.size.y, (size_t)1);
+  size_t readbackSize =
+      alignedPitch * height * std::max(layout.size.z, (size_t)1);
 
   auto readbackBuf = dev.createCommittedBuffer(
       readbackSize, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE,
@@ -754,10 +802,11 @@ void ImageDirectX::copyTo(const ghost::Stream& s, void* dst,
   dstLoc.pResource = readbackBuf.Get();
   dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
   dstLoc.PlacedFootprint.Offset = 0;
-  dstLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(d);
-  dstLoc.PlacedFootprint.Footprint.Width = (UINT)d.size.x;
+  dstLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(descr);
+  dstLoc.PlacedFootprint.Footprint.Width = (UINT)layout.size.x;
   dstLoc.PlacedFootprint.Footprint.Height = (UINT)height;
-  dstLoc.PlacedFootprint.Footprint.Depth = (UINT)std::max(d.size.z, (size_t)1);
+  dstLoc.PlacedFootprint.Footprint.Depth =
+      (UINT)std::max(layout.size.z, (size_t)1);
   dstLoc.PlacedFootprint.Footprint.RowPitch = (UINT)alignedPitch;
 
   cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
@@ -773,13 +822,14 @@ void ImageDirectX::copyTo(const ghost::Stream& s, void* dst,
   dr.size = readbackSize;
   dr.srcRowPitch = alignedPitch;
   dr.dstRowPitch = rowPitch;
-  dr.rowCount = height * std::max(d.size.z, (size_t)1);
-  dr.rowBytes = d.size.x * d.pixelSize();
+  dr.rowCount = height * std::max(layout.size.z, (size_t)1);
+  dr.rowBytes = layout.size.x * descr.pixelSize();
   stream.deferredReads.push_back(dr);
 }
 
 void ImageDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
-                        const ImageDescription& d, const Size3& imageOrigin) {
+                        const BufferLayout& layout,
+                        const Origin3& imageOrigin) {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
   auto* srcBuf = static_cast<BufferDirectX*>(src.impl().get());
 
@@ -798,12 +848,15 @@ void ImageDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
   srcLoc.pResource = srcBuf->resource.Get();
   srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
   srcLoc.PlacedFootprint.Offset = srcBuf->baseOffset();
-  srcLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(d);
-  srcLoc.PlacedFootprint.Footprint.Width = (UINT)d.size.x;
-  srcLoc.PlacedFootprint.Footprint.Height = (UINT)std::max(d.size.y, (size_t)1);
-  srcLoc.PlacedFootprint.Footprint.Depth = (UINT)std::max(d.size.z, (size_t)1);
+  srcLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(descr);
+  srcLoc.PlacedFootprint.Footprint.Width = (UINT)layout.size.x;
+  srcLoc.PlacedFootprint.Footprint.Height =
+      (UINT)std::max(layout.size.y, (size_t)1);
+  srcLoc.PlacedFootprint.Footprint.Depth =
+      (UINT)std::max(layout.size.z, (size_t)1);
   srcLoc.PlacedFootprint.Footprint.RowPitch =
-      d.stride.x > 0 ? (UINT)d.stride.x : (UINT)(d.size.x * d.pixelSize());
+      layout.stride.x > 0 ? (UINT)layout.stride.x
+                          : (UINT)(layout.size.x * descr.pixelSize());
   srcLoc.PlacedFootprint.Footprint.RowPitch =
       (srcLoc.PlacedFootprint.Footprint.RowPitch + 255) & ~255u;
 
@@ -815,8 +868,8 @@ void ImageDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
 }
 
 void ImageDirectX::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                          const ImageDescription& d,
-                          const Size3& imageOrigin) const {
+                          const BufferLayout& layout,
+                          const Origin3& imageOrigin) const {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
   auto* dstBuf = static_cast<BufferDirectX*>(dst.impl().get());
 
@@ -836,19 +889,22 @@ void ImageDirectX::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
   srcBox.left = (UINT)imageOrigin.x;
   srcBox.top = (UINT)imageOrigin.y;
   srcBox.front = (UINT)imageOrigin.z;
-  srcBox.right = (UINT)(imageOrigin.x + d.size.x);
-  srcBox.bottom = (UINT)(imageOrigin.y + std::max(d.size.y, (size_t)1));
-  srcBox.back = (UINT)(imageOrigin.z + std::max(d.size.z, (size_t)1));
+  srcBox.right = (UINT)(imageOrigin.x + layout.size.x);
+  srcBox.bottom = (UINT)(imageOrigin.y + std::max(layout.size.y, (size_t)1));
+  srcBox.back = (UINT)(imageOrigin.z + std::max(layout.size.z, (size_t)1));
 
   D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
   dstLoc.pResource = dstBuf->resource.Get();
   dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
   dstLoc.PlacedFootprint.Offset = dstBuf->baseOffset();
-  dstLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(d);
-  dstLoc.PlacedFootprint.Footprint.Width = (UINT)d.size.x;
-  dstLoc.PlacedFootprint.Footprint.Height = (UINT)std::max(d.size.y, (size_t)1);
-  dstLoc.PlacedFootprint.Footprint.Depth = (UINT)std::max(d.size.z, (size_t)1);
-  size_t rowPitch = d.stride.x > 0 ? d.stride.x : d.size.x * d.pixelSize();
+  dstLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(descr);
+  dstLoc.PlacedFootprint.Footprint.Width = (UINT)layout.size.x;
+  dstLoc.PlacedFootprint.Footprint.Height =
+      (UINT)std::max(layout.size.y, (size_t)1);
+  dstLoc.PlacedFootprint.Footprint.Depth =
+      (UINT)std::max(layout.size.z, (size_t)1);
+  size_t rowPitch =
+      layout.stride.x > 0 ? layout.stride.x : layout.size.x * descr.pixelSize();
   dstLoc.PlacedFootprint.Footprint.RowPitch =
       (UINT)((rowPitch + 255) & ~(size_t)255);
 

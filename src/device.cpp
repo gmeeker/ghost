@@ -83,13 +83,19 @@ size_t Device::getMemoryPoolSize() const { return _poolSize; }
 void Device::setMemoryPoolSize(size_t bytes) { _poolSize = bytes; }
 
 void Image::copy(const ghost::Stream& s, const ghost::Buffer& src,
-                 const ImageDescription& descr, const Size3& imageOrigin) {
+                 const BufferLayout& layout, const Origin3& imageOrigin) {
   throw ghost::unsupported_error();
 }
 
 void Image::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                   const ImageDescription& descr,
-                   const Size3& imageOrigin) const {
+                   const BufferLayout& layout,
+                   const Origin3& imageOrigin) const {
+  throw ghost::unsupported_error();
+}
+
+void Image::copy(const ghost::Stream& s, const ghost::Image& src,
+                 const Size3& region, const Origin3& srcOrigin,
+                 const Origin3& dstOrigin) {
   throw ghost::unsupported_error();
 }
 }  // namespace implementation
@@ -173,36 +179,60 @@ void MappedBuffer::unmap(const Stream& s) { impl()->unmap(s); }
 
 Image::Image(std::shared_ptr<implementation::Image> impl) : _impl(impl) {}
 
-void Image::copy(const Stream& s, const Image& src) { _impl->copy(s, src); }
-
-void Image::copy(const Stream& s, const Buffer& src,
-                 const ImageDescription& descr) {
-  _impl->copy(s, src, descr);
+const ImageDescription& Image::description() const {
+  return _impl->description();
 }
 
-void Image::copy(const Stream& s, const void* src,
-                 const ImageDescription& descr) {
-  _impl->copy(s, src, descr);
+void Image::copy(const Stream& s, const Image& src) { _impl->copy(s, src); }
+
+void Image::copy(const Stream& s, const Buffer& src) {
+  _impl->copy(s, src, BufferLayout(description().size));
+}
+
+void Image::copy(const Stream& s, const void* src) {
+  _impl->copy(s, src, BufferLayout(description().size));
+}
+
+void Image::copyTo(const Stream& s, Buffer& dst) const {
+  _impl->copyTo(s, dst, BufferLayout(description().size));
+}
+
+void Image::copyTo(const Stream& s, void* dst) const {
+  _impl->copyTo(s, dst, BufferLayout(description().size));
+}
+
+void Image::copy(const Stream& s, const Buffer& src,
+                 const BufferLayout& layout) {
+  _impl->copy(s, src, layout);
+}
+
+void Image::copy(const Stream& s, const void* src, const BufferLayout& layout) {
+  _impl->copy(s, src, layout);
 }
 
 void Image::copyTo(const Stream& s, Buffer& dst,
-                   const ImageDescription& descr) const {
-  _impl->copyTo(s, dst, descr);
+                   const BufferLayout& layout) const {
+  _impl->copyTo(s, dst, layout);
 }
 
 void Image::copyTo(const Stream& s, void* dst,
-                   const ImageDescription& descr) const {
-  _impl->copyTo(s, dst, descr);
+                   const BufferLayout& layout) const {
+  _impl->copyTo(s, dst, layout);
 }
 
-void Image::copy(const Stream& s, const Buffer& src,
-                 const ImageDescription& descr, const Size3& imageOrigin) {
-  _impl->copy(s, src, descr, imageOrigin);
+void Image::copy(const Stream& s, const Buffer& src, const BufferLayout& layout,
+                 const Origin3& imageOrigin) {
+  _impl->copy(s, src, layout, imageOrigin);
 }
 
-void Image::copyTo(const Stream& s, Buffer& dst, const ImageDescription& descr,
-                   const Size3& imageOrigin) const {
-  _impl->copyTo(s, dst, descr, imageOrigin);
+void Image::copyTo(const Stream& s, Buffer& dst, const BufferLayout& layout,
+                   const Origin3& imageOrigin) const {
+  _impl->copyTo(s, dst, layout, imageOrigin);
+}
+
+void Image::copy(const Stream& s, const Image& src, const Size3& region,
+                 const Origin3& srcOrigin, const Origin3& dstOrigin) {
+  _impl->copy(s, src, region, srcOrigin, dstOrigin);
 }
 
 Device::Device(std::shared_ptr<implementation::Device> impl) : _impl(impl) {}

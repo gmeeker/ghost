@@ -180,7 +180,9 @@ class MappedBuffer : public Buffer {
 ///
 /// Images are allocated via Device::allocateImage() or created as shared
 /// views via Device::sharedImage(). Data is transferred using copy() and
-/// copyTo() with an ImageDescription specifying the pixel format and layout.
+/// copyTo(). Convenience overloads assume tight-packed buffers at the image's
+/// full size; explicit BufferLayout overloads allow custom strides and region
+/// sizes.
 class Image {
  public:
   /// @brief Default-construct a null image.
@@ -199,53 +201,77 @@ class Image {
   /// @brief Get the backend implementation (mutable).
   std::shared_ptr<implementation::Image>& impl() { return _impl; }
 
+  /// @brief Get the image description this image was allocated with.
+  const ImageDescription& description() const;
+
+  /// @name Full-image copies (convenience, tight-packed buffers)
+  /// @{
+
   /// @brief Copy data from another image into this image.
-  /// @param s The stream to enqueue the copy on.
-  /// @param src Source image to copy from.
   void copy(const Stream& s, const Image& src);
 
+  /// @brief Copy data from a buffer into this image (tight packing assumed).
+  void copy(const Stream& s, const Buffer& src);
+
+  /// @brief Copy data from host memory into this image (tight packing assumed).
+  void copy(const Stream& s, const void* src);
+
+  /// @brief Copy image data into a buffer (tight packing assumed).
+  void copyTo(const Stream& s, Buffer& dst) const;
+
+  /// @brief Copy image data to host memory (tight packing assumed).
+  void copyTo(const Stream& s, void* dst) const;
+
+  /// @}
+  /// @name Full-image copies with explicit buffer layout
+  /// @{
+
   /// @brief Copy data from a buffer into this image.
-  /// @param s The stream to enqueue the copy on.
-  /// @param src Source buffer containing pixel data.
-  /// @param descr Image description specifying dimensions and format.
-  void copy(const Stream& s, const Buffer& src, const ImageDescription& descr);
+  /// @param layout Buffer memory layout (dimensions and strides).
+  void copy(const Stream& s, const Buffer& src, const BufferLayout& layout);
 
   /// @brief Copy data from host memory into this image.
-  /// @param s The stream to enqueue the copy on.
-  /// @param src Pointer to host source pixel data.
-  /// @param descr Image description specifying dimensions and format.
-  void copy(const Stream& s, const void* src, const ImageDescription& descr);
+  /// @param layout Buffer memory layout (dimensions and strides).
+  void copy(const Stream& s, const void* src, const BufferLayout& layout);
 
   /// @brief Copy image data into a buffer.
-  /// @param s The stream to enqueue the copy on.
-  /// @param[out] dst Destination buffer.
-  /// @param descr Image description specifying dimensions and format.
-  void copyTo(const Stream& s, Buffer& dst,
-              const ImageDescription& descr) const;
+  /// @param layout Buffer memory layout (dimensions and strides).
+  void copyTo(const Stream& s, Buffer& dst, const BufferLayout& layout) const;
 
   /// @brief Copy image data to host memory.
-  /// @param s The stream to enqueue the copy on.
-  /// @param[out] dst Pointer to host destination buffer.
-  /// @param descr Image description specifying dimensions and format.
-  void copyTo(const Stream& s, void* dst, const ImageDescription& descr) const;
+  /// @param layout Buffer memory layout (dimensions and strides).
+  void copyTo(const Stream& s, void* dst, const BufferLayout& layout) const;
+
+  /// @}
+  /// @name Subrect copies (buffer <-> image region)
+  /// @{
 
   /// @brief Copy a region from a buffer into this image at the given origin.
-  /// @param s The stream to enqueue the copy on.
-  /// @param src Source buffer containing pixel data.
-  /// @param descr Image description specifying the region dimensions and
-  /// format.
-  /// @param imageOrigin Destination origin within this image (x, y, z).
-  void copy(const Stream& s, const Buffer& src, const ImageDescription& descr,
-            const Size3& imageOrigin);
+  /// @param layout Buffer memory layout (region dimensions and strides).
+  /// @param imageOrigin Destination origin within this image.
+  void copy(const Stream& s, const Buffer& src, const BufferLayout& layout,
+            const Origin3& imageOrigin);
 
   /// @brief Copy a region from this image at the given origin into a buffer.
-  /// @param s The stream to enqueue the copy on.
-  /// @param[out] dst Destination buffer.
-  /// @param descr Image description specifying the region dimensions and
-  /// format.
-  /// @param imageOrigin Source origin within this image (x, y, z).
-  void copyTo(const Stream& s, Buffer& dst, const ImageDescription& descr,
-              const Size3& imageOrigin) const;
+  /// @param layout Buffer memory layout (region dimensions and strides).
+  /// @param imageOrigin Source origin within this image.
+  void copyTo(const Stream& s, Buffer& dst, const BufferLayout& layout,
+              const Origin3& imageOrigin) const;
+
+  /// @}
+  /// @name Image-to-image subrect copy
+  /// @{
+
+  /// @brief Copy a region between images with independent source and
+  /// destination origins.
+  /// @param src Source image.
+  /// @param region Size of the region to copy.
+  /// @param srcOrigin Origin within the source image.
+  /// @param dstOrigin Origin within this (destination) image.
+  void copy(const Stream& s, const Image& src, const Size3& region,
+            const Origin3& srcOrigin, const Origin3& dstOrigin);
+
+  /// @}
 
  private:
   std::shared_ptr<implementation::Image> _impl;

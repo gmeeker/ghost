@@ -48,6 +48,8 @@ typedef Value2<size_t> Size2;
 typedef Value3<int> Point3;
 /// @brief 3D size (width, height, depth).
 typedef Value3<size_t> Size3;
+/// @brief 3D origin (x, y, z) for image region offsets.
+typedef Value3<size_t> Origin3;
 /// @brief Row and slice strides in bytes.
 typedef Value2<int32_t> Stride2;
 
@@ -97,23 +99,43 @@ enum Access {
   Access_ReadWrite
 };
 
+/// @brief Describes the memory layout of a linear buffer for image copy
+/// operations.
+///
+/// Used when copying between buffers and images to specify the region
+/// dimensions and row/slice strides. A stride of 0 indicates tight packing (no
+/// padding).
+class BufferLayout {
+ public:
+  /// @brief Region dimensions (width, height, depth).
+  Size3 size;
+  /// @brief Row stride (x) and slice stride (y) in bytes. Zero means tight
+  /// packing.
+  Stride2 stride;
+
+  /// @brief Construct a buffer layout.
+  /// @param size_ Region dimensions (width, height, depth).
+  /// @param stride_ Row and slice strides in bytes (default: tight packing).
+  BufferLayout(Size3 size_, Stride2 stride_ = Stride2(0, 0))
+      : size(size_), stride(stride_) {}
+};
+
 /// @brief Descriptor for a 1D, 2D, or 3D GPU image.
 ///
 /// Specifies the dimensions, pixel format, memory layout, and access mode
 /// for image allocation and copy operations. Set the z component of @c size
 /// to 1 for 2D images, or both y and z to 1 for 1D images.
-class ImageDescription {
+///
+/// Inherits BufferLayout (size + stride) so it can be passed directly to
+/// copy methods that accept a BufferLayout.
+class ImageDescription : public BufferLayout {
  public:
-  /// @brief Image dimensions (width, height, depth).
-  Size3 size;
   /// @brief Number of channels per pixel.
   size_t channels;
   /// @brief Channel ordering within each pixel.
   PixelOrder order;
   /// @brief Data type of each channel element.
   DataType type;
-  /// @brief Row stride (x) and slice stride (y) in bytes.
-  Stride2 stride;
   /// @brief Intended access mode for the image.
   Access access;
 
@@ -125,11 +147,10 @@ class ImageDescription {
   /// @param access_ Access mode (default: read-write).
   ImageDescription(Size3 size_, PixelOrder order_, DataType type_,
                    Stride2 stride_, Access access_ = Access_ReadWrite)
-      : size(size_),
+      : BufferLayout(size_, stride_),
         channels(4),
         order(order_),
         type(type_),
-        stride(stride_),
         access(access_) {}
 
   /// @brief Compute the total data size of the image in bytes.

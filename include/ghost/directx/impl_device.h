@@ -174,21 +174,26 @@ class ImageDirectX : public Image {
                ImageDirectX& image);
   ~ImageDirectX();
 
+  virtual const ImageDescription& description() const override { return descr; }
+
   virtual void copy(const ghost::Stream& s, const ghost::Image& src) override;
+  virtual void copy(const ghost::Stream& s, const ghost::Image& src,
+                    const Size3& region, const Origin3& srcOrigin,
+                    const Origin3& dstOrigin) override;
   virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
-                    const ImageDescription& descr) override;
+                    const BufferLayout& layout) override;
   virtual void copy(const ghost::Stream& s, const void* src,
-                    const ImageDescription& descr) override;
+                    const BufferLayout& layout) override;
   virtual void copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                      const ImageDescription& descr) const override;
+                      const BufferLayout& layout) const override;
   virtual void copyTo(const ghost::Stream& s, void* dst,
-                      const ImageDescription& descr) const override;
+                      const BufferLayout& layout) const override;
   virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
-                    const ImageDescription& descr,
-                    const Size3& imageOrigin) override;
+                    const BufferLayout& layout,
+                    const Origin3& imageOrigin) override;
   virtual void copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                      const ImageDescription& descr,
-                      const Size3& imageOrigin) const override;
+                      const BufferLayout& layout,
+                      const Origin3& imageOrigin) const override;
 
   void transitionTo(ID3D12GraphicsCommandList* cmdList,
                     D3D12_RESOURCE_STATES newState);

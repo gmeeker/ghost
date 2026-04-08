@@ -543,7 +543,7 @@ void ImageMetal::copy(const ghost::Stream &s, const ghost::Image &src) {
 }
 
 void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
-                      const ImageDescription &descr_) {
+                      const BufferLayout &layout) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
   id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
@@ -554,8 +554,8 @@ void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
   [blit copyFromBuffer:src_impl->mem.get()
              sourceOffset:src_impl->baseOffset()
-        sourceBytesPerRow:descr_.stride.x
-      sourceBytesPerImage:descr_.stride.y
+        sourceBytesPerRow:layout.stride.x
+      sourceBytesPerImage:layout.stride.y
                sourceSize:region.size
                 toTexture:mem.get()
          destinationSlice:0
@@ -566,19 +566,19 @@ void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
 }
 
 void ImageMetal::copy(const ghost::Stream &s, const void *src,
-                      const ImageDescription &descr_) {
+                      const BufferLayout &layout) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   if (!IsPrivate(mem.get())) {
     MTLRegion region = {{0, 0, 0},
-                        {descr_.size.x, descr_.size.y, descr_.size.z}};
+                        {layout.size.x, layout.size.y, layout.size.z}};
     [mem.get() replaceRegion:region
                  mipmapLevel:0
                    withBytes:src
-                 bytesPerRow:descr_.stride.x];
+                 bytesPerRow:layout.stride.x];
     return;
   }
   // Private texture: upload via staging buffer + blit
-  size_t dataSize = descr_.stride.x * descr_.size.y;
+  size_t dataSize = layout.stride.x * layout.size.y;
   id<MTLBuffer> staging =
       [mem.get().device newBufferWithBytes:src
                                     length:dataSize
@@ -586,12 +586,12 @@ void ImageMetal::copy(const ghost::Stream &s, const void *src,
   id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
   stream_impl->encodeWait(commandBuffer);
-  MTLRegion region = {{0, 0, 0}, {descr_.size.x, descr_.size.y, descr_.size.z}};
+  MTLRegion region = {{0, 0, 0}, {layout.size.x, layout.size.y, layout.size.z}};
   MTLOrigin dst_origin = {0, 0, 0};
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
   [blit copyFromBuffer:staging
              sourceOffset:0
-        sourceBytesPerRow:descr_.stride.x
+        sourceBytesPerRow:layout.stride.x
       sourceBytesPerImage:dataSize
                sourceSize:region.size
                 toTexture:mem.get()
@@ -603,7 +603,7 @@ void ImageMetal::copy(const ghost::Stream &s, const void *src,
 }
 
 void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
-                        const ImageDescription &descr_) const {
+                        const BufferLayout &layout) const {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto dst_impl = static_cast<implementation::BufferMetal *>(dst.impl().get());
   id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
@@ -619,14 +619,14 @@ void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
                     sourceSize:region.size
                       toBuffer:dst_impl->mem.get()
              destinationOffset:dst_impl->baseOffset()
-        destinationBytesPerRow:descr_.stride.x
-      destinationBytesPerImage:descr_.stride.y];
+        destinationBytesPerRow:layout.stride.x
+      destinationBytesPerImage:layout.stride.y];
   [blit endEncoding];
   stream_impl->commitAndTrack(commandBuffer);
 }
 
 void ImageMetal::copyTo(const ghost::Stream &s, void *dst,
-                        const ImageDescription &descr_) const {
+                        const BufferLayout &layout) const {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   // For non-private textures accessed from CPU, we need to sync pending GPU
   // work.
@@ -634,22 +634,22 @@ void ImageMetal::copyTo(const ghost::Stream &s, void *dst,
     stream_impl->sync();
     // Shared/Managed: read directly from texture
     MTLRegion region = {{0, 0, 0},
-                        {descr_.size.x, descr_.size.y, descr_.size.z}};
+                        {layout.size.x, layout.size.y, layout.size.z}};
     [mem.get() getBytes:dst
-            bytesPerRow:descr_.stride.x
+            bytesPerRow:layout.stride.x
              fromRegion:region
             mipmapLevel:0];
     return;
   }
   // Private texture: blit to staging buffer, wait, then memcpy
-  size_t dataSize = descr_.stride.x * descr_.size.y;
+  size_t dataSize = layout.stride.x * layout.size.y;
   id<MTLBuffer> staging =
       [mem.get().device newBufferWithLength:dataSize
                                     options:MTLResourceStorageModeShared];
   id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
   stream_impl->encodeWait(commandBuffer);
-  MTLRegion region = {{0, 0, 0}, {descr_.size.x, descr_.size.y, descr_.size.z}};
+  MTLRegion region = {{0, 0, 0}, {layout.size.x, layout.size.y, layout.size.z}};
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
   [blit copyFromTexture:mem.get()
                    sourceSlice:0
@@ -658,7 +658,7 @@ void ImageMetal::copyTo(const ghost::Stream &s, void *dst,
                     sourceSize:region.size
                       toBuffer:staging
              destinationOffset:0
-        destinationBytesPerRow:descr_.stride.x
+        destinationBytesPerRow:layout.stride.x
       destinationBytesPerImage:dataSize];
   [blit endEncoding];
   [commandBuffer commit];
@@ -667,20 +667,19 @@ void ImageMetal::copyTo(const ghost::Stream &s, void *dst,
 }
 
 void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
-                      const ImageDescription &descr_,
-                      const Size3 &imageOrigin) {
+                      const BufferLayout &layout, const Origin3 &imageOrigin) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
   id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
   stream_impl->encodeWait(commandBuffer);
-  MTLRegion region = {{0, 0, 0}, {descr_.size.x, descr_.size.y, descr_.size.z}};
+  MTLRegion region = {{0, 0, 0}, {layout.size.x, layout.size.y, layout.size.z}};
   MTLOrigin dst_origin = {imageOrigin.x, imageOrigin.y, imageOrigin.z};
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
   [blit copyFromBuffer:src_impl->mem.get()
              sourceOffset:src_impl->baseOffset()
-        sourceBytesPerRow:descr_.stride.x
-      sourceBytesPerImage:descr_.stride.y
+        sourceBytesPerRow:layout.stride.x
+      sourceBytesPerImage:layout.stride.y
                sourceSize:region.size
                 toTexture:mem.get()
          destinationSlice:0
@@ -691,15 +690,15 @@ void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
 }
 
 void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
-                        const ImageDescription &descr_,
-                        const Size3 &imageOrigin) const {
+                        const BufferLayout &layout,
+                        const Origin3 &imageOrigin) const {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto dst_impl = static_cast<implementation::BufferMetal *>(dst.impl().get());
   id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
   stream_impl->encodeWait(commandBuffer);
   MTLRegion region = {{imageOrigin.x, imageOrigin.y, imageOrigin.z},
-                      {descr_.size.x, descr_.size.y, descr_.size.z}};
+                      {layout.size.x, layout.size.y, layout.size.z}};
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
   [blit copyFromTexture:mem.get()
                    sourceSlice:0
@@ -708,8 +707,33 @@ void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
                     sourceSize:region.size
                       toBuffer:dst_impl->mem.get()
              destinationOffset:dst_impl->baseOffset()
-        destinationBytesPerRow:descr_.stride.x
-      destinationBytesPerImage:descr_.stride.y];
+        destinationBytesPerRow:layout.stride.x
+      destinationBytesPerImage:layout.stride.y];
+  [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
+}
+
+void ImageMetal::copy(const ghost::Stream &s, const ghost::Image &src,
+                      const Size3 &region, const Origin3 &srcOrigin,
+                      const Origin3 &dstOrigin) {
+  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  auto src_impl = static_cast<implementation::ImageMetal *>(src.impl().get());
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
+  MTLRegion srcRegion = {{srcOrigin.x, srcOrigin.y, srcOrigin.z},
+                         {region.x, region.y, region.z}};
+  MTLOrigin dst = {dstOrigin.x, dstOrigin.y, dstOrigin.z};
+  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+  [blit copyFromTexture:src_impl->mem.get()
+            sourceSlice:0
+            sourceLevel:0
+           sourceOrigin:srcRegion.origin
+             sourceSize:srcRegion.size
+              toTexture:mem.get()
+       destinationSlice:0
+       destinationLevel:0
+      destinationOrigin:dst];
   [blit endEncoding];
   stream_impl->commitAndTrack(commandBuffer);
 }

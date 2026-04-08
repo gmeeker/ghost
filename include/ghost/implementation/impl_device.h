@@ -282,21 +282,28 @@ class Image {
   Image& operator=(const Image& rhs) = delete;
 
  public:
+  /// @brief Get the image description this image was allocated with.
+  virtual const ImageDescription& description() const = 0;
+
   virtual void copy(const ghost::Stream& s, const ghost::Image& src) = 0;
   virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
-                    const ImageDescription& descr) = 0;
+                    const BufferLayout& layout) = 0;
   virtual void copy(const ghost::Stream& s, const void* src,
-                    const ImageDescription& descr) = 0;
+                    const BufferLayout& layout) = 0;
   virtual void copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                      const ImageDescription& descr) const = 0;
+                      const BufferLayout& layout) const = 0;
   virtual void copyTo(const ghost::Stream& s, void* dst,
-                      const ImageDescription& descr) const = 0;
+                      const BufferLayout& layout) const = 0;
 
   virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
-                    const ImageDescription& descr, const Size3& imageOrigin);
+                    const BufferLayout& layout, const Origin3& imageOrigin);
   virtual void copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                      const ImageDescription& descr,
-                      const Size3& imageOrigin) const;
+                      const BufferLayout& layout,
+                      const Origin3& imageOrigin) const;
+
+  virtual void copy(const ghost::Stream& s, const ghost::Image& src,
+                    const Size3& region, const Origin3& srcOrigin,
+                    const Origin3& dstOrigin);
 };
 
 /// @brief Abstract backend interface for a GPU device.

@@ -742,7 +742,7 @@ void ImageVulkan::copy(const ghost::Stream& s, const ghost::Image& src) {
 }
 
 void ImageVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
-                       const ImageDescription& d) {
+                       const BufferLayout& layout) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
   auto* srcBuf = static_cast<BufferVulkan*>(src.impl().get());
 
@@ -766,13 +766,13 @@ void ImageVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
   VkBufferImageCopy region = {};
   region.bufferOffset = srcBuf->baseOffset();
   region.bufferRowLength =
-      d.stride.x > 0 ? (uint32_t)(d.stride.x / d.pixelSize()) : 0;
+      layout.stride.x > 0 ? (uint32_t)(layout.stride.x / descr.pixelSize()) : 0;
   region.bufferImageHeight = 0;
   region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   region.imageSubresource.layerCount = 1;
-  region.imageExtent.width = (uint32_t)d.size.x;
-  region.imageExtent.height = std::max((uint32_t)d.size.y, 1u);
-  region.imageExtent.depth = std::max((uint32_t)d.size.z, 1u);
+  region.imageExtent.width = (uint32_t)layout.size.x;
+  region.imageExtent.height = std::max((uint32_t)layout.size.y, 1u);
+  region.imageExtent.depth = std::max((uint32_t)layout.size.z, 1u);
 
   vkCmdCopyBufferToImage(stream.commandBuffer, srcBuf->buffer, image,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
@@ -788,10 +788,10 @@ void ImageVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
 }
 
 void ImageVulkan::copy(const ghost::Stream& s, const void* src,
-                       const ImageDescription& d) {
+                       const BufferLayout& layout) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
 
-  size_t dataSize = d.dataSize();
+  size_t dataSize = descr.dataSize();
 
   // Create staging buffer
   VkBuffer staging;
@@ -826,13 +826,13 @@ void ImageVulkan::copy(const ghost::Stream& s, const void* src,
   VkBufferImageCopy region = {};
   region.bufferOffset = 0;
   region.bufferRowLength =
-      d.stride.x > 0 ? (uint32_t)(d.stride.x / d.pixelSize()) : 0;
+      layout.stride.x > 0 ? (uint32_t)(layout.stride.x / descr.pixelSize()) : 0;
   region.bufferImageHeight = 0;
   region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   region.imageSubresource.layerCount = 1;
-  region.imageExtent.width = (uint32_t)d.size.x;
-  region.imageExtent.height = std::max((uint32_t)d.size.y, 1u);
-  region.imageExtent.depth = std::max((uint32_t)d.size.z, 1u);
+  region.imageExtent.width = (uint32_t)layout.size.x;
+  region.imageExtent.height = std::max((uint32_t)layout.size.y, 1u);
+  region.imageExtent.depth = std::max((uint32_t)layout.size.z, 1u);
 
   vkCmdCopyBufferToImage(stream.commandBuffer, staging, image,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
@@ -850,7 +850,7 @@ void ImageVulkan::copy(const ghost::Stream& s, const void* src,
 }
 
 void ImageVulkan::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                         const ImageDescription& d) const {
+                         const BufferLayout& layout) const {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
   auto* dstBuf = static_cast<BufferVulkan*>(dst.impl().get());
 
@@ -874,13 +874,13 @@ void ImageVulkan::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
   VkBufferImageCopy region = {};
   region.bufferOffset = dstBuf->baseOffset();
   region.bufferRowLength =
-      d.stride.x > 0 ? (uint32_t)(d.stride.x / d.pixelSize()) : 0;
+      layout.stride.x > 0 ? (uint32_t)(layout.stride.x / descr.pixelSize()) : 0;
   region.bufferImageHeight = 0;
   region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   region.imageSubresource.layerCount = 1;
-  region.imageExtent.width = (uint32_t)d.size.x;
-  region.imageExtent.height = std::max((uint32_t)d.size.y, 1u);
-  region.imageExtent.depth = std::max((uint32_t)d.size.z, 1u);
+  region.imageExtent.width = (uint32_t)layout.size.x;
+  region.imageExtent.height = std::max((uint32_t)layout.size.y, 1u);
+  region.imageExtent.depth = std::max((uint32_t)layout.size.z, 1u);
 
   vkCmdCopyImageToBuffer(stream.commandBuffer, image,
                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstBuf->buffer,
@@ -897,10 +897,10 @@ void ImageVulkan::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
 }
 
 void ImageVulkan::copyTo(const ghost::Stream& s, void* dst,
-                         const ImageDescription& d) const {
+                         const BufferLayout& layout) const {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
 
-  size_t dataSize = d.dataSize();
+  size_t dataSize = descr.dataSize();
 
   // Create staging buffer for readback
   VkBuffer staging;
@@ -930,13 +930,13 @@ void ImageVulkan::copyTo(const ghost::Stream& s, void* dst,
   VkBufferImageCopy region = {};
   region.bufferOffset = 0;
   region.bufferRowLength =
-      d.stride.x > 0 ? (uint32_t)(d.stride.x / d.pixelSize()) : 0;
+      layout.stride.x > 0 ? (uint32_t)(layout.stride.x / descr.pixelSize()) : 0;
   region.bufferImageHeight = 0;
   region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   region.imageSubresource.layerCount = 1;
-  region.imageExtent.width = (uint32_t)d.size.x;
-  region.imageExtent.height = std::max((uint32_t)d.size.y, 1u);
-  region.imageExtent.depth = std::max((uint32_t)d.size.z, 1u);
+  region.imageExtent.width = (uint32_t)layout.size.x;
+  region.imageExtent.height = std::max((uint32_t)layout.size.y, 1u);
+  region.imageExtent.depth = std::max((uint32_t)layout.size.z, 1u);
 
   vkCmdCopyImageToBuffer(stream.commandBuffer, image,
                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1,
@@ -971,7 +971,7 @@ void ImageVulkan::copyTo(const ghost::Stream& s, void* dst,
 }
 
 void ImageVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
-                       const ImageDescription& d, const Size3& imageOrigin) {
+                       const BufferLayout& layout, const Origin3& imageOrigin) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
   auto* srcBuf = static_cast<BufferVulkan*>(src.impl().get());
 
@@ -995,16 +995,16 @@ void ImageVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
   VkBufferImageCopy region = {};
   region.bufferOffset = srcBuf->baseOffset();
   region.bufferRowLength =
-      d.stride.x > 0 ? (uint32_t)(d.stride.x / d.pixelSize()) : 0;
+      layout.stride.x > 0 ? (uint32_t)(layout.stride.x / descr.pixelSize()) : 0;
   region.bufferImageHeight = 0;
   region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   region.imageSubresource.layerCount = 1;
   region.imageOffset.x = (int32_t)imageOrigin.x;
   region.imageOffset.y = (int32_t)imageOrigin.y;
   region.imageOffset.z = (int32_t)imageOrigin.z;
-  region.imageExtent.width = (uint32_t)d.size.x;
-  region.imageExtent.height = std::max((uint32_t)d.size.y, 1u);
-  region.imageExtent.depth = std::max((uint32_t)d.size.z, 1u);
+  region.imageExtent.width = (uint32_t)layout.size.x;
+  region.imageExtent.height = std::max((uint32_t)layout.size.y, 1u);
+  region.imageExtent.depth = std::max((uint32_t)layout.size.z, 1u);
 
   vkCmdCopyBufferToImage(stream.commandBuffer, srcBuf->buffer, image,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
@@ -1020,8 +1020,8 @@ void ImageVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
 }
 
 void ImageVulkan::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                         const ImageDescription& d,
-                         const Size3& imageOrigin) const {
+                         const BufferLayout& layout,
+                         const Origin3& imageOrigin) const {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
   auto* dstBuf = static_cast<BufferVulkan*>(dst.impl().get());
 
@@ -1045,16 +1045,16 @@ void ImageVulkan::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
   VkBufferImageCopy region = {};
   region.bufferOffset = dstBuf->baseOffset();
   region.bufferRowLength =
-      d.stride.x > 0 ? (uint32_t)(d.stride.x / d.pixelSize()) : 0;
+      layout.stride.x > 0 ? (uint32_t)(layout.stride.x / descr.pixelSize()) : 0;
   region.bufferImageHeight = 0;
   region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   region.imageSubresource.layerCount = 1;
   region.imageOffset.x = (int32_t)imageOrigin.x;
   region.imageOffset.y = (int32_t)imageOrigin.y;
   region.imageOffset.z = (int32_t)imageOrigin.z;
-  region.imageExtent.width = (uint32_t)d.size.x;
-  region.imageExtent.height = std::max((uint32_t)d.size.y, 1u);
-  region.imageExtent.depth = std::max((uint32_t)d.size.z, 1u);
+  region.imageExtent.width = (uint32_t)layout.size.x;
+  region.imageExtent.height = std::max((uint32_t)layout.size.y, 1u);
+  region.imageExtent.depth = std::max((uint32_t)layout.size.z, 1u);
 
   vkCmdCopyImageToBuffer(stream.commandBuffer, image,
                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstBuf->buffer,
@@ -1068,6 +1068,86 @@ void ImageVulkan::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
   vkCmdPipelineBarrier(stream.commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
                        nullptr, 1, &barrier);
+}
+
+void ImageVulkan::copy(const ghost::Stream& s, const ghost::Image& src,
+                       const Size3& region, const Origin3& srcOrigin,
+                       const Origin3& dstOrigin) {
+  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto* srcImg = static_cast<ImageVulkan*>(src.impl().get());
+
+  stream.begin();
+
+  // Transition layouts
+  VkImageMemoryBarrier srcBarrier = {};
+  srcBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  srcBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+  srcBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  srcBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  srcBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  srcBarrier.image = srcImg->image;
+  srcBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  srcBarrier.subresourceRange.levelCount = 1;
+  srcBarrier.subresourceRange.layerCount = 1;
+
+  VkImageMemoryBarrier dstBarrier = {};
+  dstBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  dstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  dstBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  dstBarrier.srcAccessMask = 0;
+  dstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  dstBarrier.image = image;
+  dstBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  dstBarrier.subresourceRange.levelCount = 1;
+  dstBarrier.subresourceRange.layerCount = 1;
+
+  VkImageMemoryBarrier barriers[] = {srcBarrier, dstBarrier};
+  vkCmdPipelineBarrier(
+      stream.commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
+
+  VkImageCopy copyRegion = {};
+  copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  copyRegion.srcSubresource.layerCount = 1;
+  copyRegion.srcOffset = {(int32_t)srcOrigin.x, (int32_t)srcOrigin.y,
+                          (int32_t)srcOrigin.z};
+  copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  copyRegion.dstSubresource.layerCount = 1;
+  copyRegion.dstOffset = {(int32_t)dstOrigin.x, (int32_t)dstOrigin.y,
+                          (int32_t)dstOrigin.z};
+  copyRegion.extent.width = (uint32_t)region.x;
+  copyRegion.extent.height = std::max((uint32_t)region.y, 1u);
+  copyRegion.extent.depth = std::max((uint32_t)region.z, 1u);
+
+  vkCmdCopyImage(stream.commandBuffer, srcImg->image,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+
+  // Transition both images back to general layout
+  VkImageMemoryBarrier postBarriers[2] = {};
+  postBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  postBarriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  postBarriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+  postBarriers[0].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  postBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  postBarriers[0].image = image;
+  postBarriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  postBarriers[0].subresourceRange.levelCount = 1;
+  postBarriers[0].subresourceRange.layerCount = 1;
+
+  postBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  postBarriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  postBarriers[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+  postBarriers[1].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  postBarriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  postBarriers[1].image = srcImg->image;
+  postBarriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  postBarriers[1].subresourceRange.levelCount = 1;
+  postBarriers[1].subresourceRange.layerCount = 1;
+
+  vkCmdPipelineBarrier(stream.commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 2, postBarriers);
 }
 
 // ---------------------------------------------------------------------------
