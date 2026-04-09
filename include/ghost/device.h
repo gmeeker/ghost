@@ -372,16 +372,17 @@ class Device {
 
   /// @brief Allocate a GPU buffer.
   /// @param bytes Size in bytes.
-  /// @param access Access mode (default: read-write).
+  /// @param opts Allocation options (access mode and lifetime hint). Implicitly
+  /// convertible from @c Access for callers that only care about access mode.
   /// @return The allocated Buffer.
-  Buffer allocateBuffer(size_t bytes, Access access = Access_ReadWrite) const;
+  Buffer allocateBuffer(size_t bytes, BufferOptions opts = {}) const;
 
   /// @brief Allocate a memory-mapped GPU buffer.
   /// @param bytes Size in bytes.
-  /// @param access Access mode (default: read-write).
+  /// @param opts Allocation options (access mode and lifetime hint).
   /// @return The allocated MappedBuffer.
   MappedBuffer allocateMappedBuffer(size_t bytes,
-                                    Access access = Access_ReadWrite) const;
+                                    BufferOptions opts = {}) const;
 
   /// @brief Allocate a GPU image (texture).
   /// @param descr Image description specifying dimensions, format, and access.

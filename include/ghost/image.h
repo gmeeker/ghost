@@ -90,13 +90,53 @@ enum {
 /// @}
 
 /// @brief Buffer and image access modes.
-enum Access {
+enum class Access {
   /// @brief Read-only access.
-  Access_ReadOnly,
+  ReadOnly,
   /// @brief Write-only access.
-  Access_WriteOnly,
+  WriteOnly,
   /// @brief Read-write access.
-  Access_ReadWrite
+  ReadWrite
+};
+
+/// @brief Allocation tier hint for buffers.
+///
+/// Describes the intended lifetime and host/device residency of an allocation.
+/// Backends use this to select an appropriate memory pool or storage mode.
+/// Orthogonal to @c Access, which describes what the kernel will do with the
+/// buffer.
+enum class AllocHint {
+  /// @brief Backend chooses. Preserves current behavior.
+  Default,
+  /// @brief Long-lived device-local memory (e.g. model weights uploaded once).
+  Persistent,
+  /// @brief Short-lived, prefer a pooled / recycled allocation.
+  Transient,
+  /// @brief Host-visible staging memory for CPU<->GPU transfers. The staging
+  /// direction is inferred from @c Access: ReadOnly implies host-write /
+  /// kernel-read (upload), WriteOnly implies kernel-write / host-read
+  /// (readback).
+  Staging,
+};
+
+/// @brief Options controlling buffer allocation.
+///
+/// Combines kernel-side access mode with lifetime / residency hint. Implicitly
+/// constructible from an @c Access value so that callers that only care about
+/// access mode can continue to write @c allocateBuffer(n, Access::ReadOnly).
+struct BufferOptions {
+  /// @brief Kernel-side access mode.
+  Access access = Access::ReadWrite;
+  /// @brief Lifetime / residency hint.
+  AllocHint hint = AllocHint::Default;
+
+  constexpr BufferOptions() = default;
+
+  /* implicit */ constexpr BufferOptions(Access a) : access(a) {}
+
+  constexpr BufferOptions(Access a, AllocHint h) : access(a), hint(h) {}
+
+  /* implicit */ constexpr BufferOptions(AllocHint h) : hint(h) {}
 };
 
 /// @brief Describes the memory layout of a linear buffer for image copy
@@ -146,7 +186,7 @@ class ImageDescription : public BufferLayout {
   /// @param stride_ Row and slice strides in bytes.
   /// @param access_ Access mode (default: read-write).
   ImageDescription(Size3 size_, PixelOrder order_, DataType type_,
-                   Stride2 stride_, Access access_ = Access_ReadWrite)
+                   Stride2 stride_, Access access_ = Access::ReadWrite)
       : BufferLayout(size_, stride_),
         channels(4),
         order(order_),

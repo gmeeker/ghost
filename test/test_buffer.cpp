@@ -284,7 +284,7 @@ TEST_P(BufferTest, MappedBufferRoundTrip) {
   // Map for writing.
   float* ptr = nullptr;
   try {
-    ptr = static_cast<float*>(mbuf.map(stream(), Access_WriteOnly));
+    ptr = static_cast<float*>(mbuf.map(stream(), Access::WriteOnly));
   } catch (const ghost::unsupported_error&) {
     GTEST_SKIP() << "Mapped buffers not supported";
   }
@@ -294,7 +294,7 @@ TEST_P(BufferTest, MappedBufferRoundTrip) {
   mbuf.unmap(stream());
 
   // Map for reading and verify.
-  ptr = static_cast<float*>(mbuf.map(stream(), Access_ReadOnly));
+  ptr = static_cast<float*>(mbuf.map(stream(), Access::ReadOnly));
   ASSERT_NE(ptr, nullptr);
   for (size_t i = 0; i < N; i++) {
     EXPECT_FLOAT_EQ(ptr[i], static_cast<float>(i * 3)) << "index " << i;
@@ -344,7 +344,7 @@ TEST_P(BufferTest, MappedBufferNoSync) {
 
   float* ptr = nullptr;
   try {
-    ptr = static_cast<float*>(mbuf.map(stream(), Access_WriteOnly, false));
+    ptr = static_cast<float*>(mbuf.map(stream(), Access::WriteOnly, false));
   } catch (const ghost::unsupported_error&) {
     GTEST_SKIP() << "Mapped buffers not supported";
   }
@@ -355,7 +355,7 @@ TEST_P(BufferTest, MappedBufferNoSync) {
   stream().sync();
 
   // Read back and verify.
-  ptr = static_cast<float*>(mbuf.map(stream(), Access_ReadOnly));
+  ptr = static_cast<float*>(mbuf.map(stream(), Access::ReadOnly));
   ASSERT_NE(ptr, nullptr);
   for (size_t i = 0; i < N; i++) {
     EXPECT_FLOAT_EQ(ptr[i], static_cast<float>(i * 5)) << "index " << i;

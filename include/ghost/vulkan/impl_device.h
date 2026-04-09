@@ -86,7 +86,7 @@ class BufferVulkan : public Buffer {
   bool ownsHandles;
 
   BufferVulkan(const DeviceVulkan& dev_, size_t bytes,
-               Access access = Access_ReadWrite);
+               const BufferOptions& opts = {});
   BufferVulkan(const DeviceVulkan& dev_, VkBuffer buf, VkDeviceMemory mem,
                size_t bytes, bool owns = true);
   ~BufferVulkan();
@@ -139,7 +139,7 @@ class MappedBufferVulkan : public BufferVulkan {
   void* mappedPtr;
 
   MappedBufferVulkan(const DeviceVulkan& dev_, size_t bytes,
-                     Access access = Access_ReadWrite);
+                     const BufferOptions& opts = {});
 
   virtual void* map(const ghost::Stream& s, Access access,
                     bool sync = true) override;
@@ -217,9 +217,9 @@ class DeviceVulkan : public Device {
   virtual ghost::Stream createStream() const override;
 
   virtual ghost::Buffer allocateBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::MappedBuffer allocateMappedBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::Image allocateImage(
       const ImageDescription& descr) const override;
   virtual ghost::Image sharedImage(const ImageDescription& descr,

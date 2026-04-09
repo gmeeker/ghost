@@ -47,9 +47,9 @@ VkImageViewType getImageViewType(const ImageDescription& descr) {
 
 VkAccessFlags getAccessFlags(Access access) {
   switch (access) {
-    case Access_ReadOnly:
+    case Access::ReadOnly:
       return VK_ACCESS_SHADER_READ_BIT;
-    case Access_WriteOnly:
+    case Access::WriteOnly:
       return VK_ACCESS_SHADER_WRITE_BIT;
     default:
       return VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
@@ -246,7 +246,7 @@ void StreamVulkan::addStagingResource(VkBuffer buf, VkDeviceMemory mem) {
 // ---------------------------------------------------------------------------
 
 BufferVulkan::BufferVulkan(const DeviceVulkan& dev_, size_t bytes,
-                           Access access)
+                           const BufferOptions& opts)
     : dev(dev_),
       deviceAlive(dev_.alive),
       buffer(VK_NULL_HANDLE),
@@ -257,8 +257,17 @@ BufferVulkan::BufferVulkan(const DeviceVulkan& dev_, size_t bytes,
                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                              VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-  dev.createBuffer(bytes, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, buffer,
-                   memory);
+  // Staging hint routes to host-visible memory. Readback (kernel writes,
+  // host reads) benefits from HOST_CACHED for fast host-side reads.
+  VkMemoryPropertyFlags memProps = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  if (opts.hint == AllocHint::Staging) {
+    memProps = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    if (opts.access == Access::WriteOnly) {
+      memProps |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    }
+  }
+  dev.createBuffer(bytes, usage, memProps, buffer, memory);
 }
 
 BufferVulkan::BufferVulkan(const DeviceVulkan& dev_, VkBuffer buf,
@@ -480,18 +489,21 @@ void SubBufferVulkan::copyTo(const ghost::Stream& s, void* dst,
 // ---------------------------------------------------------------------------
 
 MappedBufferVulkan::MappedBufferVulkan(const DeviceVulkan& dev_, size_t bytes,
-                                       Access access)
+                                       const BufferOptions& opts)
     : BufferVulkan(dev_, VK_NULL_HANDLE, VK_NULL_HANDLE, bytes, true),
       mappedPtr(nullptr) {
   VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                              VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-  dev.createBuffer(bytes, usage,
-                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                   buffer, memory);
+  VkMemoryPropertyFlags memProps = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  // For readback-dominant staging, prefer HOST_CACHED for faster host reads.
+  if (opts.access == Access::WriteOnly) {
+    memProps |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+  }
+  dev.createBuffer(bytes, usage, memProps, buffer, memory);
 
   // Persistently map the buffer
   checkError(vkMapMemory(dev.device, memory, 0, bytes, 0, &mappedPtr));
@@ -1497,14 +1509,15 @@ ghost::Stream DeviceVulkan::createStream() const {
   return ghost::Stream(std::make_shared<StreamVulkan>(*this));
 }
 
-ghost::Buffer DeviceVulkan::allocateBuffer(size_t bytes, Access access) const {
-  return ghost::Buffer(std::make_shared<BufferVulkan>(*this, bytes, access));
+ghost::Buffer DeviceVulkan::allocateBuffer(size_t bytes,
+                                           const BufferOptions& opts) const {
+  return ghost::Buffer(std::make_shared<BufferVulkan>(*this, bytes, opts));
 }
 
-ghost::MappedBuffer DeviceVulkan::allocateMappedBuffer(size_t bytes,
-                                                       Access access) const {
+ghost::MappedBuffer DeviceVulkan::allocateMappedBuffer(
+    size_t bytes, const BufferOptions& opts) const {
   return ghost::MappedBuffer(
-      std::make_shared<MappedBufferVulkan>(*this, bytes, access));
+      std::make_shared<MappedBufferVulkan>(*this, bytes, opts));
 }
 
 ghost::Image DeviceVulkan::allocateImage(const ImageDescription& descr) const {

@@ -287,11 +287,26 @@ void StreamDirectX::cleanupStaging() {
 // ---------------------------------------------------------------------------
 
 BufferDirectX::BufferDirectX(const DeviceDirectX& dev_, size_t bytes,
-                             Access access)
+                             const BufferOptions& opts)
     : dev(dev_), _size(bytes), currentState(D3D12_RESOURCE_STATE_COMMON) {
-  resource = dev.createCommittedBuffer(
-      bytes, D3D12_HEAP_TYPE_DEFAULT,
-      D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+  // Staging routes to UPLOAD (kernel reads / host writes) or READBACK
+  // (kernel writes / host reads). Everything else uses DEFAULT (device-local).
+  D3D12_HEAP_TYPE heapType = D3D12_HEAP_TYPE_DEFAULT;
+  D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+  D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
+  if (opts.hint == AllocHint::Staging) {
+    if (opts.access == Access::WriteOnly) {
+      heapType = D3D12_HEAP_TYPE_READBACK;
+      initialState = D3D12_RESOURCE_STATE_COPY_DEST;
+    } else {
+      heapType = D3D12_HEAP_TYPE_UPLOAD;
+      initialState = D3D12_RESOURCE_STATE_GENERIC_READ;
+    }
+    // UPLOAD/READBACK heaps don't permit UAV access.
+    flags = D3D12_RESOURCE_FLAG_NONE;
+  }
+  resource = dev.createCommittedBuffer(bytes, heapType, flags, initialState);
+  currentState = initialState;
 }
 
 BufferDirectX::BufferDirectX(const DeviceDirectX& dev_,
@@ -469,14 +484,21 @@ void SubBufferDirectX::copyTo(const ghost::Stream& s, void* dst,
 // ---------------------------------------------------------------------------
 
 MappedBufferDirectX::MappedBufferDirectX(const DeviceDirectX& dev_,
-                                         size_t bytes, Access access)
+                                         size_t bytes,
+                                         const BufferOptions& opts)
     : BufferDirectX(dev_, nullptr, bytes, D3D12_RESOURCE_STATE_COMMON),
       mappedPtr(nullptr) {
-  // Use upload heap for mapped buffers (host-visible, GPU-readable)
-  resource = dev.createCommittedBuffer(bytes, D3D12_HEAP_TYPE_UPLOAD,
-                                       D3D12_RESOURCE_FLAG_NONE,
-                                       D3D12_RESOURCE_STATE_GENERIC_READ);
-  currentState = D3D12_RESOURCE_STATE_GENERIC_READ;
+  // For WriteOnly access (kernel writes / host reads), use a READBACK heap.
+  // Otherwise (ReadOnly or ReadWrite) use an UPLOAD heap.
+  D3D12_HEAP_TYPE heapType = D3D12_HEAP_TYPE_UPLOAD;
+  D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_GENERIC_READ;
+  if (opts.access == Access::WriteOnly) {
+    heapType = D3D12_HEAP_TYPE_READBACK;
+    initialState = D3D12_RESOURCE_STATE_COPY_DEST;
+  }
+  resource = dev.createCommittedBuffer(bytes, heapType,
+                                       D3D12_RESOURCE_FLAG_NONE, initialState);
+  currentState = initialState;
 
   // Persistently map
   D3D12_RANGE readRange = {0, 0};
@@ -1048,14 +1070,15 @@ ghost::Stream DeviceDirectX::createStream() const {
   return ghost::Stream(std::make_shared<StreamDirectX>(*this));
 }
 
-ghost::Buffer DeviceDirectX::allocateBuffer(size_t bytes, Access access) const {
-  return ghost::Buffer(std::make_shared<BufferDirectX>(*this, bytes, access));
+ghost::Buffer DeviceDirectX::allocateBuffer(size_t bytes,
+                                            const BufferOptions& opts) const {
+  return ghost::Buffer(std::make_shared<BufferDirectX>(*this, bytes, opts));
 }
 
-ghost::MappedBuffer DeviceDirectX::allocateMappedBuffer(size_t bytes,
-                                                        Access access) const {
+ghost::MappedBuffer DeviceDirectX::allocateMappedBuffer(
+    size_t bytes, const BufferOptions& opts) const {
   return ghost::MappedBuffer(
-      std::make_shared<MappedBufferDirectX>(*this, bytes, access));
+      std::make_shared<MappedBufferDirectX>(*this, bytes, opts));
 }
 
 ghost::Image DeviceDirectX::allocateImage(const ImageDescription& descr) const {

@@ -96,7 +96,7 @@ class BufferDirectX : public Buffer {
   D3D12_RESOURCE_STATES currentState;
 
   BufferDirectX(const DeviceDirectX& dev_, size_t bytes,
-                Access access = Access_ReadWrite);
+                const BufferOptions& opts = {});
   BufferDirectX(const DeviceDirectX& dev_, ComPtr<ID3D12Resource> res,
                 size_t bytes, D3D12_RESOURCE_STATES state);
   ~BufferDirectX();
@@ -152,7 +152,7 @@ class MappedBufferDirectX : public BufferDirectX {
   void* mappedPtr;
 
   MappedBufferDirectX(const DeviceDirectX& dev_, size_t bytes,
-                      Access access = Access_ReadWrite);
+                      const BufferOptions& opts = {});
   ~MappedBufferDirectX();
 
   virtual void* map(const ghost::Stream& s, Access access,
@@ -225,9 +225,9 @@ class DeviceDirectX : public Device {
   virtual ghost::Stream createStream() const override;
 
   virtual ghost::Buffer allocateBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::MappedBuffer allocateMappedBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::Image allocateImage(
       const ImageDescription& descr) const override;
   virtual ghost::Image sharedImage(const ImageDescription& descr,

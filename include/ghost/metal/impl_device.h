@@ -65,7 +65,7 @@ class BufferMetal : public Buffer {
 
   BufferMetal(objc::ptr<id<MTLBuffer>> mem_, size_t bytes);
   BufferMetal(const DeviceMetal& dev, size_t bytes,
-              Access access = Access_ReadWrite);
+              const BufferOptions& opts = {});
 
   virtual size_t size() const override;
 
@@ -116,7 +116,7 @@ class MappedBufferMetal : public BufferMetal {
 
   MappedBufferMetal(objc::ptr<id<MTLBuffer>> mem_, size_t bytes);
   MappedBufferMetal(const DeviceMetal& dev, size_t bytes,
-                    Access access = Access_ReadWrite);
+                    const BufferOptions& opts = {});
 
   virtual void* map(const ghost::Stream& s, Access access,
                     bool sync = true) override;
@@ -183,9 +183,9 @@ class DeviceMetal : public Device {
   virtual size_t getMemoryPoolSize() const override;
   virtual void setMemoryPoolSize(size_t bytes) override;
   virtual ghost::Buffer allocateBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::MappedBuffer allocateMappedBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::Image allocateImage(
       const ImageDescription& descr) const override;
   virtual ghost::Image sharedImage(const ImageDescription& descr,

@@ -53,7 +53,7 @@ class BufferCUDA : public Buffer {
 
   BufferCUDA(cu::ptr<CUdeviceptr> mem_, size_t bytes);
   BufferCUDA(const DeviceCUDA& dev, size_t bytes,
-             Access access = Access_ReadWrite);
+             const BufferOptions& opts = {});
 
   virtual size_t size() const override;
 
@@ -94,7 +94,7 @@ class MappedBufferCUDA : public BufferCUDA {
 
   MappedBufferCUDA(cu::ptr<void*> mem_);
   MappedBufferCUDA(const DeviceCUDA& dev, size_t bytes,
-                   Access access = Access_ReadWrite);
+                   const BufferOptions& opts = {});
 
   virtual void* map(const ghost::Stream& s, Access access,
                     bool sync = true) override;
@@ -168,9 +168,9 @@ class DeviceCUDA : public Device {
   virtual size_t getMemoryPoolSize() const override;
   virtual void setMemoryPoolSize(size_t bytes) override;
   virtual ghost::Buffer allocateBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::MappedBuffer allocateMappedBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::Image allocateImage(
       const ImageDescription& descr) const override;
   virtual ghost::Image sharedImage(const ImageDescription& descr,

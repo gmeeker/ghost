@@ -283,12 +283,13 @@ void* Device::allocateHostMemory(size_t bytes) const {
 
 void Device::freeHostMemory(void* ptr) const { _impl->freeHostMemory(ptr); }
 
-Buffer Device::allocateBuffer(size_t bytes, Access access) const {
-  return _impl->allocateBuffer(bytes, access);
+Buffer Device::allocateBuffer(size_t bytes, BufferOptions opts) const {
+  return _impl->allocateBuffer(bytes, opts);
 }
 
-MappedBuffer Device::allocateMappedBuffer(size_t bytes, Access access) const {
-  return _impl->allocateMappedBuffer(bytes, access);
+MappedBuffer Device::allocateMappedBuffer(size_t bytes,
+                                          BufferOptions opts) const {
+  return _impl->allocateMappedBuffer(bytes, opts);
 }
 
 Image Device::allocateImage(const ImageDescription& descr) const {

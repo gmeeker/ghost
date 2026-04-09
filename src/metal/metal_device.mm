@@ -99,13 +99,13 @@ getTextureDescriptor(const ImageDescription &descr, bool isPrivate = true) {
     d.get().depth = descr.size.z;
   }
   switch (descr.access) {
-  case Access_ReadOnly:
+  case Access::ReadOnly:
     d.get().usage = MTLTextureUsageShaderRead;
     break;
-  case Access_WriteOnly:
+  case Access::WriteOnly:
     d.get().usage = MTLTextureUsageShaderWrite;
     break;
-  case Access_ReadWrite:
+  case Access::ReadWrite:
     d.get().usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
     break;
   default:
@@ -130,13 +130,13 @@ getTextureDescriptor(id<MTLResource> resource, const ImageDescription &descr) {
     d.get().depth = descr.size.z;
   }
   switch (descr.access) {
-  case Access_ReadOnly:
+  case Access::ReadOnly:
     d.get().usage = MTLTextureUsageShaderRead;
     break;
-  case Access_WriteOnly:
+  case Access::WriteOnly:
     d.get().usage = MTLTextureUsageShaderWrite;
     break;
-  case Access_ReadWrite:
+  case Access::ReadWrite:
     d.get().usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
     break;
   default:
@@ -241,11 +241,22 @@ void StreamMetal::waitForEvent(const std::shared_ptr<Event> &e) {
 BufferMetal::BufferMetal(objc::ptr<id<MTLBuffer>> mem_, size_t bytes)
     : mem(mem_), _size(bytes) {}
 
-BufferMetal::BufferMetal(const DeviceMetal &dev, size_t bytes, Access access)
+BufferMetal::BufferMetal(const DeviceMetal &dev, size_t bytes,
+                         const BufferOptions &opts)
     : _size(bytes) {
   MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache |
-                               MTLResourceHazardTrackingModeUntracked |
-                               MTLResourceStorageModePrivate;
+                               MTLResourceHazardTrackingModeUntracked;
+  // Staging hint routes to a host-visible shared buffer. Other hints
+  // currently fall through to private storage (the default fast path).
+  if (opts.hint == AllocHint::Staging) {
+    options |= MTLResourceStorageModeShared;
+    if (opts.access == Access::ReadOnly) {
+      // Host writes, kernel reads — write-combined is efficient for upload.
+      options |= MTLResourceCPUCacheModeWriteCombined;
+    }
+  } else {
+    options |= MTLResourceStorageModePrivate;
+  }
   mem = [dev.dev newBufferWithLength:bytes options:options];
   checkExists(mem);
 }
@@ -469,12 +480,15 @@ MappedBufferMetal::MappedBufferMetal(objc::ptr<id<MTLBuffer>> mem_,
     : BufferMetal(mem_, bytes), length(bytes) {}
 
 MappedBufferMetal::MappedBufferMetal(const DeviceMetal &dev, size_t bytes,
-                                     Access access)
+                                     const BufferOptions &opts)
     : BufferMetal(objc::ptr<id<MTLBuffer>>(), bytes), length(bytes) {
   MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache |
                                MTLResourceHazardTrackingModeUntracked |
                                MTLResourceStorageModeShared;
-  if (access == Access_WriteOnly)
+  // WriteOnly / Staging+ReadOnly both mean host-write / kernel-read: use
+  // write-combined cache mode for faster upload.
+  if (opts.access == Access::WriteOnly ||
+      (opts.hint == AllocHint::Staging && opts.access == Access::ReadOnly))
     options |= MTLResourceCPUCacheModeWriteCombined;
   mem = [dev.dev newBufferWithLength:bytes options:options];
   checkExists(mem);
@@ -848,8 +862,13 @@ void DeviceMetal::setMemoryPoolSize(size_t bytes) {
   }
 }
 
-ghost::Buffer DeviceMetal::allocateBuffer(size_t bytes, Access access) const {
-  if (heap) {
+ghost::Buffer DeviceMetal::allocateBuffer(size_t bytes,
+                                          const BufferOptions &opts) const {
+  // Use the MTLHeap for Default/Transient (private storage). Staging and
+  // Persistent bypass the heap — Staging needs host-visible memory, and
+  // Persistent is long-lived so heap fragmentation is undesirable.
+  if (heap && opts.hint != AllocHint::Staging &&
+      opts.hint != AllocHint::Persistent) {
     MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache |
                                  MTLResourceHazardTrackingModeUntracked |
                                  MTLResourceStorageModePrivate;
@@ -861,15 +880,15 @@ ghost::Buffer DeviceMetal::allocateBuffer(size_t bytes, Access access) const {
     }
     // Heap full — fall through to individual allocation
   }
-  auto ptr =
-      std::make_shared<implementation::BufferMetal>(*this, bytes, access);
+  auto ptr = std::make_shared<implementation::BufferMetal>(*this, bytes, opts);
   return ghost::Buffer(ptr);
 }
 
-ghost::MappedBuffer DeviceMetal::allocateMappedBuffer(size_t bytes,
-                                                      Access access) const {
+ghost::MappedBuffer
+DeviceMetal::allocateMappedBuffer(size_t bytes,
+                                  const BufferOptions &opts) const {
   auto ptr =
-      std::make_shared<implementation::MappedBufferMetal>(*this, bytes, access);
+      std::make_shared<implementation::MappedBufferMetal>(*this, bytes, opts);
   return ghost::MappedBuffer(ptr);
 }
 

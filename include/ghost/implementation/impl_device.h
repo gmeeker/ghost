@@ -356,9 +356,9 @@ class Device {
   virtual void freeHostMemory(void* ptr) const;
 
   virtual ghost::Buffer allocateBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const = 0;
+      size_t bytes, const BufferOptions& opts = {}) const = 0;
   virtual ghost::MappedBuffer allocateMappedBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const = 0;
+      size_t bytes, const BufferOptions& opts = {}) const = 0;
   virtual ghost::Image allocateImage(const ImageDescription& descr) const = 0;
   virtual ghost::Image sharedImage(const ImageDescription& descr,
                                    ghost::Buffer& buffer) const = 0;

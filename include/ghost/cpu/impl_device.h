@@ -216,9 +216,9 @@ class DeviceCPU : public Device {
   virtual size_t getMemoryPoolSize() const override;
   virtual void setMemoryPoolSize(size_t bytes) override;
   virtual ghost::Buffer allocateBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::MappedBuffer allocateMappedBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::Image allocateImage(
       const ImageDescription& descr) const override;
   virtual ghost::Image sharedImage(const ImageDescription& descr,

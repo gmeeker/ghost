@@ -145,7 +145,7 @@ buf.fill(stream, 0, size, uint8_t(0));      // Fill with pattern
 
 // Mapped buffer (direct host access to GPU memory)
 auto mapped = device.allocateMappedBuffer(size);
-float* ptr = static_cast<float*>(mapped.map(stream, Access_WriteOnly));
+float* ptr = static_cast<float*>(mapped.map(stream, Access::WriteOnly));
 // ... write directly ...
 mapped.unmap(stream);
 

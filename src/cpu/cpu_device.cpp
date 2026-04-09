@@ -575,13 +575,14 @@ void DeviceCPU::setMemoryPoolSize(size_t bytes) {
   Device::setMemoryPoolSize(bytes);
 }
 
-ghost::Buffer DeviceCPU::allocateBuffer(size_t bytes, Access) const {
+ghost::Buffer DeviceCPU::allocateBuffer(size_t bytes,
+                                        const BufferOptions&) const {
   auto ptr = std::make_shared<implementation::BufferCPU>(*this, bytes);
   return ghost::Buffer(ptr);
 }
 
-ghost::MappedBuffer DeviceCPU::allocateMappedBuffer(size_t bytes,
-                                                    Access) const {
+ghost::MappedBuffer DeviceCPU::allocateMappedBuffer(
+    size_t bytes, const BufferOptions&) const {
   auto ptr = std::make_shared<implementation::MappedBufferCPU>(*this, bytes);
   return ghost::MappedBuffer(ptr);
 }

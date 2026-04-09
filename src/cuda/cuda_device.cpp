@@ -86,8 +86,10 @@ void StreamCUDA::waitForEvent(const std::shared_ptr<Event>& e) {
 BufferCUDA::BufferCUDA(cu::ptr<CUdeviceptr> mem_, size_t bytes)
     : mem(mem_), _size(bytes) {}
 
-BufferCUDA::BufferCUDA(const DeviceCUDA& dev, size_t bytes, Access)
+BufferCUDA::BufferCUDA(const DeviceCUDA& dev, size_t bytes,
+                       const BufferOptions&)
     : _size(bytes) {
+  // TODO: honor opts.hint (Staging → cuMemHostAlloc pinned host)
   CUresult err;
   err = cuMemAlloc(&mem, bytes);
   checkError(err);
@@ -203,10 +205,10 @@ MappedBufferCUDA::MappedBufferCUDA(cu::ptr<void*> ptr_)
 }
 
 MappedBufferCUDA::MappedBufferCUDA(const DeviceCUDA& dev, size_t bytes,
-                                   Access access)
+                                   const BufferOptions& opts)
     : BufferCUDA(cu::ptr<CUdeviceptr>(), bytes) {
   unsigned int flags = CU_MEMHOSTALLOC_DEVICEMAP;
-  if (access == Access_WriteOnly) {
+  if (opts.access == Access::WriteOnly) {
     flags |= CU_MEMHOSTALLOC_WRITECOMBINED;
   }
   CUresult err;
@@ -819,9 +821,18 @@ void DeviceCUDA::setMemoryPoolSize(size_t bytes) {
 #endif
 }
 
-ghost::Buffer DeviceCUDA::allocateBuffer(size_t bytes, Access access) const {
+ghost::Buffer DeviceCUDA::allocateBuffer(size_t bytes,
+                                         const BufferOptions& opts) const {
+  // AllocHint::Staging routes to pinned host memory (mapped buffer path).
+  if (opts.hint == AllocHint::Staging) {
+    auto ptr =
+        std::make_shared<implementation::MappedBufferCUDA>(*this, bytes, opts);
+    return ghost::Buffer(ptr);
+  }
 #if CUDA_VERSION >= 11020
-  if (memPool) {
+  // Use the memory pool for Default/Transient allocations. Persistent
+  // allocations bypass the pool to avoid fragmenting long-lived resources.
+  if (memPool && opts.hint != AllocHint::Persistent) {
     CUdeviceptr devPtr;
     CUresult err = cuMemAllocFromPoolAsync(&devPtr, bytes, memPool, queue);
     if (err == CUDA_SUCCESS) {
@@ -834,14 +845,14 @@ ghost::Buffer DeviceCUDA::allocateBuffer(size_t bytes, Access access) const {
     // Pool allocation failed — fall through to standard allocation
   }
 #endif
-  auto ptr = std::make_shared<implementation::BufferCUDA>(*this, bytes, access);
+  auto ptr = std::make_shared<implementation::BufferCUDA>(*this, bytes, opts);
   return ghost::Buffer(ptr);
 }
 
-ghost::MappedBuffer DeviceCUDA::allocateMappedBuffer(size_t bytes,
-                                                     Access access) const {
+ghost::MappedBuffer DeviceCUDA::allocateMappedBuffer(
+    size_t bytes, const BufferOptions& opts) const {
   auto ptr =
-      std::make_shared<implementation::MappedBufferCUDA>(*this, bytes, access);
+      std::make_shared<implementation::MappedBufferCUDA>(*this, bytes, opts);
   return ghost::MappedBuffer(ptr);
 }
 

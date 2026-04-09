@@ -67,11 +67,11 @@ void set_of(std::set<std::string>& strs, const std::string& str,
 
 cl_mem_flags getMemFlags(Access access) {
   switch (access) {
-    case Access_WriteOnly:
+    case Access::WriteOnly:
       return CL_MEM_WRITE_ONLY;
-    case Access_ReadOnly:
+    case Access::ReadOnly:
       return CL_MEM_READ_ONLY;
-    case Access_ReadWrite:
+    case Access::ReadWrite:
     default:
       return CL_MEM_READ_WRITE;
   }
@@ -279,10 +279,15 @@ void StreamOpenCL::waitForEvent(const std::shared_ptr<Event>& e) {
 BufferOpenCL::BufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes)
     : mem(mem_), _size(bytes) {}
 
-BufferOpenCL::BufferOpenCL(const DeviceOpenCL& dev, size_t bytes, Access access)
+BufferOpenCL::BufferOpenCL(const DeviceOpenCL& dev, size_t bytes,
+                           const BufferOptions& opts)
     : _size(bytes) {
   cl_int err;
-  cl_mem_flags flags = getMemFlags(access);
+  cl_mem_flags flags = getMemFlags(opts.access);
+  // Staging hint: prefer host-visible memory for fast CPU<->GPU transfers.
+  if (opts.hint == AllocHint::Staging) {
+    flags |= CL_MEM_ALLOC_HOST_PTR;
+  }
   mem = opencl::ptr<cl_mem>(
       clCreateBuffer(dev.context, flags, bytes, nullptr, &err));
   checkError(err);
@@ -415,10 +420,10 @@ MappedBufferOpenCL::MappedBufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes,
     : BufferOpenCL(mem_, allocSize), length(bytes), ptr(nullptr) {}
 
 MappedBufferOpenCL::MappedBufferOpenCL(const DeviceOpenCL& dev, size_t bytes,
-                                       Access access)
+                                       const BufferOptions& opts)
     : BufferOpenCL(opencl::ptr<cl_mem>(), bytes), length(bytes), ptr(nullptr) {
   cl_int err;
-  cl_mem_flags flags = getMemFlags(access);
+  cl_mem_flags flags = getMemFlags(opts.access);
   flags |= CL_MEM_ALLOC_HOST_PTR;
   mem = opencl::ptr<cl_mem>(
       clCreateBuffer(dev.context, flags, bytes, nullptr, &err));
@@ -431,13 +436,13 @@ void* MappedBufferOpenCL::map(const ghost::Stream& s, Access access,
   cl_int err;
   cl_map_flags flags;
   switch (access) {
-    case Access_ReadOnly:
+    case Access::ReadOnly:
       flags = CL_MAP_READ;
       break;
-    case Access_WriteOnly:
+    case Access::WriteOnly:
       flags = CL_MAP_WRITE_INVALIDATE_REGION;
       break;
-    case Access_ReadWrite:
+    case Access::ReadWrite:
       flags = CL_MAP_READ | CL_MAP_WRITE;
       break;
     default:
@@ -970,8 +975,13 @@ void DeviceOpenCL::setMemoryPoolSize(size_t bytes) {
   }
 }
 
-ghost::Buffer DeviceOpenCL::allocateBuffer(size_t bytes, Access access) const {
-  if (_pool && _pool->getLimit() > 0) {
+ghost::Buffer DeviceOpenCL::allocateBuffer(size_t bytes,
+                                           const BufferOptions& opts) const {
+  // Use the recycling pool for Default/Transient. Persistent and Staging
+  // bypass the pool — Persistent avoids fragmenting long-lived memory, and
+  // Staging needs host-visible flags that the pool doesn't track.
+  if (_pool && _pool->getLimit() > 0 && opts.hint != AllocHint::Persistent &&
+      opts.hint != AllocHint::Staging) {
     auto mem = _pool->lookupBuffer(bytes);
     if (mem.get()) {
       return ghost::Buffer(
@@ -979,7 +989,7 @@ ghost::Buffer DeviceOpenCL::allocateBuffer(size_t bytes, Access access) const {
     }
     // Allocate new, but wrap in pooled buffer for recycling on destruction.
     cl_int err;
-    cl_mem_flags flags = getMemFlags(access);
+    cl_mem_flags flags = getMemFlags(opts.access);
     auto newMem = opencl::ptr<cl_mem>(
         clCreateBuffer(context, flags, bytes, nullptr, &err));
     checkError(err);
@@ -987,15 +997,14 @@ ghost::Buffer DeviceOpenCL::allocateBuffer(size_t bytes, Access access) const {
     return ghost::Buffer(
         std::make_shared<PooledBufferOpenCL>(std::move(newMem), bytes, _pool));
   }
-  auto ptr =
-      std::make_shared<implementation::BufferOpenCL>(*this, bytes, access);
+  auto ptr = std::make_shared<implementation::BufferOpenCL>(*this, bytes, opts);
   return ghost::Buffer(ptr);
 }
 
-ghost::MappedBuffer DeviceOpenCL::allocateMappedBuffer(size_t bytes,
-                                                       Access access) const {
-  auto ptr = std::make_shared<implementation::MappedBufferOpenCL>(*this, bytes,
-                                                                  access);
+ghost::MappedBuffer DeviceOpenCL::allocateMappedBuffer(
+    size_t bytes, const BufferOptions& opts) const {
+  auto ptr =
+      std::make_shared<implementation::MappedBufferOpenCL>(*this, bytes, opts);
   return ghost::MappedBuffer(ptr);
 }
 
