@@ -267,6 +267,54 @@ TEST_P(BufferTest, SubBufferWriteVisibleInParent) {
   EXPECT_FLOAT_EQ(output[4], 0.0f);
 }
 
+TEST_P(BufferTest, SubSubBuffer) {
+  // Create a sub-buffer of a sub-buffer and verify the offset composes
+  // correctly. This catches double-counting bugs in baseOffset() that
+  // single-level sub-buffer tests miss.
+  const size_t N = 16;
+  std::vector<float> input(N);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto parent = device().allocateBuffer(N * sizeof(float));
+  parent.copy(stream(), input.data(), N * sizeof(float));
+
+  Buffer child(nullptr);
+  Buffer grandchild(nullptr);
+  try {
+    // child covers elements [4..12) -> 8 floats
+    child = parent.createSubBuffer(4 * sizeof(float), 8 * sizeof(float));
+    // grandchild covers child[2..6) -> parent[6..10) -> 4 floats
+    grandchild = child.createSubBuffer(2 * sizeof(float), 4 * sizeof(float));
+  } catch (const ghost::unsupported_error&) {
+    GTEST_SKIP() << "Sub-buffers not supported on " << BackendName(backend());
+  }
+
+  // Read through grandchild — should see parent[6..10).
+  std::vector<float> output(4, -1.0f);
+  grandchild.copyTo(stream(), output.data(), 4 * sizeof(float));
+  stream().sync();
+
+  EXPECT_FLOAT_EQ(output[0], 6.0f);
+  EXPECT_FLOAT_EQ(output[1], 7.0f);
+  EXPECT_FLOAT_EQ(output[2], 8.0f);
+  EXPECT_FLOAT_EQ(output[3], 9.0f);
+
+  // Write through grandchild and verify visibility in parent.
+  std::vector<float> data = {90.0f, 91.0f, 92.0f, 93.0f};
+  grandchild.copy(stream(), data.data(), 4 * sizeof(float));
+
+  std::vector<float> parentOut(N, -1.0f);
+  parent.copyTo(stream(), parentOut.data(), N * sizeof(float));
+  stream().sync();
+
+  EXPECT_FLOAT_EQ(parentOut[5], 5.0f);
+  EXPECT_FLOAT_EQ(parentOut[6], 90.0f);
+  EXPECT_FLOAT_EQ(parentOut[7], 91.0f);
+  EXPECT_FLOAT_EQ(parentOut[8], 92.0f);
+  EXPECT_FLOAT_EQ(parentOut[9], 93.0f);
+  EXPECT_FLOAT_EQ(parentOut[10], 10.0f);
+}
+
 // ---------------------------------------------------------------------------
 // Mapped buffers
 // ---------------------------------------------------------------------------

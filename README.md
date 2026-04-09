@@ -153,6 +153,27 @@ mapped.unmap(stream);
 auto sub = buf.createSubBuffer(offset, size);
 ```
 
+#### Sub-buffers and arena allocation
+
+Sub-buffers are views into a parent buffer at a given byte offset. They can be passed to kernels and used as copy sources/destinations transparently — backends translate the offset internally (`setBuffer:offset:` on Metal, `VkDescriptorBufferInfo.offset` on Vulkan, base+offset pointer on CUDA/CPU/DirectX, real `clCreateSubBuffer` on OpenCL).
+
+This makes sub-buffers a good fit for arena-style memory planning: allocate one large buffer, then carve it into per-tensor or per-pass views.
+
+```cpp
+size_t align = device.getAttribute(kDeviceBufferAlignment).asInt();
+auto roundUp = [&](size_t n) { return (n + align - 1) & ~(align - 1); };
+
+auto arena = device.allocateBuffer(totalSize);
+auto a = arena.createSubBuffer(0, roundUp(sizeA));
+auto b = arena.createSubBuffer(roundUp(sizeA), roundUp(sizeB));
+kernel(stream, launch, a, b, ...);
+```
+
+Notes:
+- Always pad sub-buffer offsets to `kDeviceBufferAlignment`. OpenCL maps this to `CL_DEVICE_MEM_BASE_ADDR_ALIGN`; Vulkan uses `minStorageBufferOffsetAlignment`.
+- Sub-sub-buffers (a sub-buffer of a sub-buffer) are supported on every backend. OpenCL forbids this at the driver level, so Ghost transparently re-roots to the parent and accumulates offsets.
+- The parent buffer must outlive its sub-buffers. Sub-buffers hold a `shared_ptr` to the parent, so this is automatic if you keep the sub-buffer alive.
+
 ### Images
 
 ```cpp

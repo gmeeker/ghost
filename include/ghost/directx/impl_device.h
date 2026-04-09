@@ -138,13 +138,6 @@ class SubBufferDirectX : public BufferDirectX {
                    ComPtr<ID3D12Resource> res, size_t offset, size_t bytes);
 
   virtual size_t baseOffset() const override;
-
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
-                    size_t bytes) override;
-  virtual void copy(const ghost::Stream& s, const void* src,
-                    size_t bytes) override;
-  virtual void copyTo(const ghost::Stream& s, void* dst,
-                      size_t bytes) const override;
 };
 
 class MappedBufferDirectX : public BufferDirectX {

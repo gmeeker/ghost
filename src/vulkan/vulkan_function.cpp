@@ -357,7 +357,7 @@ void FunctionVulkan::execute(const ghost::Stream& s,
 
           VkDescriptorBufferInfo bufInfo = {};
           bufInfo.buffer = vkBuf->buffer;
-          bufInfo.offset = 0;
+          bufInfo.offset = vkBuf->baseOffset();
           bufInfo.range = vkBuf->size();
           bufferInfos.push_back(bufInfo);
 

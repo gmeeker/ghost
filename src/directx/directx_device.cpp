@@ -359,8 +359,9 @@ void BufferDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
   srcBuf->transitionTo(cmdList, D3D12_RESOURCE_STATE_COPY_SOURCE);
   transitionTo(cmdList, D3D12_RESOURCE_STATE_COPY_DEST);
 
-  cmdList->CopyBufferRegion(resource.Get(), dstOffset, srcBuf->resource.Get(),
-                            srcOffset, bytes);
+  cmdList->CopyBufferRegion(resource.Get(), dstOffset + baseOffset(),
+                            srcBuf->resource.Get(),
+                            srcOffset + srcBuf->baseOffset(), bytes);
 
   transitionTo(cmdList, D3D12_RESOURCE_STATE_COMMON);
   srcBuf->transitionTo(cmdList, D3D12_RESOURCE_STATE_COMMON);
@@ -387,8 +388,8 @@ void BufferDirectX::copy(const ghost::Stream& s, const void* src,
 
   transitionTo(cmdList, D3D12_RESOURCE_STATE_COPY_DEST);
 
-  cmdList->CopyBufferRegion(resource.Get(), dstOffset, uploadBuf.Get(), 0,
-                            bytes);
+  cmdList->CopyBufferRegion(resource.Get(), dstOffset + baseOffset(),
+                            uploadBuf.Get(), 0, bytes);
 
   transitionTo(cmdList, D3D12_RESOURCE_STATE_COMMON);
 
@@ -410,8 +411,8 @@ void BufferDirectX::copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
   const_cast<BufferDirectX*>(this)->transitionTo(
       cmdList, D3D12_RESOURCE_STATE_COPY_SOURCE);
 
-  cmdList->CopyBufferRegion(readbackBuf.Get(), 0, resource.Get(), srcOffset,
-                            bytes);
+  cmdList->CopyBufferRegion(readbackBuf.Get(), 0, resource.Get(),
+                            srcOffset + baseOffset(), bytes);
 
   const_cast<BufferDirectX*>(this)->transitionTo(cmdList,
                                                  D3D12_RESOURCE_STATE_COMMON);
@@ -460,24 +461,7 @@ SubBufferDirectX::SubBufferDirectX(std::shared_ptr<Buffer> parent,
       _parent(parent),
       _offset(offset) {}
 
-size_t SubBufferDirectX::baseOffset() const {
-  return _offset + static_cast<BufferDirectX*>(_parent.get())->baseOffset();
-}
-
-void SubBufferDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
-                            size_t bytes) {
-  BufferDirectX::copy(s, src, 0, _offset, bytes);
-}
-
-void SubBufferDirectX::copy(const ghost::Stream& s, const void* src,
-                            size_t bytes) {
-  BufferDirectX::copy(s, src, _offset, bytes);
-}
-
-void SubBufferDirectX::copyTo(const ghost::Stream& s, void* dst,
-                              size_t bytes) const {
-  BufferDirectX::copyTo(s, dst, _offset, bytes);
-}
+size_t SubBufferDirectX::baseOffset() const { return _offset; }
 
 // ---------------------------------------------------------------------------
 // MappedBufferDirectX

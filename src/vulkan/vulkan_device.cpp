@@ -465,9 +465,7 @@ SubBufferVulkan::SubBufferVulkan(std::shared_ptr<Buffer> parent,
       _parent(parent),
       _offset(offset) {}
 
-size_t SubBufferVulkan::baseOffset() const {
-  return _offset + static_cast<BufferVulkan*>(_parent.get())->baseOffset();
-}
+size_t SubBufferVulkan::baseOffset() const { return _offset; }
 
 void SubBufferVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
                            size_t bytes) {
