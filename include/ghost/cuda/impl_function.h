@@ -15,9 +15,8 @@
 #ifndef GHOST_CUDA_IMPL_FUNCTION_H
 #define GHOST_CUDA_IMPL_FUNCTION_H
 
+#include <ghost/cuda/cu_ptr.h>
 #include <ghost/implementation/impl_function.h>
-
-#include "cu_ptr.h"
 
 namespace ghost {
 namespace implementation {

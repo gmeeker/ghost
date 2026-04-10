@@ -86,22 +86,23 @@ double EventVulkan::elapsed(const Event& other) const {
 
 StreamVulkan::StreamVulkan(const DeviceVulkan& dev_)
     : dev(dev_),
-      commandPool(dev_.device),
       commandBuffer(VK_NULL_HANDLE),
-      fence(dev_.device),
-      recording(false),
-      submitted(false) {
+      _commandPool(dev_.device),
+      _fence(dev_.device),
+      _recording(false),
+      _submitted(false) {
   // Create command pool
   VkCommandPoolCreateInfo poolInfo = {};
   poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
   poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
   poolInfo.queueFamilyIndex = dev.computeQueueFamily;
-  checkError(vkCreateCommandPool(dev.device, &poolInfo, nullptr, &commandPool));
+  checkError(
+      vkCreateCommandPool(dev.device, &poolInfo, nullptr, &_commandPool));
 
   // Allocate command buffer (freed implicitly with the pool, no destroy)
   VkCommandBufferAllocateInfo allocInfo = {};
   allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-  allocInfo.commandPool = commandPool;
+  allocInfo.commandPool = _commandPool;
   allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   allocInfo.commandBufferCount = 1;
   checkError(vkAllocateCommandBuffers(dev.device, &allocInfo, &commandBuffer));
@@ -110,13 +111,13 @@ StreamVulkan::StreamVulkan(const DeviceVulkan& dev_)
   VkFenceCreateInfo fenceInfo = {};
   fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
   fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-  checkError(vkCreateFence(dev.device, &fenceInfo, nullptr, &fence));
+  checkError(vkCreateFence(dev.device, &fenceInfo, nullptr, &_fence));
 }
 
 StreamVulkan::~StreamVulkan() {
   // Drain any pending GPU work so the staging vk::ptrs can free safely.
-  // The vk::ptr destructors handle commandPool/fence cleanup.
-  if (recording || submitted) {
+  // The vk::ptr destructors handle _commandPool / _fence cleanup.
+  if (_recording || _submitted) {
     try {
       sync();
     } catch (...) {
@@ -125,10 +126,10 @@ StreamVulkan::~StreamVulkan() {
 }
 
 void StreamVulkan::begin() {
-  if (recording) return;
+  if (_recording) return;
 
   // Wait for any previous submission to complete
-  VkFence f = fence;
+  VkFence f = _fence;
   vkWaitForFences(dev.device, 1, &f, VK_TRUE, UINT64_MAX);
   vkResetFences(dev.device, 1, &f);
 
@@ -152,12 +153,12 @@ void StreamVulkan::begin() {
   beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   checkError(vkBeginCommandBuffer(commandBuffer, &beginInfo));
 
-  recording = true;
-  submitted = false;
+  _recording = true;
+  _submitted = false;
 }
 
 void StreamVulkan::submit() {
-  if (!recording) return;
+  if (!_recording) return;
 
   checkError(vkEndCommandBuffer(commandBuffer));
 
@@ -166,18 +167,18 @@ void StreamVulkan::submit() {
   submitInfo.commandBufferCount = 1;
   submitInfo.pCommandBuffers = &commandBuffer;
 
-  checkError(vkQueueSubmit(dev.computeQueue, 1, &submitInfo, fence));
+  checkError(vkQueueSubmit(dev.computeQueue, 1, &submitInfo, _fence));
 
-  recording = false;
-  submitted = true;
+  _recording = false;
+  _submitted = true;
 }
 
 void StreamVulkan::sync() {
-  if (recording) submit();
-  if (submitted) {
-    VkFence f = fence;
+  if (_recording) submit();
+  if (_submitted) {
+    VkFence f = _fence;
     vkWaitForFences(dev.device, 1, &f, VK_TRUE, UINT64_MAX);
-    submitted = false;
+    _submitted = false;
 
     // Process deferred reads
     for (auto& dr : deferredReads) {
@@ -194,7 +195,7 @@ void StreamVulkan::sync() {
 }
 
 std::shared_ptr<Event> StreamVulkan::record() {
-  if (recording) submit();
+  if (_recording) submit();
 
   // The current fence represents the completion point. EventVulkan owns
   // the new fence and will destroy it when the event is released.
@@ -222,23 +223,23 @@ void StreamVulkan::waitForEvent(const std::shared_ptr<Event>& e) {
 void StreamVulkan::cleanupStaging() {
   // The vk::ptr destructors run on clear() / vector teardown, so nothing
   // to do explicitly here. Kept as a hook in case future cleanup is added.
-  pendingStaging.clear();
+  _pendingStaging.clear();
   // Note: deferredReads is intentionally NOT cleared here — sync() and
   // begin() process the host reads first and clear it themselves.
 }
 
 void StreamVulkan::addStagingResource(vk::ptr<VkBuffer> buf,
                                       vk::ptr<VkDeviceMemory> mem) {
-  pendingStaging.push_back({std::move(buf), std::move(mem)});
+  _pendingStaging.push_back({std::move(buf), std::move(mem)});
 }
 
 // ---------------------------------------------------------------------------
 // BufferVulkan
 // ---------------------------------------------------------------------------
 
-BufferVulkan::BufferVulkan(const DeviceVulkan& dev_, size_t bytes,
+BufferVulkan::BufferVulkan(const DeviceVulkan& dev, size_t bytes,
                            const BufferOptions& opts)
-    : dev(dev_), buffer(dev_.device), memory(dev_.device), _size(bytes) {
+    : buffer(dev.device), memory(dev.device), _size(bytes) {
   VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                              VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -256,12 +257,9 @@ BufferVulkan::BufferVulkan(const DeviceVulkan& dev_, size_t bytes,
   dev.createBuffer(bytes, usage, memProps, buffer, memory);
 }
 
-BufferVulkan::BufferVulkan(const DeviceVulkan& dev_, VkBuffer buf,
-                           VkDeviceMemory mem, size_t bytes, bool owns)
-    : dev(dev_),
-      buffer(dev_.device, buf, owns),
-      memory(dev_.device, mem, owns),
-      _size(bytes) {}
+BufferVulkan::BufferVulkan(VkDevice device, VkBuffer buf, VkDeviceMemory mem,
+                           size_t bytes, bool owns)
+    : buffer(device, buf, owns), memory(device, mem, owns), _size(bytes) {}
 
 size_t BufferVulkan::size() const { return _size; }
 
@@ -308,19 +306,20 @@ void BufferVulkan::copy(const ghost::Stream& s, const void* src,
                         size_t dstOffset, size_t bytes) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
 
-  // Create staging buffer
-  vk::ptr<VkBuffer> staging(dev.device);
-  vk::ptr<VkDeviceMemory> stagingMem(dev.device);
-  dev.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                   staging, stagingMem);
+  // Create staging buffer (uses the stream's device, since BufferVulkan no
+  // longer holds a parent-device reference itself).
+  vk::ptr<VkBuffer> staging(stream.dev.device);
+  vk::ptr<VkDeviceMemory> stagingMem(stream.dev.device);
+  stream.dev.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          staging, stagingMem);
 
   // Copy data to staging buffer
   void* mapped;
-  checkError(vkMapMemory(dev.device, stagingMem, 0, bytes, 0, &mapped));
+  checkError(vkMapMemory(stream.dev.device, stagingMem, 0, bytes, 0, &mapped));
   memcpy(mapped, src, bytes);
-  vkUnmapMemory(dev.device, stagingMem);
+  vkUnmapMemory(stream.dev.device, stagingMem);
 
   stream.begin();
 
@@ -348,13 +347,13 @@ void BufferVulkan::copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
                           size_t bytes) const {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
 
-  // Create staging buffer for readback
-  vk::ptr<VkBuffer> staging(dev.device);
-  vk::ptr<VkDeviceMemory> stagingMem(dev.device);
-  dev.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                   staging, stagingMem);
+  // Create staging buffer for readback (via stream's device — see copy()).
+  vk::ptr<VkBuffer> staging(stream.dev.device);
+  vk::ptr<VkDeviceMemory> stagingMem(stream.dev.device);
+  stream.dev.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          staging, stagingMem);
 
   stream.begin();
 
@@ -429,7 +428,7 @@ void BufferVulkan::fill(const ghost::Stream& s, size_t offset, size_t sz,
 
 std::shared_ptr<Buffer> BufferVulkan::createSubBuffer(
     const std::shared_ptr<Buffer>& self, size_t offset, size_t sz) {
-  return std::make_shared<SubBufferVulkan>(self, dev, buffer,
+  return std::make_shared<SubBufferVulkan>(self, buffer.device(), buffer,
                                            baseOffset() + offset, sz);
 }
 
@@ -438,9 +437,9 @@ std::shared_ptr<Buffer> BufferVulkan::createSubBuffer(
 // ---------------------------------------------------------------------------
 
 SubBufferVulkan::SubBufferVulkan(std::shared_ptr<Buffer> parent,
-                                 const DeviceVulkan& dev_, VkBuffer buf,
-                                 size_t offset, size_t bytes)
-    : BufferVulkan(dev_, buf, VK_NULL_HANDLE, bytes, false),
+                                 VkDevice device, VkBuffer buf, size_t offset,
+                                 size_t bytes)
+    : BufferVulkan(device, buf, VK_NULL_HANDLE, bytes, false),
       _parent(parent),
       _offset(offset) {}
 
@@ -465,9 +464,9 @@ void SubBufferVulkan::copyTo(const ghost::Stream& s, void* dst,
 // MappedBufferVulkan
 // ---------------------------------------------------------------------------
 
-MappedBufferVulkan::MappedBufferVulkan(const DeviceVulkan& dev_, size_t bytes,
+MappedBufferVulkan::MappedBufferVulkan(const DeviceVulkan& dev, size_t bytes,
                                        const BufferOptions& opts)
-    : BufferVulkan(dev_, VK_NULL_HANDLE, VK_NULL_HANDLE, bytes, true),
+    : BufferVulkan(dev.device, VK_NULL_HANDLE, VK_NULL_HANDLE, bytes, true),
       mappedPtr(nullptr) {
   VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
@@ -503,12 +502,8 @@ void MappedBufferVulkan::unmap(const ghost::Stream& s) {
 // ImageVulkan
 // ---------------------------------------------------------------------------
 
-ImageVulkan::ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& d)
-    : dev(dev_),
-      image(dev_.device),
-      memory(dev_.device),
-      imageView(dev_.device),
-      descr(d) {
+ImageVulkan::ImageVulkan(const DeviceVulkan& dev, const ImageDescription& d)
+    : image(dev.device), memory(dev.device), imageView(dev.device), descr(d) {
   VkFormat format = dev.getImageFormat(d);
 
   VkImageCreateInfo imageInfo = {};
@@ -558,13 +553,10 @@ ImageVulkan::ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& d)
   checkError(vkCreateImageView(dev.device, &viewInfo, nullptr, &imageView));
 }
 
-ImageVulkan::ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& d,
+ImageVulkan::ImageVulkan(const DeviceVulkan& dev, const ImageDescription& d,
                          BufferVulkan& buf)
-    : dev(dev_),
-      image(dev_.device),
-      memory(dev_.device),
-      imageView(dev_.device),
-      descr(d) {
+    : image(dev.device), memory(dev.device), imageView(dev.device), descr(d) {
+  (void)buf;
   VkFormat format = dev.getImageFormat(d);
 
   // Create image backed by buffer memory using VkBufferImageCopy pattern.
@@ -616,14 +608,13 @@ ImageVulkan::ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& d,
   checkError(vkCreateImageView(dev.device, &viewInfo, nullptr, &imageView));
 }
 
-ImageVulkan::ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& d,
+ImageVulkan::ImageVulkan(const DeviceVulkan& dev, const ImageDescription& d,
                          ImageVulkan& other)
-    : dev(dev_),
-      // Borrow the parent's image handle (not owned). The view created
-      // below is owned by us.
-      image(dev_.device, other.image, /*owns=*/false),
-      memory(dev_.device),
-      imageView(dev_.device),
+    // Borrow the parent's image handle (not owned). The view created
+    // below is owned by us.
+    : image(dev.device, other.image, /*owns=*/false),
+      memory(dev.device),
+      imageView(dev.device),
       descr(d) {
   // Create a new view into the same image
   VkFormat format = dev.getImageFormat(d);
@@ -771,18 +762,20 @@ void ImageVulkan::copy(const ghost::Stream& s, const void* src,
 
   size_t dataSize = descr.dataSize();
 
-  // Create staging buffer
-  vk::ptr<VkBuffer> staging(dev.device);
-  vk::ptr<VkDeviceMemory> stagingMem(dev.device);
-  dev.createBuffer(dataSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                   staging, stagingMem);
+  // Create staging buffer (via stream's device — ImageVulkan no longer
+  // holds a parent-device reference itself).
+  vk::ptr<VkBuffer> staging(stream.dev.device);
+  vk::ptr<VkDeviceMemory> stagingMem(stream.dev.device);
+  stream.dev.createBuffer(dataSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          staging, stagingMem);
 
   void* mapped;
-  checkError(vkMapMemory(dev.device, stagingMem, 0, dataSize, 0, &mapped));
+  checkError(
+      vkMapMemory(stream.dev.device, stagingMem, 0, dataSize, 0, &mapped));
   memcpy(mapped, src, dataSize);
-  vkUnmapMemory(dev.device, stagingMem);
+  vkUnmapMemory(stream.dev.device, stagingMem);
 
   stream.begin();
 
@@ -880,13 +873,13 @@ void ImageVulkan::copyTo(const ghost::Stream& s, void* dst,
 
   size_t dataSize = descr.dataSize();
 
-  // Create staging buffer for readback
-  vk::ptr<VkBuffer> staging(dev.device);
-  vk::ptr<VkDeviceMemory> stagingMem(dev.device);
-  dev.createBuffer(dataSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                   staging, stagingMem);
+  // Create staging buffer for readback (via stream's device).
+  vk::ptr<VkBuffer> staging(stream.dev.device);
+  vk::ptr<VkDeviceMemory> stagingMem(stream.dev.device);
+  stream.dev.createBuffer(dataSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          staging, stagingMem);
 
   stream.begin();
 
@@ -1138,7 +1131,7 @@ DeviceVulkan::DeviceVulkan(const SharedContext& share)
       device(VK_NULL_HANDLE),
       computeQueue(VK_NULL_HANDLE),
       computeQueueFamily(0),
-      ownsInstance(false) {
+      _ownsInstance(false) {
   if (share.context) {
     // Reuse existing Vulkan objects
     instance = static_cast<VkInstance>(share.context);
@@ -1160,7 +1153,7 @@ DeviceVulkan::DeviceVulkan(const SharedContext& share)
     createInfo.pApplicationInfo = &appInfo;
 
     checkError(vkCreateInstance(&createInfo, nullptr, &instance));
-    ownsInstance = true;
+    _ownsInstance = true;
 
     // Pick physical device (first discrete GPU, or first available)
     uint32_t deviceCount = 0;
@@ -1221,7 +1214,7 @@ DeviceVulkan::DeviceVulkan(const SharedContext& share)
 
   // Cache device properties
   vkGetPhysicalDeviceProperties(physicalDevice, &properties);
-  vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+  vkGetPhysicalDeviceMemoryProperties(physicalDevice, &_memProperties);
 
   // Create descriptor pool
   VkDescriptorPoolSize poolSizes[] = {
@@ -1247,7 +1240,7 @@ DeviceVulkan::DeviceVulkan(const GpuInfo& info)
       device(VK_NULL_HANDLE),
       computeQueue(VK_NULL_HANDLE),
       computeQueueFamily(0),
-      ownsInstance(true) {
+      _ownsInstance(true) {
   // Create new instance
   VkApplicationInfo appInfo = {};
   appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -1272,7 +1265,7 @@ DeviceVulkan::DeviceVulkan(const GpuInfo& info)
   if (info.index < 0 || info.index >= (int)deviceCount) {
     vkDestroyInstance(instance, nullptr);
     instance = VK_NULL_HANDLE;
-    ownsInstance = false;
+    _ownsInstance = false;
     throw std::runtime_error("Invalid Vulkan device index");
   }
   physicalDevice = devices[info.index];
@@ -1315,7 +1308,7 @@ DeviceVulkan::DeviceVulkan(const GpuInfo& info)
 
   // Cache device properties
   vkGetPhysicalDeviceProperties(physicalDevice, &properties);
-  vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+  vkGetPhysicalDeviceMemoryProperties(physicalDevice, &_memProperties);
 
   // Create descriptor pool
   VkDescriptorPoolSize poolSizes[] = {
@@ -1342,24 +1335,24 @@ DeviceVulkan::~DeviceVulkan() {
     // destroyed BEFORE vkDestroyDevice, since member destructors run
     // after the destructor body. Reset descriptorPool explicitly here.
     descriptorPool.reset();
-    if (ownsInstance) vkDestroyDevice(device, nullptr);
+    if (_ownsInstance) vkDestroyDevice(device, nullptr);
   }
-  if (ownsInstance && instance != VK_NULL_HANDLE)
+  if (_ownsInstance && instance != VK_NULL_HANDLE)
     vkDestroyInstance(instance, nullptr);
 }
 
 uint32_t DeviceVulkan::findMemoryType(uint32_t typeFilter,
                                       VkMemoryPropertyFlags props) const {
-  for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+  for (uint32_t i = 0; i < _memProperties.memoryTypeCount; i++) {
     if ((typeFilter & (1 << i)) &&
-        (memProperties.memoryTypes[i].propertyFlags & props) == props) {
+        (_memProperties.memoryTypes[i].propertyFlags & props) == props) {
       return i;
     }
   }
   // Fallback: try without DEVICE_LOCAL for host-visible requests
-  for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+  for (uint32_t i = 0; i < _memProperties.memoryTypeCount; i++) {
     if ((typeFilter & (1 << i)) &&
-        (memProperties.memoryTypes[i].propertyFlags &
+        (_memProperties.memoryTypes[i].propertyFlags &
          (props & ~VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) ==
             (props & ~VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
       return i;
@@ -1545,10 +1538,10 @@ Attribute DeviceVulkan::getAttribute(DeviceAttributeId what) const {
                        VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);
     case kDeviceMemory: {
       VkDeviceSize totalMem = 0;
-      for (uint32_t i = 0; i < memProperties.memoryHeapCount; i++) {
-        if (memProperties.memoryHeaps[i].flags &
+      for (uint32_t i = 0; i < _memProperties.memoryHeapCount; i++) {
+        if (_memProperties.memoryHeaps[i].flags &
             VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
-          totalMem += memProperties.memoryHeaps[i].size;
+          totalMem += _memProperties.memoryHeaps[i].size;
         }
       }
       return Attribute((uint64_t)totalMem);

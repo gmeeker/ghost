@@ -33,16 +33,17 @@ class DeviceDirectX;
 
 class EventDirectX : public Event {
  public:
-  ComPtr<ID3D12Fence> fence;
-  HANDLE fenceEvent;
-  UINT64 fenceValue;
-
   EventDirectX(ComPtr<ID3D12Fence> fence_, HANDLE event_, UINT64 value_);
   ~EventDirectX();
 
   virtual void wait() override;
   virtual bool isComplete() const override;
   virtual double elapsed(const Event& other) const override;
+
+ private:
+  ComPtr<ID3D12Fence> _fence;
+  HANDLE _fenceEvent;
+  UINT64 _fenceValue;
 };
 
 class StreamDirectX : public Stream {
@@ -65,14 +66,10 @@ class StreamDirectX : public Stream {
   };
 
   const DeviceDirectX& dev;
-  ComPtr<ID3D12CommandQueue> commandQueue;
-  ComPtr<ID3D12CommandAllocator> commandAllocator;
+  // Public so BufferDirectX/ImageDirectX can record copy commands directly.
   ComPtr<ID3D12GraphicsCommandList> commandList;
-  ComPtr<ID3D12Fence> fence;
-  HANDLE fenceEvent;
-  UINT64 fenceValue;
-  bool recording;
-  bool submitted;
+  // Public so copyTo / copy paths can attach staging resources and deferred
+  // host reads directly.
   std::vector<StagingResource> pendingStaging;
   std::vector<DeferredRead> deferredReads;
 
@@ -86,19 +83,27 @@ class StreamDirectX : public Stream {
   void begin();
   void submit();
   void cleanupStaging();
+
+ private:
+  ComPtr<ID3D12CommandQueue> _commandQueue;
+  ComPtr<ID3D12CommandAllocator> _commandAllocator;
+  ComPtr<ID3D12Fence> _fence;
+  HANDLE _fenceEvent;
+  UINT64 _fenceValue;
+  bool _recording;
+  bool _submitted;
 };
 
 class BufferDirectX : public Buffer {
  public:
-  const DeviceDirectX& dev;
   ComPtr<ID3D12Resource> resource;
   size_t _size;
   D3D12_RESOURCE_STATES currentState;
 
-  BufferDirectX(const DeviceDirectX& dev_, size_t bytes,
+  BufferDirectX(const DeviceDirectX& dev, size_t bytes,
                 const BufferOptions& opts = {});
-  BufferDirectX(const DeviceDirectX& dev_, ComPtr<ID3D12Resource> res,
-                size_t bytes, D3D12_RESOURCE_STATES state);
+  BufferDirectX(ComPtr<ID3D12Resource> res, size_t bytes,
+                D3D12_RESOURCE_STATES state);
   ~BufferDirectX();
 
   virtual size_t size() const override;
@@ -134,8 +139,8 @@ class SubBufferDirectX : public BufferDirectX {
   std::shared_ptr<Buffer> _parent;
   size_t _offset;
 
-  SubBufferDirectX(std::shared_ptr<Buffer> parent, const DeviceDirectX& dev_,
-                   ComPtr<ID3D12Resource> res, size_t offset, size_t bytes);
+  SubBufferDirectX(std::shared_ptr<Buffer> parent, ComPtr<ID3D12Resource> res,
+                   size_t offset, size_t bytes);
 
   virtual size_t baseOffset() const override;
 };
@@ -155,15 +160,14 @@ class MappedBufferDirectX : public BufferDirectX {
 
 class ImageDirectX : public Image {
  public:
-  const DeviceDirectX& dev;
   ComPtr<ID3D12Resource> resource;
   ImageDescription descr;
   D3D12_RESOURCE_STATES currentState;
 
-  ImageDirectX(const DeviceDirectX& dev_, const ImageDescription& descr);
-  ImageDirectX(const DeviceDirectX& dev_, const ImageDescription& descr,
+  ImageDirectX(const DeviceDirectX& dev, const ImageDescription& descr);
+  ImageDirectX(const DeviceDirectX& dev, const ImageDescription& descr,
                BufferDirectX& buffer);
-  ImageDirectX(const DeviceDirectX& dev_, const ImageDescription& descr,
+  ImageDirectX(const DeviceDirectX& dev, const ImageDescription& descr,
                ImageDirectX& image);
   ~ImageDirectX();
 
@@ -194,11 +198,8 @@ class ImageDirectX : public Image {
 
 class DeviceDirectX : public Device {
  public:
-  ComPtr<IDXGIFactory4> factory;
-  ComPtr<IDXGIAdapter1> adapter;
   ComPtr<ID3D12Device> device;
   ComPtr<ID3D12CommandQueue> commandQueue;
-  DXGI_ADAPTER_DESC1 adapterDesc;
 
   DeviceDirectX(const SharedContext& share);
   DeviceDirectX(const GpuInfo& info);
@@ -235,6 +236,11 @@ class DeviceDirectX : public Device {
       size_t bytes, D3D12_HEAP_TYPE heapType,
       D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE,
       D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON) const;
+
+ private:
+  ComPtr<IDXGIFactory4> _factory;
+  ComPtr<IDXGIAdapter1> _adapter;
+  DXGI_ADAPTER_DESC1 _adapterDesc;
 };
 }  // namespace implementation
 }  // namespace ghost

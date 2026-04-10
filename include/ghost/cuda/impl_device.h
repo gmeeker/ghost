@@ -15,9 +15,8 @@
 #ifndef GHOST_CUDA_IMPL_DEVICE_H
 #define GHOST_CUDA_IMPL_DEVICE_H
 
+#include <ghost/cuda/cu_ptr.h>
 #include <ghost/device.h>
-
-#include "cu_ptr.h"
 
 namespace ghost {
 namespace implementation {

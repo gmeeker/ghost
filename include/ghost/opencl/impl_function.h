@@ -16,8 +16,7 @@
 #define GHOST_OPENCL_IMPL_FUNCTION_H
 
 #include <ghost/implementation/impl_function.h>
-
-#include "ptr.h"
+#include <ghost/opencl/ptr.h>
 
 namespace ghost {
 namespace implementation {
@@ -41,9 +40,6 @@ class FunctionOpenCL : public Function {
 };
 
 class LibraryOpenCL : public Library {
- protected:
-  opencl::ptr<cl_context> context;
-
  public:
   opencl::ptr<cl_program> program;
 
@@ -59,6 +55,9 @@ class LibraryOpenCL : public Library {
   virtual void setGlobals(
       const std::vector<std::pair<std::string, Attribute>>& globals) override;
   virtual std::vector<uint8_t> getBinary() const override;
+
+ protected:
+  opencl::ptr<cl_context> context;
 
  private:
   void checkBuildLog(cl_int err0);

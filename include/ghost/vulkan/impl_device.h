@@ -52,14 +52,11 @@ class StreamVulkan : public Stream {
   };
 
   const DeviceVulkan& dev;
-  vk::ptr<VkCommandPool> commandPool;
-  // commandBuffer is allocated from commandPool and freed implicitly when
-  // the pool is destroyed; no separate destroy call needed.
+  // commandBuffer is allocated from _commandPool and freed implicitly when
+  // the pool is destroyed; no separate destroy call needed. Public so
+  // BufferVulkan/ImageVulkan can record copy commands directly.
   VkCommandBuffer commandBuffer;
-  vk::ptr<VkFence> fence;
-  bool recording;
-  bool submitted;
-  std::vector<StagingResource> pendingStaging;
+  // Public so copyTo paths can attach deferred host reads after staging.
   std::vector<DeferredRead> deferredReads;
 
   StreamVulkan(const DeviceVulkan& dev_);
@@ -73,22 +70,29 @@ class StreamVulkan : public Stream {
   void submit();
   void cleanupStaging();
   void addStagingResource(vk::ptr<VkBuffer> buf, vk::ptr<VkDeviceMemory> mem);
+
+ private:
+  vk::ptr<VkCommandPool> _commandPool;
+  vk::ptr<VkFence> _fence;
+  bool _recording;
+  bool _submitted;
+  std::vector<StagingResource> _pendingStaging;
 };
 
 class BufferVulkan : public Buffer {
  public:
-  const DeviceVulkan& dev;
   vk::ptr<VkBuffer> buffer;
   vk::ptr<VkDeviceMemory> memory;
   size_t _size;
 
-  BufferVulkan(const DeviceVulkan& dev_, size_t bytes,
+  BufferVulkan(const DeviceVulkan& dev, size_t bytes,
                const BufferOptions& opts = {});
-  // Borrowed-handle constructor: takes a (device, buffer, memory) tuple
-  // without taking ownership. Used by SubBufferVulkan to alias the parent
-  // buffer's handle.
-  BufferVulkan(const DeviceVulkan& dev_, VkBuffer buf, VkDeviceMemory mem,
-               size_t bytes, bool owns = true);
+  // Borrowed-handle constructor: takes a (device, buffer, memory) tuple.
+  // With owns=false, used by SubBufferVulkan to alias a parent buffer's
+  // handle. With null handles + owns=true, used by MappedBufferVulkan as
+  // an empty base before populating in the derived ctor body.
+  BufferVulkan(VkDevice device, VkBuffer buf, VkDeviceMemory mem, size_t bytes,
+               bool owns = true);
 
   virtual size_t size() const override;
 
@@ -120,8 +124,8 @@ class SubBufferVulkan : public BufferVulkan {
   std::shared_ptr<Buffer> _parent;
   size_t _offset;
 
-  SubBufferVulkan(std::shared_ptr<Buffer> parent, const DeviceVulkan& dev_,
-                  VkBuffer buf, size_t offset, size_t bytes);
+  SubBufferVulkan(std::shared_ptr<Buffer> parent, VkDevice device, VkBuffer buf,
+                  size_t offset, size_t bytes);
 
   virtual size_t baseOffset() const override;
 
@@ -147,7 +151,6 @@ class MappedBufferVulkan : public BufferVulkan {
 
 class ImageVulkan : public Image {
  public:
-  const DeviceVulkan& dev;
   vk::ptr<VkImage> image;
   vk::ptr<VkDeviceMemory> memory;
   // imageView is always owned by this object, even for image-from-image
@@ -155,13 +158,13 @@ class ImageVulkan : public Image {
   vk::ptr<VkImageView> imageView;
   ImageDescription descr;
 
-  ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& descr);
-  ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& descr,
+  ImageVulkan(const DeviceVulkan& dev, const ImageDescription& descr);
+  ImageVulkan(const DeviceVulkan& dev, const ImageDescription& descr,
               BufferVulkan& buffer);
-  ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& descr,
+  ImageVulkan(const DeviceVulkan& dev, const ImageDescription& descr,
               ImageVulkan& image);
 
-  const ImageDescription& description() const override { return descr; }
+  virtual const ImageDescription& description() const override { return descr; }
 
   virtual void copy(const ghost::Stream& s, const ghost::Image& src) override;
   virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
@@ -187,17 +190,14 @@ class DeviceVulkan : public Device {
  public:
   // VkInstance and VkDevice are kept as raw handles because their destroy
   // functions take no parent device — they are special-cased in the
-  // destructor and gated by ownsInstance.
+  // destructor and gated by _ownsInstance.
   VkInstance instance;
   VkPhysicalDevice physicalDevice;
   VkDevice device;
   VkQueue computeQueue;
   uint32_t computeQueueFamily;
   vk::ptr<VkDescriptorPool> descriptorPool;
-  bool ownsInstance;
-
   VkPhysicalDeviceProperties properties;
-  VkPhysicalDeviceMemoryProperties memProperties;
 
   DeviceVulkan(const SharedContext& share);
   DeviceVulkan(const GpuInfo& info);
@@ -235,6 +235,10 @@ class DeviceVulkan : public Device {
                     VkMemoryPropertyFlags props, vk::ptr<VkBuffer>& buf,
                     vk::ptr<VkDeviceMemory>& mem) const;
   VkFormat getImageFormat(const ImageDescription& descr) const;
+
+ private:
+  bool _ownsInstance;
+  VkPhysicalDeviceMemoryProperties _memProperties;
 };
 }  // namespace implementation
 }  // namespace ghost

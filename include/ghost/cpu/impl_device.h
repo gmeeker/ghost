@@ -112,7 +112,7 @@ class ImageCPU : public Image {
   ImageCPU(const DeviceCPU& dev, const ImageDescription& descr,
            ImageCPU& image);
 
-  const ImageDescription& description() const override { return descr; }
+  virtual const ImageDescription& description() const override { return descr; }
 
   virtual void copy(const ghost::Stream& s, const ghost::Image& src) override;
   virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,

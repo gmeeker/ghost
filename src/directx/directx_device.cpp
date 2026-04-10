@@ -106,21 +106,21 @@ D3D12_RESOURCE_DIMENSION getResourceDimension(const ImageDescription& descr) {
 
 EventDirectX::EventDirectX(ComPtr<ID3D12Fence> fence_, HANDLE event_,
                            UINT64 value_)
-    : fence(fence_), fenceEvent(event_), fenceValue(value_) {}
+    : _fence(fence_), _fenceEvent(event_), _fenceValue(value_) {}
 
 EventDirectX::~EventDirectX() {
-  if (fenceEvent) CloseHandle(fenceEvent);
+  if (_fenceEvent) CloseHandle(_fenceEvent);
 }
 
 void EventDirectX::wait() {
-  if (fence->GetCompletedValue() < fenceValue) {
-    fence->SetEventOnCompletion(fenceValue, fenceEvent);
-    WaitForSingleObject(fenceEvent, INFINITE);
+  if (_fence->GetCompletedValue() < _fenceValue) {
+    _fence->SetEventOnCompletion(_fenceValue, _fenceEvent);
+    WaitForSingleObject(_fenceEvent, INFINITE);
   }
 }
 
 bool EventDirectX::isComplete() const {
-  return fence->GetCompletedValue() >= fenceValue;
+  return _fence->GetCompletedValue() >= _fenceValue;
 }
 
 double EventDirectX::elapsed(const Event& other) const { return 0.0; }
@@ -131,52 +131,52 @@ double EventDirectX::elapsed(const Event& other) const { return 0.0; }
 
 StreamDirectX::StreamDirectX(const DeviceDirectX& dev_)
     : dev(dev_),
-      fenceEvent(nullptr),
-      fenceValue(0),
-      recording(false),
-      submitted(false) {
+      _fenceEvent(nullptr),
+      _fenceValue(0),
+      _recording(false),
+      _submitted(false) {
   // Create compute command queue
   D3D12_COMMAND_QUEUE_DESC queueDesc = {};
   queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
   queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
   queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
   checkHR(
-      dev.device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue)));
+      dev.device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&_commandQueue)));
 
   checkHR(dev.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE,
-                                             IID_PPV_ARGS(&commandAllocator)));
+                                             IID_PPV_ARGS(&_commandAllocator)));
 
   checkHR(dev.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE,
-                                        commandAllocator.Get(), nullptr,
+                                        _commandAllocator.Get(), nullptr,
                                         IID_PPV_ARGS(&commandList)));
 
   // Command list starts in recording state; close it initially
   commandList->Close();
 
   checkHR(
-      dev.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
-  fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+      dev.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&_fence)));
+  _fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 }
 
 StreamDirectX::~StreamDirectX() {
-  if (recording || submitted) {
+  if (_recording || _submitted) {
     try {
       sync();
     } catch (...) {
     }
   }
   cleanupStaging();
-  if (fenceEvent) CloseHandle(fenceEvent);
+  if (_fenceEvent) CloseHandle(_fenceEvent);
 }
 
 void StreamDirectX::begin() {
-  if (recording) return;
+  if (_recording) return;
 
   // Wait for previous work
-  if (submitted) {
-    if (fence->GetCompletedValue() < fenceValue) {
-      fence->SetEventOnCompletion(fenceValue, fenceEvent);
-      WaitForSingleObject(fenceEvent, INFINITE);
+  if (_submitted) {
+    if (_fence->GetCompletedValue() < _fenceValue) {
+      _fence->SetEventOnCompletion(_fenceValue, _fenceEvent);
+      WaitForSingleObject(_fenceEvent, INFINITE);
     }
 
     // Process deferred reads
@@ -201,35 +201,35 @@ void StreamDirectX::begin() {
     }
     deferredReads.clear();
     cleanupStaging();
-    submitted = false;
+    _submitted = false;
   }
 
-  checkHR(commandAllocator->Reset());
-  checkHR(commandList->Reset(commandAllocator.Get(), nullptr));
-  recording = true;
+  checkHR(_commandAllocator->Reset());
+  checkHR(commandList->Reset(_commandAllocator.Get(), nullptr));
+  _recording = true;
 }
 
 void StreamDirectX::submit() {
-  if (!recording) return;
+  if (!_recording) return;
 
   checkHR(commandList->Close());
 
   ID3D12CommandList* cmdLists[] = {commandList.Get()};
-  commandQueue->ExecuteCommandLists(1, cmdLists);
+  _commandQueue->ExecuteCommandLists(1, cmdLists);
 
-  fenceValue++;
-  checkHR(commandQueue->Signal(fence.Get(), fenceValue));
+  _fenceValue++;
+  checkHR(_commandQueue->Signal(_fence.Get(), _fenceValue));
 
-  recording = false;
-  submitted = true;
+  _recording = false;
+  _submitted = true;
 }
 
 void StreamDirectX::sync() {
-  if (recording) submit();
-  if (submitted) {
-    if (fence->GetCompletedValue() < fenceValue) {
-      fence->SetEventOnCompletion(fenceValue, fenceEvent);
-      WaitForSingleObject(fenceEvent, INFINITE);
+  if (_recording) submit();
+  if (_submitted) {
+    if (_fence->GetCompletedValue() < _fenceValue) {
+      _fence->SetEventOnCompletion(_fenceValue, _fenceEvent);
+      WaitForSingleObject(_fenceEvent, INFINITE);
     }
 
     // Process deferred reads
@@ -254,12 +254,12 @@ void StreamDirectX::sync() {
     }
     deferredReads.clear();
     cleanupStaging();
-    submitted = false;
+    _submitted = false;
   }
 }
 
 std::shared_ptr<Event> StreamDirectX::record() {
-  if (recording) submit();
+  if (_recording) submit();
 
   ComPtr<ID3D12Fence> eventFence;
   checkHR(dev.device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
@@ -267,7 +267,7 @@ std::shared_ptr<Event> StreamDirectX::record() {
   HANDLE eventHandle = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
   UINT64 value = 1;
-  checkHR(commandQueue->Signal(eventFence.Get(), value));
+  checkHR(_commandQueue->Signal(eventFence.Get(), value));
 
   return std::make_shared<EventDirectX>(eventFence, eventHandle, value);
 }
@@ -286,9 +286,9 @@ void StreamDirectX::cleanupStaging() {
 // BufferDirectX
 // ---------------------------------------------------------------------------
 
-BufferDirectX::BufferDirectX(const DeviceDirectX& dev_, size_t bytes,
+BufferDirectX::BufferDirectX(const DeviceDirectX& dev, size_t bytes,
                              const BufferOptions& opts)
-    : dev(dev_), _size(bytes), currentState(D3D12_RESOURCE_STATE_COMMON) {
+    : _size(bytes), currentState(D3D12_RESOURCE_STATE_COMMON) {
   // Staging routes to UPLOAD (kernel reads / host writes) or READBACK
   // (kernel writes / host reads). Everything else uses DEFAULT (device-local).
   D3D12_HEAP_TYPE heapType = D3D12_HEAP_TYPE_DEFAULT;
@@ -309,10 +309,9 @@ BufferDirectX::BufferDirectX(const DeviceDirectX& dev_, size_t bytes,
   currentState = initialState;
 }
 
-BufferDirectX::BufferDirectX(const DeviceDirectX& dev_,
-                             ComPtr<ID3D12Resource> res, size_t bytes,
+BufferDirectX::BufferDirectX(ComPtr<ID3D12Resource> res, size_t bytes,
                              D3D12_RESOURCE_STATES state)
-    : dev(dev_), resource(res), _size(bytes), currentState(state) {}
+    : resource(res), _size(bytes), currentState(state) {}
 
 BufferDirectX::~BufferDirectX() {}
 
@@ -372,9 +371,9 @@ void BufferDirectX::copy(const ghost::Stream& s, const void* src,
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
 
   // Create upload buffer
-  auto uploadBuf = dev.createCommittedBuffer(bytes, D3D12_HEAP_TYPE_UPLOAD,
-                                             D3D12_RESOURCE_FLAG_NONE,
-                                             D3D12_RESOURCE_STATE_GENERIC_READ);
+  auto uploadBuf = stream.dev.createCommittedBuffer(
+      bytes, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_NONE,
+      D3D12_RESOURCE_STATE_GENERIC_READ);
 
   // Map and copy data
   void* mapped = nullptr;
@@ -401,9 +400,9 @@ void BufferDirectX::copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
 
   // Create readback buffer
-  auto readbackBuf = dev.createCommittedBuffer(bytes, D3D12_HEAP_TYPE_READBACK,
-                                               D3D12_RESOURCE_FLAG_NONE,
-                                               D3D12_RESOURCE_STATE_COPY_DEST);
+  auto readbackBuf = stream.dev.createCommittedBuffer(
+      bytes, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE,
+      D3D12_RESOURCE_STATE_COPY_DEST);
 
   stream.begin();
   auto* cmdList = stream.commandList.Get();
@@ -445,7 +444,7 @@ void BufferDirectX::fill(const ghost::Stream& s, size_t offset, size_t sz,
 
 std::shared_ptr<Buffer> BufferDirectX::createSubBuffer(
     const std::shared_ptr<Buffer>& self, size_t offset, size_t sz) {
-  return std::make_shared<SubBufferDirectX>(self, dev, resource,
+  return std::make_shared<SubBufferDirectX>(self, resource,
                                             baseOffset() + offset, sz);
 }
 
@@ -454,10 +453,9 @@ std::shared_ptr<Buffer> BufferDirectX::createSubBuffer(
 // ---------------------------------------------------------------------------
 
 SubBufferDirectX::SubBufferDirectX(std::shared_ptr<Buffer> parent,
-                                   const DeviceDirectX& dev_,
                                    ComPtr<ID3D12Resource> res, size_t offset,
                                    size_t bytes)
-    : BufferDirectX(dev_, res, bytes, D3D12_RESOURCE_STATE_COMMON),
+    : BufferDirectX(res, bytes, D3D12_RESOURCE_STATE_COMMON),
       _parent(parent),
       _offset(offset) {}
 
@@ -467,10 +465,9 @@ size_t SubBufferDirectX::baseOffset() const { return _offset; }
 // MappedBufferDirectX
 // ---------------------------------------------------------------------------
 
-MappedBufferDirectX::MappedBufferDirectX(const DeviceDirectX& dev_,
-                                         size_t bytes,
+MappedBufferDirectX::MappedBufferDirectX(const DeviceDirectX& dev, size_t bytes,
                                          const BufferOptions& opts)
-    : BufferDirectX(dev_, nullptr, bytes, D3D12_RESOURCE_STATE_COMMON),
+    : BufferDirectX(nullptr, bytes, D3D12_RESOURCE_STATE_COMMON),
       mappedPtr(nullptr) {
   // For WriteOnly access (kernel writes / host reads), use a READBACK heap.
   // Otherwise (ReadOnly or ReadWrite) use an UPLOAD heap.
@@ -512,8 +509,8 @@ void MappedBufferDirectX::unmap(const ghost::Stream& s) {
 // ImageDirectX
 // ---------------------------------------------------------------------------
 
-ImageDirectX::ImageDirectX(const DeviceDirectX& dev_, const ImageDescription& d)
-    : dev(dev_), descr(d), currentState(D3D12_RESOURCE_STATE_COMMON) {
+ImageDirectX::ImageDirectX(const DeviceDirectX& dev, const ImageDescription& d)
+    : descr(d), currentState(D3D12_RESOURCE_STATE_COMMON) {
   DXGI_FORMAT format = dev.getImageFormat(d);
 
   D3D12_RESOURCE_DESC resDesc = {};
@@ -535,9 +532,9 @@ ImageDirectX::ImageDirectX(const DeviceDirectX& dev_, const ImageDescription& d)
       nullptr, IID_PPV_ARGS(&resource)));
 }
 
-ImageDirectX::ImageDirectX(const DeviceDirectX& dev_, const ImageDescription& d,
+ImageDirectX::ImageDirectX(const DeviceDirectX& dev, const ImageDescription& d,
                            BufferDirectX& buf)
-    : dev(dev_), descr(d), currentState(D3D12_RESOURCE_STATE_COMMON) {
+    : descr(d), currentState(D3D12_RESOURCE_STATE_COMMON) {
   // In D3D12, we create a placed resource in the same heap if possible.
   // For simplicity, create a new committed resource and note that copies
   // between buffer and image are the expected use pattern.
@@ -562,12 +559,11 @@ ImageDirectX::ImageDirectX(const DeviceDirectX& dev_, const ImageDescription& d,
       nullptr, IID_PPV_ARGS(&resource)));
 }
 
-ImageDirectX::ImageDirectX(const DeviceDirectX& dev_, const ImageDescription& d,
+ImageDirectX::ImageDirectX(const DeviceDirectX& dev, const ImageDescription& d,
                            ImageDirectX& other)
-    : dev(dev_),
-      resource(other.resource),
-      descr(d),
-      currentState(other.currentState) {}
+    : resource(other.resource), descr(d), currentState(other.currentState) {
+  (void)dev;
+}
 
 ImageDirectX::~ImageDirectX() {}
 
@@ -659,7 +655,7 @@ void ImageDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
   srcLoc.pResource = srcBuf->resource.Get();
   srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
   srcLoc.PlacedFootprint.Offset = srcBuf->baseOffset();
-  srcLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(descr);
+  srcLoc.PlacedFootprint.Footprint.Format = stream.dev.getImageFormat(descr);
   srcLoc.PlacedFootprint.Footprint.Width = (UINT)layout.size.x;
   srcLoc.PlacedFootprint.Footprint.Height =
       (UINT)std::max(layout.size.y, (size_t)1);
@@ -688,9 +684,9 @@ void ImageDirectX::copy(const ghost::Stream& s, const void* src,
   size_t height = std::max(layout.size.y, (size_t)1);
   size_t uploadSize = rowPitch * height * std::max(layout.size.z, (size_t)1);
 
-  auto uploadBuf = dev.createCommittedBuffer(uploadSize, D3D12_HEAP_TYPE_UPLOAD,
-                                             D3D12_RESOURCE_FLAG_NONE,
-                                             D3D12_RESOURCE_STATE_GENERIC_READ);
+  auto uploadBuf = stream.dev.createCommittedBuffer(
+      uploadSize, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_NONE,
+      D3D12_RESOURCE_STATE_GENERIC_READ);
 
   // Map and copy row by row (to handle pitch alignment)
   void* mapped = nullptr;
@@ -725,7 +721,7 @@ void ImageDirectX::copy(const ghost::Stream& s, const void* src,
   srcLoc.pResource = uploadBuf.Get();
   srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
   srcLoc.PlacedFootprint.Offset = 0;
-  srcLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(descr);
+  srcLoc.PlacedFootprint.Footprint.Format = stream.dev.getImageFormat(descr);
   srcLoc.PlacedFootprint.Footprint.Width = (UINT)layout.size.x;
   srcLoc.PlacedFootprint.Footprint.Height = (UINT)height;
   srcLoc.PlacedFootprint.Footprint.Depth =
@@ -760,7 +756,7 @@ void ImageDirectX::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
   dstLoc.pResource = dstBuf->resource.Get();
   dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
   dstLoc.PlacedFootprint.Offset = dstBuf->baseOffset();
-  dstLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(descr);
+  dstLoc.PlacedFootprint.Footprint.Format = stream.dev.getImageFormat(descr);
   dstLoc.PlacedFootprint.Footprint.Width = (UINT)layout.size.x;
   dstLoc.PlacedFootprint.Footprint.Height =
       (UINT)std::max(layout.size.y, (size_t)1);
@@ -789,7 +785,7 @@ void ImageDirectX::copyTo(const ghost::Stream& s, void* dst,
   size_t readbackSize =
       alignedPitch * height * std::max(layout.size.z, (size_t)1);
 
-  auto readbackBuf = dev.createCommittedBuffer(
+  auto readbackBuf = stream.dev.createCommittedBuffer(
       readbackSize, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE,
       D3D12_RESOURCE_STATE_COPY_DEST);
 
@@ -808,7 +804,7 @@ void ImageDirectX::copyTo(const ghost::Stream& s, void* dst,
   dstLoc.pResource = readbackBuf.Get();
   dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
   dstLoc.PlacedFootprint.Offset = 0;
-  dstLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(descr);
+  dstLoc.PlacedFootprint.Footprint.Format = stream.dev.getImageFormat(descr);
   dstLoc.PlacedFootprint.Footprint.Width = (UINT)layout.size.x;
   dstLoc.PlacedFootprint.Footprint.Height = (UINT)height;
   dstLoc.PlacedFootprint.Footprint.Depth =
@@ -854,7 +850,7 @@ void ImageDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
   srcLoc.pResource = srcBuf->resource.Get();
   srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
   srcLoc.PlacedFootprint.Offset = srcBuf->baseOffset();
-  srcLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(descr);
+  srcLoc.PlacedFootprint.Footprint.Format = stream.dev.getImageFormat(descr);
   srcLoc.PlacedFootprint.Footprint.Width = (UINT)layout.size.x;
   srcLoc.PlacedFootprint.Footprint.Height =
       (UINT)std::max(layout.size.y, (size_t)1);
@@ -903,7 +899,7 @@ void ImageDirectX::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
   dstLoc.pResource = dstBuf->resource.Get();
   dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
   dstLoc.PlacedFootprint.Offset = dstBuf->baseOffset();
-  dstLoc.PlacedFootprint.Footprint.Format = dev.getImageFormat(descr);
+  dstLoc.PlacedFootprint.Footprint.Format = stream.dev.getImageFormat(descr);
   dstLoc.PlacedFootprint.Footprint.Width = (UINT)layout.size.x;
   dstLoc.PlacedFootprint.Footprint.Height =
       (UINT)std::max(layout.size.y, (size_t)1);
@@ -925,7 +921,7 @@ void ImageDirectX::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
 // DeviceDirectX (implementation)
 // ---------------------------------------------------------------------------
 
-DeviceDirectX::DeviceDirectX(const SharedContext& share) : adapterDesc{} {
+DeviceDirectX::DeviceDirectX(const SharedContext& share) : _adapterDesc{} {
   if (share.context) {
     // Reuse existing objects
     device = static_cast<ID3D12Device*>(share.context);
@@ -936,24 +932,24 @@ DeviceDirectX::DeviceDirectX(const SharedContext& share) : adapterDesc{} {
     }
   } else {
     // Create DXGI factory
-    checkHR(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
+    checkHR(CreateDXGIFactory1(IID_PPV_ARGS(&_factory)));
 
     // Enumerate adapters and pick the first hardware adapter
     for (UINT i = 0;
-         factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
+         _factory->EnumAdapters1(i, &_adapter) != DXGI_ERROR_NOT_FOUND; i++) {
       DXGI_ADAPTER_DESC1 desc;
-      adapter->GetDesc1(&desc);
+      _adapter->GetDesc1(&desc);
       if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
-        adapter.Reset();
+        _adapter.Reset();
         continue;
       }
       // Try to create a D3D12 device
-      if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0,
+      if (SUCCEEDED(D3D12CreateDevice(_adapter.Get(), D3D_FEATURE_LEVEL_12_0,
                                       IID_PPV_ARGS(&device)))) {
-        adapterDesc = desc;
+        _adapterDesc = desc;
         break;
       }
-      adapter.Reset();
+      _adapter.Reset();
     }
 
     if (!device)
@@ -968,27 +964,27 @@ DeviceDirectX::DeviceDirectX(const SharedContext& share) : adapterDesc{} {
   }
 }
 
-DeviceDirectX::DeviceDirectX(const GpuInfo& info) : adapterDesc{} {
-  checkHR(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
+DeviceDirectX::DeviceDirectX(const GpuInfo& info) : _adapterDesc{} {
+  checkHR(CreateDXGIFactory1(IID_PPV_ARGS(&_factory)));
 
   int adapterIdx = 0;
-  for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND;
-       i++) {
+  for (UINT i = 0;
+       _factory->EnumAdapters1(i, &_adapter) != DXGI_ERROR_NOT_FOUND; i++) {
     DXGI_ADAPTER_DESC1 desc;
-    adapter->GetDesc1(&desc);
+    _adapter->GetDesc1(&desc);
     if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
-      adapter.Reset();
+      _adapter.Reset();
       continue;
     }
     if (adapterIdx == info.index) {
-      if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0,
+      if (SUCCEEDED(D3D12CreateDevice(_adapter.Get(), D3D_FEATURE_LEVEL_12_0,
                                       IID_PPV_ARGS(&device)))) {
-        adapterDesc = desc;
+        _adapterDesc = desc;
         break;
       }
     }
     adapterIdx++;
-    adapter.Reset();
+    _adapter.Reset();
   }
 
   if (!device) throw std::runtime_error("Invalid DirectX device index");
@@ -1046,8 +1042,8 @@ ghost::Library DeviceDirectX::loadLibraryFromData(
 }
 
 SharedContext DeviceDirectX::shareContext() const {
-  return SharedContext(device.Get(), commandQueue.Get(), adapter.Get(),
-                       factory.Get());
+  return SharedContext(device.Get(), commandQueue.Get(), _adapter.Get(),
+                       _factory.Get());
 }
 
 ghost::Stream DeviceDirectX::createStream() const {
@@ -1088,12 +1084,12 @@ Attribute DeviceDirectX::getAttribute(DeviceAttributeId what) const {
       // Convert wide string to narrow string
       char name[256];
       size_t len;
-      wcstombs_s(&len, name, sizeof(name), adapterDesc.Description,
+      wcstombs_s(&len, name, sizeof(name), _adapterDesc.Description,
                  sizeof(name) - 1);
       return Attribute(std::string(name));
     }
     case kDeviceVendor: {
-      switch (adapterDesc.VendorId) {
+      switch (_adapterDesc.VendorId) {
         case 0x1002:
           return Attribute("AMD");
         case 0x10DE:
@@ -1113,9 +1109,9 @@ Attribute DeviceDirectX::getAttribute(DeviceAttributeId what) const {
     case kDeviceProcessorCount:
       return Attribute((int32_t)0);
     case kDeviceUnifiedMemory:
-      return Attribute(adapterDesc.DedicatedVideoMemory == 0);
+      return Attribute(_adapterDesc.DedicatedVideoMemory == 0);
     case kDeviceMemory:
-      return Attribute((uint64_t)adapterDesc.DedicatedVideoMemory);
+      return Attribute((uint64_t)_adapterDesc.DedicatedVideoMemory);
     case kDeviceLocalMemory:
       return Attribute((int32_t)(32 * 1024));  // 32 KB typical
     case kDeviceMaxThreads:
@@ -1154,7 +1150,7 @@ Attribute DeviceDirectX::getAttribute(DeviceAttributeId what) const {
     case kDeviceBufferAlignment:
       return Attribute((int32_t)256);
     case kDeviceMaxBufferSize:
-      return Attribute((uint64_t)adapterDesc.DedicatedVideoMemory);
+      return Attribute((uint64_t)_adapterDesc.DedicatedVideoMemory);
     case kDeviceMaxConstantBufferSize:
       return Attribute((int32_t)(128));  // 128 bytes root constants
     case kDeviceTimestampPeriod:

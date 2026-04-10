@@ -16,11 +16,10 @@
 #define GHOST_OPENCL_IMPL_DEVICE_H
 
 #include <ghost/device.h>
+#include <ghost/opencl/ptr.h>
 
 #include <list>
 #include <set>
-
-#include "ptr.h"
 
 namespace ghost {
 namespace implementation {
@@ -39,9 +38,6 @@ class EventOpenCL : public Event {
 };
 
 class StreamOpenCL : public Stream {
- protected:
-  opencl::ptr<cl_event> lastEvent;
-
  public:
   opencl::ptr<cl_command_queue> queue;
   opencl::array<cl_event> events;
@@ -55,6 +51,9 @@ class StreamOpenCL : public Stream {
   virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
   void addEvent();
   cl_event* event();
+
+ protected:
+  opencl::ptr<cl_event> lastEvent;
 };
 
 class BufferOpenCL : public Buffer {
@@ -208,14 +207,6 @@ class PooledImageOpenCL : public ImageOpenCL {
 };
 
 class DeviceOpenCL : public Device {
- private:
-  std::string _version;
-  std::set<std::string> _extensions;
-  bool _fullProfile;
-  mutable std::shared_ptr<BufferPool> _pool;
-
-  void setVersion();
-
  public:
   opencl::ptr<cl_context> context;
   opencl::ptr<cl_command_queue> queue;
@@ -260,6 +251,14 @@ class DeviceOpenCL : public Device {
   cl_ulong getInt(cl_device_info param_name) const;
   std::string getString(cl_device_info param_name) const;
   std::string getPlatformString(cl_platform_info param_name) const;
+
+ private:
+  std::string _version;
+  std::set<std::string> _extensions;
+  bool _fullProfile;
+  mutable std::shared_ptr<BufferPool> _pool;
+
+  void setVersion();
 };
 }  // namespace implementation
 }  // namespace ghost
