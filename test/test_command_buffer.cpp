@@ -369,4 +369,95 @@ TEST_P(CommandBufferTest, DispatchIndirectWithOffset) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Lifetime: Buffer wrappers may go out of scope between record() and submit()
+// ---------------------------------------------------------------------------
+
+// Regression test for the Attribute lifetime bug: when a Buffer wrapper passed
+// to dispatch() is destroyed before submit(), the recorded dispatch must
+// still execute correctly because the Attribute carries a strong reference
+// to the underlying buffer impl.
+TEST_P(CommandBufferTest, BufferWrappersOutOfScope) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 32;
+  std::vector<float> input(N);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  // Allocate the output buffer in the outer scope so we can read it back.
+  auto outBuf = device().allocateBuffer(N * sizeof(float));
+
+  CommandBuffer cb(device());
+
+  // Record dispatches whose input Buffer wrappers go out of scope before
+  // submit. The Attribute stored in the recorded command must keep the
+  // underlying impl alive.
+  for (int iter = 0; iter < 4; iter++) {
+    auto inBuf = device().allocateBuffer(N * sizeof(float));
+    inBuf.copy(stream(), input.data(), N * sizeof(float));
+    stream().sync();
+
+    LaunchArgs la;
+    la.global_size(N).local_size(1);
+    cb.dispatch(fn, la, outBuf, inBuf, static_cast<float>(iter + 1));
+    // inBuf wrapper destroyed at end of this iteration.
+  }
+
+  cb.submit(stream());
+  stream().sync();
+
+  // The last recorded dispatch (iter=3, scale=4) wins.
+  std::vector<float> output(N, 0.0f);
+  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  stream().sync();
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 4.0f) << "index " << i;
+  }
+}
+
+// Regression test for the second bug Inferency hit: storing Buffer wrappers
+// in a vector that reallocates mid-batch must not invalidate the recorded
+// dispatches.
+TEST_P(CommandBufferTest, BufferWrappersInReallocatingVector) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 16;
+  std::vector<float> input(N);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+  auto outBuf = device().allocateBuffer(N * sizeof(float));
+
+  CommandBuffer cb(device());
+  std::vector<Buffer> wrappers;  // intentionally not reserved
+  wrappers.reserve(1);           // force reallocation as we push more
+
+  for (int iter = 0; iter < 8; iter++) {
+    Buffer inBuf = device().allocateBuffer(N * sizeof(float));
+    inBuf.copy(stream(), input.data(), N * sizeof(float));
+    stream().sync();
+    wrappers.push_back(inBuf);  // push_back may reallocate
+
+    LaunchArgs la;
+    la.global_size(N).local_size(1);
+    cb.dispatch(fn, la, outBuf, wrappers.back(), 2.0f);
+  }
+
+  cb.submit(stream());
+  stream().sync();
+
+  std::vector<float> output(N, 0.0f);
+  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  stream().sync();
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 2.0f) << "index " << i;
+  }
+}
+
 GHOST_INSTANTIATE_KERNEL_TESTS(CommandBufferTest);

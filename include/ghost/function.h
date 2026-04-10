@@ -190,6 +190,11 @@ class LaunchArgs {
 /// ghost::Function fn = library.lookupFunction("myKernel");
 /// fn(stream, LaunchArgs().global_size(1024), buffer, 42.0f);
 /// @endcode
+///
+/// A Function holds a strong reference to the Library it was looked up from,
+/// so the underlying compiled module (CUmodule, cl_program, VkShaderModule,
+/// dlopened .so, etc.) stays alive for as long as any Function from it is
+/// in use, even if the user drops the Library wrapper.
 class Function {
  public:
   /// @brief Construct from a backend implementation.
@@ -240,7 +245,12 @@ class Function {
   uint32_t preferredSubgroupSize() const;
 
  private:
+  friend class Library;
   std::shared_ptr<implementation::Function> _impl;
+  // Strong reference to the Library this function was looked up from.
+  // Without this, dropping the Library wrapper would unload the underlying
+  // compiled module while functions from it are still in use.
+  std::shared_ptr<implementation::Library> _parent;
 };
 
 /// @brief A compiled GPU program containing one or more kernel functions.
@@ -270,7 +280,9 @@ class Library {
   /// @return The Function object.
   template <typename... ARGS>
   Function lookupFunction(const std::string& name, ARGS&&... args) {
-    return _impl->lookupFunction(name, std::forward<ARGS>(args)...);
+    Function fn = _impl->lookupFunction(name, std::forward<ARGS>(args)...);
+    fn._parent = _impl;
+    return fn;
   }
 
   /// @brief Look up a specialized function with compile-time constant values.
@@ -286,7 +298,9 @@ class Library {
   Function lookupSpecializedFunction(const std::string& name, ARGS&&... tail) {
     std::vector<Attribute> args;
     implementation::Function::addArgs(args, std::forward<ARGS>(tail)...);
-    return _impl->specializeFunction(name, args);
+    Function fn = _impl->specializeFunction(name, args);
+    fn._parent = _impl;
+    return fn;
   }
 
   /// @brief Look up a specialized function with a vector of constant values.
@@ -297,7 +311,9 @@ class Library {
   /// @return The specialized Function object.
   Function lookupSpecializedFunction(const std::string& name,
                                      const std::vector<Attribute>& args) {
-    return _impl->specializeFunction(name, args);
+    Function fn = _impl->specializeFunction(name, args);
+    fn._parent = _impl;
+    return fn;
   }
 
   /// @brief Set named global constants on this library.

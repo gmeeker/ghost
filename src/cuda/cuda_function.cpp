@@ -84,14 +84,14 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
         break;
       }
       case Attribute::Type_Buffer: {
-        auto cuda = static_cast<implementation::BufferCUDA*>(
-            i->asBuffer()->impl().get());
+        auto cuda =
+            static_cast<implementation::BufferCUDA*>(i->bufferImpl().get());
         params.push_back(&cuda->mem.value);
         break;
       }
       case Attribute::Type_Image: {
         auto cuda =
-            static_cast<implementation::ImageCUDA*>(i->asImage()->impl().get());
+            static_cast<implementation::ImageCUDA*>(i->imageImpl().get());
         CUaddress_mode addressMode = CU_TR_ADDRESS_MODE_CLAMP;
         CUfilter_mode filterMode = CU_TR_FILTER_MODE_LINEAR;
         bool normalizedCoords = false;
@@ -145,7 +145,7 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
         break;
       }
       case Attribute::Type_ArgumentBuffer: {
-        auto ab = i->asArgumentBuffer();
+        auto ab = i->argumentBuffer();
         if (ab->isStruct()) {
           params.push_back(const_cast<void*>(ab->data()));
         } else {

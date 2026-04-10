@@ -71,7 +71,9 @@ uint32_t Function::preferredSubgroupSize() const {
 Library::Library(std::shared_ptr<implementation::Library> impl) : _impl(impl) {}
 
 Function Library::lookupFunction(const std::string& name) const {
-  return _impl->lookupFunction(name);
+  Function fn = _impl->lookupFunction(name);
+  fn._parent = _impl;
+  return fn;
 }
 
 void Library::setGlobals(

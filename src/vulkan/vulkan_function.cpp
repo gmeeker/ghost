@@ -141,7 +141,7 @@ void FunctionVulkan::createPipeline(const std::vector<Attribute>& args) {
         _pushConstantSize += (uint32_t)(sizeof(uint32_t) * arg.count());
         break;
       case Attribute::Type_ArgumentBuffer: {
-        auto* ab = arg.asArgumentBuffer();
+        auto* ab = arg.argumentBuffer();
         if (ab->isStruct()) {
           _pushConstantSize += (uint32_t)ab->size();
         } else {
@@ -269,8 +269,7 @@ void FunctionVulkan::execute(const ghost::Stream& s,
   for (auto& arg : args) {
     switch (arg.type()) {
       case Attribute::Type_Buffer: {
-        auto* buf = arg.asBuffer();
-        auto* vkBuf = static_cast<BufferVulkan*>(buf->impl().get());
+        auto* vkBuf = static_cast<BufferVulkan*>(arg.bufferImpl().get());
 
         VkDescriptorBufferInfo bufInfo = {};
         bufInfo.buffer = vkBuf->buffer;
@@ -289,8 +288,7 @@ void FunctionVulkan::execute(const ghost::Stream& s,
         break;
       }
       case Attribute::Type_Image: {
-        auto* img = arg.asImage();
-        auto* vkImg = static_cast<ImageVulkan*>(img->impl().get());
+        auto* vkImg = static_cast<ImageVulkan*>(arg.imageImpl().get());
 
         VkDescriptorImageInfo imgInfo = {};
         imgInfo.imageView = vkImg->imageView;
@@ -346,7 +344,7 @@ void FunctionVulkan::execute(const ghost::Stream& s,
         break;
       }
       case Attribute::Type_ArgumentBuffer: {
-        auto* ab = arg.asArgumentBuffer();
+        auto* ab = arg.argumentBuffer();
         if (ab->isStruct()) {
           size_t sz = ab->size();
           size_t off = pushData.size();

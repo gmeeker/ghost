@@ -23,10 +23,11 @@ namespace implementation {
 struct DispatchCmd {
   std::shared_ptr<implementation::Function> function;
   LaunchArgs launchArgs;
+  // Each Attribute carries strong references to its Buffer/Image impls
+  // (or to a snapshot of its ArgumentBuffer), so the recorded args alone
+  // are sufficient to keep all referenced backend resources alive until
+  // submit time.
   std::vector<Attribute> args;
-  // Keep referenced objects alive until submit
-  std::vector<std::shared_ptr<implementation::Buffer>> bufferRefs;
-  std::vector<std::shared_ptr<implementation::Image>> imageRefs;
 };
 
 struct DispatchIndirectCmd {
@@ -34,9 +35,6 @@ struct DispatchIndirectCmd {
   std::shared_ptr<implementation::Buffer> indirectBuffer;
   size_t indirectOffset;
   std::vector<Attribute> args;
-  // Keep referenced objects alive until submit
-  std::vector<std::shared_ptr<implementation::Buffer>> bufferRefs;
-  std::vector<std::shared_ptr<implementation::Image>> imageRefs;
 };
 
 struct CopyBufferCmd {
@@ -79,14 +77,6 @@ class DefaultCommandBuffer : public CommandBuffer {
     cmd.function = function;
     cmd.launchArgs = launchArgs;
     cmd.args = args;
-    // Capture shared_ptrs to keep Buffer/Image objects alive
-    for (auto& a : cmd.args) {
-      if (a.type() == Attribute::Type_Buffer && a.asBuffer()) {
-        cmd.bufferRefs.push_back(a.asBuffer()->impl());
-      } else if (a.type() == Attribute::Type_Image && a.asImage()) {
-        cmd.imageRefs.push_back(a.asImage()->impl());
-      }
-    }
     commands.push_back(std::move(cmd));
   }
 
@@ -99,13 +89,6 @@ class DefaultCommandBuffer : public CommandBuffer {
     cmd.indirectBuffer = indirectBuffer;
     cmd.indirectOffset = indirectOffset;
     cmd.args = args;
-    for (auto& a : cmd.args) {
-      if (a.type() == Attribute::Type_Buffer && a.asBuffer()) {
-        cmd.bufferRefs.push_back(a.asBuffer()->impl());
-      } else if (a.type() == Attribute::Type_Image && a.asImage()) {
-        cmd.imageRefs.push_back(a.asImage()->impl());
-      }
-    }
     commands.push_back(std::move(cmd));
   }
 

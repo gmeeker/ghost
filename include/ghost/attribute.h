@@ -17,6 +17,7 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <string>
 
 namespace ghost {
@@ -24,19 +25,30 @@ class ArgumentBuffer;
 class Buffer;
 class Image;
 
+namespace implementation {
+class Buffer;
+class Image;
+}  // namespace implementation
+
 /// @brief Type-safe tagged union for passing kernel arguments and querying
 /// device/function metadata.
 ///
 /// An Attribute can hold one of several types: string, float, integer, boolean,
-/// buffer pointer, image pointer, or a local memory size. Numeric types support
-/// up to 4-element vectors, stored in both 32-bit and 64-bit representations
-/// for convenient access. Kernel arguments have limited support for 64-bit
-/// types we don't define different data sizes.
+/// buffer, image, argument buffer, or a local memory size. Numeric types
+/// support up to 4-element vectors, stored in both 32-bit and 64-bit
+/// representations for convenient access. Kernel arguments have limited
+/// support for 64-bit types we don't define different data sizes.
 ///
 /// Attributes are used in two contexts:
 /// - As kernel arguments passed to Function::operator() and
-/// Function::execute().
+///   Function::execute().
 /// - As return values from Device::getAttribute() and Function::getAttribute().
+///
+/// Buffer/Image/ArgumentBuffer attributes hold strong references to the
+/// underlying backend implementations, so they remain valid even if the
+/// caller's wrapper objects go out of scope before the kernel actually
+/// dispatches. This is required for deferred execution paths like
+/// CommandBuffer where the recorded Attribute may outlive the wrapper.
 class Attribute {
  public:
   /// @brief The type tag identifying which value the Attribute holds.
@@ -53,13 +65,13 @@ class Attribute {
     Type_UInt,
     /// @brief Boolean value(s) (up to 4 elements).
     Type_Bool,
-    /// @brief Pointer to a Buffer.
+    /// @brief Reference to a Buffer (held via shared_ptr to its impl).
     Type_Buffer,
-    /// @brief Pointer to an Image.
+    /// @brief Reference to an Image (held via shared_ptr to its impl).
     Type_Image,
     /// @brief Local (shared) memory allocation size in bytes.
     Type_LocalMem,
-    /// @brief Pointer to an ArgumentBuffer.
+    /// @brief Snapshot of an ArgumentBuffer (host data + GPU buffer ref).
     Type_ArgumentBuffer
   };
 
@@ -72,9 +84,6 @@ class Attribute {
     int32_t i[4];
     uint32_t u[4];
     bool b[4];
-    ArgumentBuffer* argumentBuffer;
-    Buffer* buffer;
-    Image* image;
   } _u;
 
   union {
@@ -85,6 +94,14 @@ class Attribute {
   } _u64;
 
   std::string _s;
+
+  // Strong references kept alive for the Attribute's lifetime. These are
+  // what make Buffer/Image/ArgumentBuffer Attributes safe to outlive the
+  // user's wrapper objects (e.g., when recording into a CommandBuffer and
+  // submitting later).
+  std::shared_ptr<implementation::Buffer> _bufferImpl;
+  std::shared_ptr<implementation::Image> _imageImpl;
+  std::shared_ptr<ArgumentBuffer> _argBuffer;
 
   template <typename S, typename T>
   void setT(const S* v, S v0, S* s, T* t, size_t num) {
@@ -106,35 +123,33 @@ class Attribute {
 
  public:
   /// @brief Construct an empty attribute with Type_Unknown.
-  Attribute() : _type(Type_Unknown), _count(0) {}
+  Attribute();
+
+  ~Attribute();
+  Attribute(const Attribute&);
+  Attribute(Attribute&&) noexcept;
+  Attribute& operator=(const Attribute&);
+  Attribute& operator=(Attribute&&) noexcept;
 
   /// @name String constructors
   /// @{
-  Attribute(char* s) : _type(Type_String), _count(1), _s(s) {}
-
-  Attribute(const char* s) : _type(Type_String), _count(1), _s(s) {}
-
-  Attribute(const std::string& s) : _type(Type_String), _count(1), _s(s) {}
-
+  Attribute(char* s);
+  Attribute(const char* s);
+  Attribute(const std::string& s);
   /// @}
 
-  /// @name Buffer and Image constructors
+  /// @name Buffer / Image / ArgumentBuffer constructors
+  ///
+  /// Each constructor captures a strong reference to the underlying backend
+  /// object so the Attribute remains valid for the duration of any deferred
+  /// dispatch.
   /// @{
-  Attribute(Buffer* b) : _type(Type_Buffer), _count(1) { _u.buffer = b; }
-
-  Attribute(Buffer& b) : _type(Type_Buffer), _count(1) { _u.buffer = &b; }
-
-  Attribute(Image* i) : _type(Type_Image), _count(1) { _u.image = i; }
-
-  Attribute(Image& i) : _type(Type_Image), _count(1) { _u.image = &i; }
-
-  Attribute(ArgumentBuffer* ab) : _type(Type_ArgumentBuffer), _count(1) {
-    _u.argumentBuffer = ab;
-  }
-
-  Attribute(ArgumentBuffer& ab) : _type(Type_ArgumentBuffer), _count(1) {
-    _u.argumentBuffer = &ab;
-  }
+  Attribute(Buffer* b);
+  Attribute(Buffer& b);
+  Attribute(Image* i);
+  Attribute(Image& i);
+  Attribute(ArgumentBuffer* ab);
+  Attribute(ArgumentBuffer& ab);
 
   /// @}
 
@@ -143,24 +158,24 @@ class Attribute {
   /// int64_t, uint64_t, or bool). The type is inferred from the argument type.
   /// @{
   template <typename T>
-  Attribute(T v) {
+  Attribute(T v) : _type(Type_Unknown), _count(0) {
     set(&v, 1);
   }
 
   template <typename T>
-  Attribute(T v0, T v1) {
+  Attribute(T v0, T v1) : _type(Type_Unknown), _count(0) {
     T v[] = {v0, v1};
     set(v, 2);
   }
 
   template <typename T>
-  Attribute(T v0, T v1, T v2) {
+  Attribute(T v0, T v1, T v2) : _type(Type_Unknown), _count(0) {
     T v[] = {v0, v1, v2};
     set(v, 3);
   }
 
   template <typename T>
-  Attribute(T v0, T v1, T v2, T v3) {
+  Attribute(T v0, T v1, T v2, T v3) : _type(Type_Unknown), _count(0) {
     T v[] = {v0, v1, v2, v3};
     set(v, 4);
   }
@@ -171,7 +186,7 @@ class Attribute {
   /// @param v Pointer to the array of values.
   /// @param num Number of elements (1–4).
   template <typename T>
-  Attribute(const T* v, size_t num) {
+  Attribute(const T* v, size_t num) : _type(Type_Unknown), _count(0) {
     set(v, num);
   }
 
@@ -272,11 +287,26 @@ class Attribute {
 
   const bool* boolArray() const { return _u.b; }
 
-  Buffer* asBuffer() const { return _u.buffer; }
+  /// @brief Strong reference to the underlying buffer implementation.
+  ///
+  /// Valid for the lifetime of this Attribute. Backends should use this
+  /// instead of dereferencing the user's wrapper, which may have already
+  /// been destroyed in deferred execution paths.
+  const std::shared_ptr<implementation::Buffer>& bufferImpl() const {
+    return _bufferImpl;
+  }
 
-  Image* asImage() const { return _u.image; }
+  /// @brief Strong reference to the underlying image implementation.
+  const std::shared_ptr<implementation::Image>& imageImpl() const {
+    return _imageImpl;
+  }
 
-  ArgumentBuffer* asArgumentBuffer() const { return _u.argumentBuffer; }
+  /// @brief Snapshot of the ArgumentBuffer captured at construction time.
+  ///
+  /// Returns a pointer to a heap-allocated copy of the user's
+  /// ArgumentBuffer. The host-side data is snapshotted; the GPU buffer
+  /// (if any) shares its impl with the original via shared_ptr.
+  ArgumentBuffer* argumentBuffer() const { return _argBuffer.get(); }
 
   /// @}
 };

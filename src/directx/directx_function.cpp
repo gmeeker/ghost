@@ -92,7 +92,7 @@ void FunctionDirectX::execute(const ghost::Stream& s,
         break;
       }
       case Attribute::Type_ArgumentBuffer: {
-        auto* ab = arg.asArgumentBuffer();
+        auto* ab = arg.argumentBuffer();
         if (ab->isStruct()) {
           size_t sz = ab->size();
           size_t off = constants.size();
@@ -118,8 +118,7 @@ void FunctionDirectX::execute(const ghost::Stream& s,
   for (auto& arg : args) {
     switch (arg.type()) {
       case Attribute::Type_Buffer: {
-        auto* buf = arg.asBuffer();
-        auto* dxBuf = static_cast<BufferDirectX*>(buf->impl().get());
+        auto* dxBuf = static_cast<BufferDirectX*>(arg.bufferImpl().get());
         dxBuf->transitionTo(cmdList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         cmdList->SetComputeRootUnorderedAccessView(
             rootIdx++,
@@ -130,8 +129,7 @@ void FunctionDirectX::execute(const ghost::Stream& s,
         // Images require a descriptor heap for UAV binding.
         // For simplicity, use a GPU virtual address if the resource supports
         // it. Full implementation would use a shader-visible descriptor heap.
-        auto* img = arg.asImage();
-        auto* dxImg = static_cast<ImageDirectX*>(img->impl().get());
+        auto* dxImg = static_cast<ImageDirectX*>(arg.imageImpl().get());
         dxImg->transitionTo(cmdList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         // Note: Textures cannot use root UAV directly; they require descriptor
         // tables. A full implementation would create a shader-visible
@@ -141,7 +139,7 @@ void FunctionDirectX::execute(const ghost::Stream& s,
         break;
       }
       case Attribute::Type_ArgumentBuffer: {
-        auto* ab = arg.asArgumentBuffer();
+        auto* ab = arg.argumentBuffer();
         if (!ab->isStruct()) {
           auto bufImpl = ab->bufferImpl();
           auto* dxBuf = static_cast<BufferDirectX*>(bufImpl.get());

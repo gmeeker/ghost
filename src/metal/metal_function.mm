@@ -260,8 +260,8 @@ void FunctionMetal::execute(const ghost::Stream &s,
       break;
     }
     case Attribute::Type_Buffer: {
-      auto metal = static_cast<implementation::BufferMetal *>(
-          i->asBuffer()->impl().get());
+      auto metal =
+          static_cast<implementation::BufferMetal *>(i->bufferImpl().get());
       [computeEncoder setBuffer:metal->mem.get()
                          offset:metal->baseOffset()
                         atIndex:bufferIndex++];
@@ -269,12 +269,12 @@ void FunctionMetal::execute(const ghost::Stream &s,
     }
     case Attribute::Type_Image: {
       auto metal =
-          static_cast<implementation::ImageMetal *>(i->asImage()->impl().get());
+          static_cast<implementation::ImageMetal *>(i->imageImpl().get());
       [computeEncoder setTexture:metal->mem.get() atIndex:textureIndex++];
       break;
     }
     case Attribute::Type_ArgumentBuffer: {
-      auto ab = i->asArgumentBuffer();
+      auto ab = i->argumentBuffer();
       if (ab->isStruct()) {
         [computeEncoder setBytes:ab->data()
                           length:ab->size()
@@ -373,8 +373,8 @@ void FunctionMetal::executeIndirect(
       break;
     }
     case Attribute::Type_Buffer: {
-      auto metal = static_cast<implementation::BufferMetal *>(
-          i->asBuffer()->impl().get());
+      auto metal =
+          static_cast<implementation::BufferMetal *>(i->bufferImpl().get());
       [computeEncoder setBuffer:metal->mem.get()
                          offset:metal->baseOffset()
                         atIndex:bufferIndex++];
@@ -382,12 +382,12 @@ void FunctionMetal::executeIndirect(
     }
     case Attribute::Type_Image: {
       auto metal =
-          static_cast<implementation::ImageMetal *>(i->asImage()->impl().get());
+          static_cast<implementation::ImageMetal *>(i->imageImpl().get());
       [computeEncoder setTexture:metal->mem.get() atIndex:textureIndex++];
       break;
     }
     case Attribute::Type_ArgumentBuffer: {
-      auto ab = i->asArgumentBuffer();
+      auto ab = i->argumentBuffer();
       if (ab->isStruct()) {
         [computeEncoder setBytes:ab->data()
                           length:ab->size()

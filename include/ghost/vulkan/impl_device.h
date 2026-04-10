@@ -79,10 +79,14 @@ class StreamVulkan : public Stream {
 class BufferVulkan : public Buffer {
  public:
   const DeviceVulkan& dev;
-  std::shared_ptr<bool> deviceAlive;
   VkBuffer buffer;
   VkDeviceMemory memory;
   size_t _size;
+  // false for sub-buffers and image-from-buffer aliases that share another
+  // resource's handles. true for buffers Ghost allocated. This is the same
+  // convention as cu::ptr's _owned flag and SubBufferCUDA's _parent: Ghost
+  // owns the handle iff ownsHandles is true; otherwise the parent resource
+  // is responsible for destruction.
   bool ownsHandles;
 
   BufferVulkan(const DeviceVulkan& dev_, size_t bytes,
@@ -149,11 +153,13 @@ class MappedBufferVulkan : public BufferVulkan {
 class ImageVulkan : public Image {
  public:
   const DeviceVulkan& dev;
-  std::shared_ptr<bool> deviceAlive;
   VkImage image;
   VkDeviceMemory memory;
   VkImageView imageView;
   ImageDescription descr;
+  // See BufferVulkan::ownsHandles for semantics. The image view is always
+  // owned by this object even when ownsHandles is false (image-from-image
+  // aliases create a new view into another image's memory).
   bool ownsHandles;
 
   ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& descr);
@@ -194,7 +200,6 @@ class DeviceVulkan : public Device {
   uint32_t computeQueueFamily;
   VkDescriptorPool descriptorPool;
   bool ownsInstance;
-  std::shared_ptr<bool> alive;
 
   VkPhysicalDeviceProperties properties;
   VkPhysicalDeviceMemoryProperties memProperties;

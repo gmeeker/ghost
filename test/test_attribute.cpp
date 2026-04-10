@@ -134,14 +134,14 @@ TEST(AttributeTest, BufferPointer) {
   Buffer* bp = nullptr;
   Attribute a(bp);
   EXPECT_EQ(a.type(), Attribute::Type_Buffer);
-  EXPECT_EQ(a.asBuffer(), nullptr);
+  EXPECT_EQ(a.bufferImpl(), nullptr);
 }
 
 TEST(AttributeTest, ImagePointer) {
   Image* ip = nullptr;
   Attribute a(ip);
   EXPECT_EQ(a.type(), Attribute::Type_Image);
-  EXPECT_EQ(a.asImage(), nullptr);
+  EXPECT_EQ(a.imageImpl(), nullptr);
 }
 
 // ---------------------------------------------------------------------------

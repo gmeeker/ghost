@@ -12,11 +12,9 @@ using namespace ghost::test;
 static void cpu_mult_const_f(size_t i, size_t n,
                              const std::vector<Attribute>& args) {
   auto* out = static_cast<float*>(
-      static_cast<implementation::BufferCPU*>(args[0].asBuffer()->impl().get())
-          ->ptr);
+      static_cast<implementation::BufferCPU*>(args[0].bufferImpl().get())->ptr);
   auto* A = static_cast<const float*>(
-      static_cast<implementation::BufferCPU*>(args[1].asBuffer()->impl().get())
-          ->ptr);
+      static_cast<implementation::BufferCPU*>(args[1].bufferImpl().get())->ptr);
   float scale = args[2].asFloat();
   out[i] = A[i] * scale;
 }
@@ -24,14 +22,11 @@ static void cpu_mult_const_f(size_t i, size_t n,
 static void cpu_add_buffers(size_t i, size_t n,
                             const std::vector<Attribute>& args) {
   auto* out = static_cast<float*>(
-      static_cast<implementation::BufferCPU*>(args[0].asBuffer()->impl().get())
-          ->ptr);
+      static_cast<implementation::BufferCPU*>(args[0].bufferImpl().get())->ptr);
   auto* A = static_cast<const float*>(
-      static_cast<implementation::BufferCPU*>(args[1].asBuffer()->impl().get())
-          ->ptr);
+      static_cast<implementation::BufferCPU*>(args[1].bufferImpl().get())->ptr);
   auto* B = static_cast<const float*>(
-      static_cast<implementation::BufferCPU*>(args[2].asBuffer()->impl().get())
-          ->ptr);
+      static_cast<implementation::BufferCPU*>(args[2].bufferImpl().get())->ptr);
   out[i] = A[i] + B[i];
 }
 

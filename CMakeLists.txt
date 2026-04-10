@@ -142,6 +142,7 @@ endif()
 
 set(GHOST_SOURCES
     src/argument_buffer.cpp
+    src/attribute.cpp
     src/binary_cache.cpp
     src/command_buffer.cpp
     src/create_device.cpp

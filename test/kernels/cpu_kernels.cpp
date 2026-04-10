@@ -2,7 +2,7 @@
 // These functions match the FunctionCPU::Type signature:
 //   void (*)(size_t i, size_t n, const std::vector<Attribute>& args)
 //
-// Buffer data is accessed via args[i].asBuffer()->impl() cast to BufferCPU*.
+// Buffer data is accessed via args[i].bufferImpl() cast to BufferCPU*.
 
 #include <ghost/attribute.h>
 #include <ghost/cpu/impl_device.h>
@@ -24,9 +24,9 @@ extern "C" {
 GHOST_EXPORT void mult_const_f(size_t i, size_t n,
                                const std::vector<Attribute>& args) {
   auto* out = static_cast<float*>(
-      static_cast<BufferCPU*>(args[0].asBuffer()->impl().get())->ptr);
+      static_cast<BufferCPU*>(args[0].bufferImpl().get())->ptr);
   auto* A = static_cast<const float*>(
-      static_cast<BufferCPU*>(args[1].asBuffer()->impl().get())->ptr);
+      static_cast<BufferCPU*>(args[1].bufferImpl().get())->ptr);
   float scale = args[2].asFloat();
   out[i] = A[i] * scale;
 }
@@ -36,11 +36,11 @@ GHOST_EXPORT void mult_const_f(size_t i, size_t n,
 GHOST_EXPORT void add_buffers(size_t i, size_t n,
                               const std::vector<Attribute>& args) {
   auto* out = static_cast<float*>(
-      static_cast<BufferCPU*>(args[0].asBuffer()->impl().get())->ptr);
+      static_cast<BufferCPU*>(args[0].bufferImpl().get())->ptr);
   auto* A = static_cast<const float*>(
-      static_cast<BufferCPU*>(args[1].asBuffer()->impl().get())->ptr);
+      static_cast<BufferCPU*>(args[1].bufferImpl().get())->ptr);
   auto* B = static_cast<const float*>(
-      static_cast<BufferCPU*>(args[2].asBuffer()->impl().get())->ptr);
+      static_cast<BufferCPU*>(args[2].bufferImpl().get())->ptr);
   out[i] = A[i] + B[i];
 }
 

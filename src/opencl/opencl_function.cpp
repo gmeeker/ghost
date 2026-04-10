@@ -79,23 +79,23 @@ void FunctionOpenCL::execute(const ghost::Stream& s,
         break;
       }
       case Attribute::Type_Buffer: {
-        auto opencl = static_cast<implementation::BufferOpenCL*>(
-            i->asBuffer()->impl().get());
+        auto opencl =
+            static_cast<implementation::BufferOpenCL*>(i->bufferImpl().get());
         cl_mem v = opencl->mem.get();
         err = clSetKernelArg(kernel, idx++, sizeof(v), &v);
         checkError(err);
         break;
       }
       case Attribute::Type_Image: {
-        auto opencl = static_cast<implementation::ImageOpenCL*>(
-            i->asImage()->impl().get());
+        auto opencl =
+            static_cast<implementation::ImageOpenCL*>(i->imageImpl().get());
         cl_mem v = opencl->mem.get();
         err = clSetKernelArg(kernel, idx++, sizeof(v), &v);
         checkError(err);
         break;
       }
       case Attribute::Type_ArgumentBuffer: {
-        auto ab = i->asArgumentBuffer();
+        auto ab = i->argumentBuffer();
         if (ab->isStruct()) {
           err = clSetKernelArg(kernel, idx++, ab->size(), ab->data());
         } else {

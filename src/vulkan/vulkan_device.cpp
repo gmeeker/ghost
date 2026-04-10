@@ -248,7 +248,6 @@ void StreamVulkan::addStagingResource(VkBuffer buf, VkDeviceMemory mem) {
 BufferVulkan::BufferVulkan(const DeviceVulkan& dev_, size_t bytes,
                            const BufferOptions& opts)
     : dev(dev_),
-      deviceAlive(dev_.alive),
       buffer(VK_NULL_HANDLE),
       memory(VK_NULL_HANDLE),
       _size(bytes),
@@ -272,15 +271,10 @@ BufferVulkan::BufferVulkan(const DeviceVulkan& dev_, size_t bytes,
 
 BufferVulkan::BufferVulkan(const DeviceVulkan& dev_, VkBuffer buf,
                            VkDeviceMemory mem, size_t bytes, bool owns)
-    : dev(dev_),
-      deviceAlive(dev_.alive),
-      buffer(buf),
-      memory(mem),
-      _size(bytes),
-      ownsHandles(owns) {}
+    : dev(dev_), buffer(buf), memory(mem), _size(bytes), ownsHandles(owns) {}
 
 BufferVulkan::~BufferVulkan() {
-  if (ownsHandles && *deviceAlive) {
+  if (ownsHandles) {
     if (buffer != VK_NULL_HANDLE) vkDestroyBuffer(dev.device, buffer, nullptr);
     if (memory != VK_NULL_HANDLE) vkFreeMemory(dev.device, memory, nullptr);
   }
@@ -526,7 +520,6 @@ void MappedBufferVulkan::unmap(const ghost::Stream& s) {
 
 ImageVulkan::ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& d)
     : dev(dev_),
-      deviceAlive(dev_.alive),
       image(VK_NULL_HANDLE),
       memory(VK_NULL_HANDLE),
       imageView(VK_NULL_HANDLE),
@@ -584,7 +577,6 @@ ImageVulkan::ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& d)
 ImageVulkan::ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& d,
                          BufferVulkan& buf)
     : dev(dev_),
-      deviceAlive(dev_.alive),
       image(VK_NULL_HANDLE),
       memory(VK_NULL_HANDLE),
       imageView(VK_NULL_HANDLE),
@@ -644,7 +636,6 @@ ImageVulkan::ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& d,
 ImageVulkan::ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& d,
                          ImageVulkan& other)
     : dev(dev_),
-      deviceAlive(dev_.alive),
       image(other.image),
       memory(VK_NULL_HANDLE),
       imageView(VK_NULL_HANDLE),
@@ -668,7 +659,6 @@ ImageVulkan::ImageVulkan(const DeviceVulkan& dev_, const ImageDescription& d,
 }
 
 ImageVulkan::~ImageVulkan() {
-  if (!*deviceAlive) return;
   if (imageView != VK_NULL_HANDLE)
     vkDestroyImageView(dev.device, imageView, nullptr);
   if (ownsHandles) {
@@ -1171,8 +1161,7 @@ DeviceVulkan::DeviceVulkan(const SharedContext& share)
       computeQueue(VK_NULL_HANDLE),
       computeQueueFamily(0),
       descriptorPool(VK_NULL_HANDLE),
-      ownsInstance(false),
-      alive(std::make_shared<bool>(true)) {
+      ownsInstance(false) {
   if (share.context) {
     // Reuse existing Vulkan objects
     instance = static_cast<VkInstance>(share.context);
@@ -1281,8 +1270,7 @@ DeviceVulkan::DeviceVulkan(const GpuInfo& info)
       computeQueue(VK_NULL_HANDLE),
       computeQueueFamily(0),
       descriptorPool(VK_NULL_HANDLE),
-      ownsInstance(true),
-      alive(std::make_shared<bool>(true)) {
+      ownsInstance(true) {
   // Create new instance
   VkApplicationInfo appInfo = {};
   appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -1370,7 +1358,6 @@ DeviceVulkan::DeviceVulkan(const GpuInfo& info)
 }
 
 DeviceVulkan::~DeviceVulkan() {
-  *alive = false;
   if (device != VK_NULL_HANDLE) {
     vkDeviceWaitIdle(device);
     if (descriptorPool != VK_NULL_HANDLE)

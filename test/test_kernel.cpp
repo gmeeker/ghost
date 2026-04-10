@@ -21,6 +21,39 @@ TEST_P(KernelTest, CompileAndLookup) {
   EXPECT_NE(fn.impl().get(), nullptr);
 }
 
+// Regression test: a Function must keep its parent Library alive so the
+// underlying compiled module (CUmodule, cl_program, dlopened .so, etc.)
+// is not unloaded while the kernel is still in use.
+TEST_P(KernelTest, FunctionOutlivesLibrary) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 64;
+  std::vector<float> input(N), output(N, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  Function fn = [&]() {
+    Library lib = device().loadLibraryFromText(src);
+    return lib.lookupFunction("mult_const_f");
+    // lib goes out of scope here; fn must keep the underlying module alive.
+  }();
+
+  auto inBuf = device().allocateBuffer(N * sizeof(float));
+  auto outBuf = device().allocateBuffer(N * sizeof(float));
+  inBuf.copy(stream(), input.data(), N * sizeof(float));
+  stream().sync();
+
+  LaunchArgs la;
+  la.global_size(N).local_size(1);
+  fn(stream(), la, outBuf, inBuf, 3.0f);
+  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 3.0f) << "index " << i;
+  }
+}
+
 TEST_P(KernelTest, LookupMissingFunctionThrows) {
   const char* src = multConstSource();
   if (!src) GTEST_SKIP();
