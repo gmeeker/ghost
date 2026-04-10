@@ -51,7 +51,9 @@ void FunctionCPU::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
   size_t count = launchArgs.count();
   count = std::min(count, _dev.cores);
   auto stream = static_cast<const StreamCPU*>(s.impl().get());
-  stream->pool->thread(count, function, args);
+  FunctionCPU::Type fn = function;
+  stream->pool->parallel(count,
+                         [fn, &args](size_t i, size_t n) { fn(i, n, args); });
 }
 
 Attribute FunctionCPU::getAttribute(FunctionAttributeId what) const {

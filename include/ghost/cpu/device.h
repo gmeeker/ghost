@@ -18,7 +18,9 @@
 #include <ghost/cpu/impl_function.h>
 #include <ghost/device.h>
 #include <ghost/gpu_info.h>
+#include <ghost/thread_pool.h>
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,6 +30,21 @@ class DeviceCPU : public Device {
  public:
   DeviceCPU(const SharedContext& share = SharedContext());
   DeviceCPU(const GpuInfo& info);
+
+  /// @brief Construct a CPU device using a specific thread pool.
+  ///
+  /// Use this to share a single pool across multiple devices, or to inject a
+  /// host-supplied @c ThreadPool subclass that delegates to an external
+  /// executor (TBB, libdispatch, a host application's job system).
+  /// @param pool The pool to use. If null, the default pool is used.
+  explicit DeviceCPU(std::shared_ptr<ThreadPool> pool);
+
+  /// @brief Replace this device's thread pool.
+  ///
+  /// Must be called before any kernel dispatch on this device's streams.
+  /// Streams obtained before this call continue to use the previous pool.
+  /// @param pool The new pool. If null, the default pool is used.
+  void setThreadPool(std::shared_ptr<ThreadPool> pool);
 
   static std::vector<GpuInfo> enumerateDevices();
 

@@ -308,4 +308,8 @@ Attribute Device::getAttribute(DeviceAttributeId what) const {
   return _impl->getAttribute(what);
 }
 
+std::shared_ptr<ThreadPool> Device::threadPool() const {
+  return _impl->threadPool();
+}
+
 }  // namespace ghost

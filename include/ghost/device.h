@@ -19,6 +19,7 @@
 #include <ghost/function.h>
 #include <ghost/image.h>
 #include <ghost/implementation/impl_device.h>
+#include <ghost/thread_pool.h>
 
 #include <cstdint>
 #include <memory>
@@ -405,6 +406,14 @@ class Device {
   /// @param what The attribute to query (e.g., kDeviceName, kDeviceMemory).
   /// @return The attribute value.
   Attribute getAttribute(DeviceAttributeId what) const;
+
+  /// @brief Get the host-side thread pool used by this device.
+  ///
+  /// CPU backends return the active worker pool. GPU backends return
+  /// @c nullptr — GPU parallelism is via kernel dispatch, not host threads.
+  /// Use this when you need to run native C++ code in parallel without
+  /// going through @c FunctionCPU.
+  std::shared_ptr<ThreadPool> threadPool() const;
 
   /// @brief Get the backend implementation (const).
   std::shared_ptr<implementation::Device> impl() const { return _impl; }

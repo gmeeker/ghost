@@ -190,97 +190,6 @@ uint64_t getSystemMemory() {
 
 namespace ghost {
 namespace implementation {
-void ThreadPoolDefault::worker() {
-#if GHOST_USE_STD_THREAD
-  bool working = true;
-  while (working) {
-    ThreadWork w;
-    {
-      std::unique_lock<std::mutex> lk(mutex);
-      cv.wait(lk, [this] { return !work.empty(); });
-      lk.release();
-      std::lock_guard<std::mutex> guard(mutex, std::adopt_lock_t());
-
-      w = work.front();
-      work.pop();
-      if (work.empty()) cv.notify_all();
-    }
-    if (w.quit) {
-      working = false;
-    } else {
-      w.function(w.i, w.count, w.args);
-    }
-  }
-#endif
-}
-
-ThreadPoolDefault::ThreadPoolDefault(const DeviceCPU& dev_) : dev(dev_) {
-#if GHOST_USE_STD_THREAD
-  for (size_t i = 0; i < dev.cores; i++) {
-#if __cplusplus >= 201703L
-    threads.emplace_back(&ThreadPoolDefault::worker, this);
-#else
-    threads.push_back(std::thread(&ThreadPoolDefault::worker, this));
-#endif
-  }
-#elif defined(__APPLE_CC__)
-  queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-  group = dispatch_group_create();
-#endif
-}
-
-ThreadPoolDefault::~ThreadPoolDefault() {
-  sync();
-#if GHOST_USE_STD_THREAD
-  {
-    std::lock_guard<std::mutex> guard(mutex);
-    for (auto i = threads.begin(); i != threads.end(); ++i) {
-      ThreadWork w = {nullptr, std::vector<Attribute>(), 0, 1, true};
-      work.push(w);
-    }
-  }
-  cv.notify_all();
-  for (auto i = threads.begin(); i != threads.end(); ++i) {
-    i->join();
-  }
-#elif defined(__APPLE_CC__)
-  dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
-  dispatch_release(group);
-#endif
-}
-
-void ThreadPoolDefault::thread(size_t count, FunctionCPU::Type function,
-                               const std::vector<Attribute>& args) {
-  if (count == 1) {
-    function(0, 1, args);
-  } else if (count > 1) {
-#if GHOST_USE_STD_THREAD
-    std::lock_guard<std::mutex> guard(mutex);
-    for (size_t i = 0; i < count; i++) {
-      ThreadWork w = {function, args, i, count, false};
-      work.push(w);
-    }
-    cv.notify_all();
-#elif __APPLE_CC__
-    for (size_t i = 0; i < count; i++) {
-      __block auto a = args;
-      dispatch_group_async(group, queue, ^{
-        function(i, count, a);
-      });
-    }
-#endif
-  }
-}
-
-void ThreadPoolDefault::sync() {
-#if GHOST_USE_STD_THREAD
-  std::unique_lock<std::mutex> lk(mutex);
-  cv.wait(lk, [this] { return work.empty(); });
-#elif __APPLE_CC__
-  dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
-#endif
-}
-
 EventCPU::EventCPU() {
   auto now = std::chrono::high_resolution_clock::now();
   _timestamp = std::chrono::duration<double>(now.time_since_epoch()).count();
@@ -292,14 +201,16 @@ bool EventCPU::isComplete() const { return true; }
 
 double EventCPU::timestamp() const { return _timestamp; }
 
-StreamCPU::StreamCPU(std::shared_ptr<ThreadPool> pool_) : pool(pool_) {}
+StreamCPU::StreamCPU(std::shared_ptr<ghost::ThreadPool> pool_) : pool(pool_) {}
 
 StreamCPU::~StreamCPU() {}
 
-void StreamCPU::sync() { pool->sync(); }
+// CPU dispatch is synchronous: by the time FunctionCPU::execute returns, all
+// work has completed via ThreadPool::parallel(). sync() and record() therefore
+// have no work to wait on.
+void StreamCPU::sync() {}
 
 std::shared_ptr<Event> StreamCPU::record() {
-  pool->sync();
   return std::make_shared<EventCPU>();
 }
 
@@ -533,9 +444,15 @@ void ImageCPU::copy(const ghost::Stream& s, const ghost::Image& src,
   }
 }
 
-DeviceCPU::DeviceCPU(const SharedContext& share) : cores(getNumberOfCores()) {}
+DeviceCPU::DeviceCPU(const SharedContext& share)
+    : cores(getNumberOfCores()), pool(ghost::ThreadPool::createDefault()) {}
 
-DeviceCPU::DeviceCPU(const GpuInfo&) : cores(getNumberOfCores()) {}
+DeviceCPU::DeviceCPU(const GpuInfo&)
+    : cores(getNumberOfCores()), pool(ghost::ThreadPool::createDefault()) {}
+
+DeviceCPU::DeviceCPU(std::shared_ptr<ghost::ThreadPool> p)
+    : cores(getNumberOfCores()),
+      pool(p ? p : ghost::ThreadPool::createDefault()) {}
 
 ghost::Library DeviceCPU::loadLibraryFromText(const std::string& text,
                                               const CompilerOptions& options,
@@ -562,8 +479,7 @@ SharedContext DeviceCPU::shareContext() const {
 }
 
 ghost::Stream DeviceCPU::createStream() const {
-  auto ptr = std::make_shared<implementation::StreamCPU>(
-      std::make_shared<ThreadPoolDefault>(*this));
+  auto ptr = std::make_shared<implementation::StreamCPU>(pool);
   return ghost::Stream(ptr);
 }
 
@@ -681,15 +597,25 @@ Attribute DeviceCPU::getAttribute(DeviceAttributeId what) const {
 DeviceCPU::DeviceCPU(const SharedContext& share)
     : Device(std::make_shared<implementation::DeviceCPU>(share)) {
   auto cpu = static_cast<implementation::DeviceCPU*>(impl().get());
-  setDefaultStream(std::make_shared<implementation::StreamCPU>(
-      std::make_shared<implementation::ThreadPoolDefault>(*cpu)));
+  setDefaultStream(std::make_shared<implementation::StreamCPU>(cpu->pool));
 }
 
 DeviceCPU::DeviceCPU(const GpuInfo& info)
     : Device(std::make_shared<implementation::DeviceCPU>(info)) {
   auto cpu = static_cast<implementation::DeviceCPU*>(impl().get());
-  setDefaultStream(std::make_shared<implementation::StreamCPU>(
-      std::make_shared<implementation::ThreadPoolDefault>(*cpu)));
+  setDefaultStream(std::make_shared<implementation::StreamCPU>(cpu->pool));
+}
+
+DeviceCPU::DeviceCPU(std::shared_ptr<ghost::ThreadPool> pool)
+    : Device(std::make_shared<implementation::DeviceCPU>(pool)) {
+  auto cpu = static_cast<implementation::DeviceCPU*>(impl().get());
+  setDefaultStream(std::make_shared<implementation::StreamCPU>(cpu->pool));
+}
+
+void DeviceCPU::setThreadPool(std::shared_ptr<ghost::ThreadPool> pool) {
+  auto cpu = static_cast<implementation::DeviceCPU*>(impl().get());
+  cpu->setThreadPool(pool ? pool : ghost::ThreadPool::createDefault());
+  setDefaultStream(std::make_shared<implementation::StreamCPU>(cpu->pool));
 }
 
 Library DeviceCPU::loadLibraryFromFunctions(

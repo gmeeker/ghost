@@ -20,6 +20,7 @@
 #include <ghost/gpu_info.h>
 #include <ghost/image.h>
 #include <ghost/implementation/impl_function.h>
+#include <ghost/thread_pool.h>
 #include <stdlib.h>
 
 #include <cstdint>
@@ -366,6 +367,15 @@ class Device {
                                    ghost::Image& image) const = 0;
 
   virtual Attribute getAttribute(DeviceAttributeId what) const = 0;
+
+  /// @brief Get the thread pool used by this device for CPU-side parallel
+  /// dispatch.
+  ///
+  /// CPU backends return the active pool. GPU backends return @c nullptr by
+  /// default; subclasses may override.
+  virtual std::shared_ptr<ghost::ThreadPool> threadPool() const {
+    return nullptr;
+  }
 
  private:
   size_t _poolSize;

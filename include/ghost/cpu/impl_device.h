@@ -17,70 +17,13 @@
 
 #include <ghost/cpu/impl_function.h>
 #include <ghost/device.h>
-
-#ifdef __APPLE_CC__
-#include <dispatch/dispatch.h>
-#endif
+#include <ghost/thread_pool.h>
 
 #include <set>
-
-#ifdef __APPLE_CC__
-#define GHOST_USE_STD_THREAD 0
-#else
-#define GHOST_USE_STD_THREAD 1
-#endif
-#if GHOST_USE_STD_THREAD
-#include <condition_variable>
-#include <mutex>
-#include <queue>
-#include <thread>
-#endif
 
 namespace ghost {
 namespace implementation {
 class DeviceCPU;
-
-class ThreadWork {
- public:
-  FunctionCPU::Type function;
-  std::vector<Attribute> args;
-  size_t i, count;
-  bool quit;
-};
-
-class ThreadPool {
- public:
-  virtual ~ThreadPool() {}
-
-  virtual void thread(size_t count, FunctionCPU::Type function,
-                      const std::vector<Attribute>& args) = 0;
-
-  virtual void sync() {}
-};
-
-class ThreadPoolDefault : public ThreadPool {
- public:
-  const DeviceCPU& dev;
-#if GHOST_USE_STD_THREAD
-  std::vector<std::thread> threads;
-  std::queue<ThreadWork> work;
-  std::mutex mutex;
-  std::condition_variable cv;
-#elif __APPLE_CC__
-  dispatch_queue_t queue;
-  dispatch_group_t group;
-#endif
-
-  ThreadPoolDefault(const DeviceCPU& dev_);
-  ~ThreadPoolDefault();
-
-  virtual void thread(size_t count, FunctionCPU::Type function,
-                      const std::vector<Attribute>& args) override;
-  virtual void sync() override;
-
- private:
-  void worker();
-};
 
 class EventCPU : public Event {
  public:
@@ -95,9 +38,9 @@ class EventCPU : public Event {
 
 class StreamCPU : public Stream {
  public:
-  std::shared_ptr<ThreadPool> pool;
+  std::shared_ptr<ghost::ThreadPool> pool;
 
-  StreamCPU(std::shared_ptr<ThreadPool> pool_);
+  StreamCPU(std::shared_ptr<ghost::ThreadPool> pool_);
   ~StreamCPU();
 
   virtual void sync() override;
@@ -194,9 +137,17 @@ class ImageCPU : public Image {
 class DeviceCPU : public Device {
  public:
   size_t cores;
+  std::shared_ptr<ghost::ThreadPool> pool;
 
   DeviceCPU(const SharedContext& share);
   DeviceCPU(const GpuInfo& info);
+  DeviceCPU(std::shared_ptr<ghost::ThreadPool> pool);
+
+  std::shared_ptr<ghost::ThreadPool> threadPool() const override {
+    return pool;
+  }
+
+  void setThreadPool(std::shared_ptr<ghost::ThreadPool> p) { pool = p; }
 
   virtual ghost::Library loadLibraryFromText(
       const std::string& text,

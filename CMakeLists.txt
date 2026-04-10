@@ -244,6 +244,7 @@ if(GTest_FOUND)
     test/test_image.cpp
     test/test_kernel.cpp
     test/test_stream.cpp
+    test/test_thread_pool.cpp
   )
   target_link_libraries(TestGhostGTest ${PROJECT_NAME} GTest::gtest_main)
   include(GoogleTest)
