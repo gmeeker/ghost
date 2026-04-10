@@ -20,6 +20,7 @@
 #include <ghost/directx/impl_function.h>
 
 #include <cstring>
+#include <stdexcept>
 
 namespace ghost {
 namespace implementation {
@@ -155,10 +156,27 @@ void FunctionDirectX::execute(const ghost::Stream& s,
     }
   }
 
+  if (launchArgs.requiredSubgroupSize() != 0) {
+    uint32_t actual = preferredSubgroupSize();
+    if (launchArgs.requiredSubgroupSize() != actual) {
+      throw std::invalid_argument(
+          "DirectX: requiredSubgroupSize (" +
+          std::to_string(launchArgs.requiredSubgroupSize()) +
+          ") does not match wave size (" + std::to_string(actual) + ")");
+    }
+  }
+
   // Dispatch compute work
-  cmdList->Dispatch(launchArgs.dims() >= 1 ? (UINT)launchArgs.count(0) : 1,
-                    launchArgs.dims() >= 2 ? (UINT)launchArgs.count(1) : 1,
-                    launchArgs.dims() >= 3 ? (UINT)launchArgs.count(2) : 1);
+  UINT gx = launchArgs.dims() >= 1
+                ? (UINT)narrowDim(launchArgs.count(0), "global_size[0] / count")
+                : 1;
+  UINT gy = launchArgs.dims() >= 2
+                ? (UINT)narrowDim(launchArgs.count(1), "global_size[1] / count")
+                : 1;
+  UINT gz = launchArgs.dims() >= 3
+                ? (UINT)narrowDim(launchArgs.count(2), "global_size[2] / count")
+                : 1;
+  cmdList->Dispatch(gx, gy, gz);
 
   // UAV barrier for compute shader writes
   D3D12_RESOURCE_BARRIER uavBarrier = {};
@@ -174,12 +192,22 @@ Attribute FunctionDirectX::getAttribute(FunctionAttributeId what) const {
     case kFunctionRequiredWorkSize:
       return Attribute((int32_t)0, (int32_t)0, (int32_t)0);
     case kFunctionPreferredWorkMultiple:
-      return Attribute((int32_t)32);  // Typical warp/wavefront size
+      return Attribute((int32_t)preferredSubgroupSize());
     case kFunctionThreadWidth:
-      return Attribute((int32_t)32);
+      return Attribute((int32_t)preferredSubgroupSize());
     default:
       return Attribute();
   }
+}
+
+uint32_t FunctionDirectX::preferredSubgroupSize() const {
+  D3D12_FEATURE_DATA_D3D12_OPTIONS1 opts1 = {};
+  if (SUCCEEDED(_dev.device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1,
+                                                 &opts1, sizeof(opts1))) &&
+      opts1.WaveLaneCountMin > 0) {
+    return opts1.WaveLaneCountMin;
+  }
+  return 32;
 }
 
 // ---------------------------------------------------------------------------

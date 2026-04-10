@@ -23,6 +23,8 @@
 #include <ghost/metal/impl_function.h>
 
 #include <algorithm>
+#include <stdexcept>
+#include <string>
 
 namespace ghost {
 namespace implementation {
@@ -298,6 +300,17 @@ void FunctionMetal::execute(const ghost::Stream &s,
     [computeEncoder setBytes:params.get()
                       length:params.size()
                      atIndex:bufferIndex++];
+  }
+
+  if (launchArgs.requiredSubgroupSize() != 0) {
+    NSUInteger actual = pipeline.get().threadExecutionWidth;
+    if ((NSUInteger)launchArgs.requiredSubgroupSize() != actual) {
+      throw std::invalid_argument(
+          "Metal: requiredSubgroupSize (" +
+          std::to_string(launchArgs.requiredSubgroupSize()) +
+          ") does not match pipeline threadExecutionWidth (" +
+          std::to_string(actual) + ")");
+    }
   }
 
   MTLSize threadgroupCount = {launchArgs.count(0), launchArgs.count(1),

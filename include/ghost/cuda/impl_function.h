@@ -34,6 +34,8 @@ class FunctionCUDA : public Function {
 
   virtual Attribute getAttribute(FunctionAttributeId what) const override;
 
+  virtual uint32_t preferredSubgroupSize() const override;
+
  private:
   const DeviceCUDA& _dev;
 };

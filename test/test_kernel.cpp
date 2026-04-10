@@ -717,4 +717,84 @@ TEST_P(KernelTest, SetGlobals) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Subgroup sizing
+// ---------------------------------------------------------------------------
+
+TEST_P(KernelTest, PreferredSubgroupSize) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  uint32_t width = fn.preferredSubgroupSize();
+  // CPU is 1; every other backend should report a real warp/SIMD width.
+  // Common values: 1 (CPU), 32 (NVIDIA / Intel), 64 (AMD), 32 or 16 (Apple).
+  EXPECT_GT(width, 0u);
+  EXPECT_LE(width, 128u);
+}
+
+TEST_P(KernelTest, RequireMatchingSubgroupSize) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, -1.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+  auto inBuf = device().allocateBuffer(safeN * sizeof(float));
+  auto outBuf = device().allocateBuffer(safeN * sizeof(float));
+  inBuf.copy(stream(), input.data(), safeN * sizeof(float));
+  outBuf.copy(stream(), output.data(), safeN * sizeof(float));
+
+  LaunchArgs la;
+  la.global_size(static_cast<uint32_t>(N))
+      .local_size(localSize)
+      .requireSubgroupSize(fn.preferredSubgroupSize());
+
+  // Vulkan currently does not enable VK_EXT_subgroup_size_control, so it
+  // throws unsupported_error for any non-zero requireSubgroupSize.
+  if (backend() == Backend::Vulkan) {
+    EXPECT_THROW(fn(stream(), la, outBuf, inBuf, 1.5f),
+                 ghost::unsupported_error);
+    return;
+  }
+
+  EXPECT_NO_THROW(fn(stream(), la, outBuf, inBuf, 1.5f));
+  outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
+  stream().sync();
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 1.5f) << "index " << i;
+  }
+}
+
+TEST_P(KernelTest, RequireWrongSubgroupSizeThrows) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  // Pick a value guaranteed not to match any real warp/SIMD width.
+  uint32_t bogus = fn.preferredSubgroupSize() + 1;
+  if (bogus == 1) bogus = 2;  // CPU edge case
+
+  auto inBuf = device().allocateBuffer(64 * sizeof(float));
+  auto outBuf = device().allocateBuffer(64 * sizeof(float));
+
+  LaunchArgs la;
+  la.global_size(64u).local_size(64u).requireSubgroupSize(bogus);
+
+  // Vulkan throws unsupported_error (extension not enabled). Other backends
+  // throw std::invalid_argument from the mismatch check.
+  EXPECT_THROW(fn(stream(), la, outBuf, inBuf, 1.0f), std::exception);
+}
+
 GHOST_INSTANTIATE_KERNEL_TESTS(KernelTest);

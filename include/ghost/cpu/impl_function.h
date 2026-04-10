@@ -37,6 +37,8 @@ class FunctionCPU : public Function {
 
   virtual Attribute getAttribute(FunctionAttributeId what) const override;
 
+  virtual uint32_t preferredSubgroupSize() const override { return 1; }
+
  private:
   const DeviceCPU& _dev;
 };

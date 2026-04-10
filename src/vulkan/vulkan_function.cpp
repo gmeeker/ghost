@@ -20,6 +20,7 @@
 #include <ghost/vulkan/impl_function.h>
 
 #include <cstring>
+#include <stdexcept>
 
 namespace ghost {
 namespace implementation {
@@ -398,10 +399,23 @@ void FunctionVulkan::execute(const ghost::Stream& s,
                        (uint32_t)pushData.size(), pushData.data());
   }
 
-  vkCmdDispatch(stream.commandBuffer,
-                launchArgs.dims() >= 1 ? (uint32_t)launchArgs.count(0) : 1,
-                launchArgs.dims() >= 2 ? (uint32_t)launchArgs.count(1) : 1,
-                launchArgs.dims() >= 3 ? (uint32_t)launchArgs.count(2) : 1);
+  if (launchArgs.requiredSubgroupSize() != 0) {
+    // VK_EXT_subgroup_size_control is not currently enabled at device
+    // creation; honoring this would require recreating the pipeline with
+    // VkPipelineShaderStageRequiredSubgroupSizeCreateInfo.
+    throw ghost::unsupported_error();
+  }
+
+  uint32_t gx = launchArgs.dims() >= 1
+                    ? narrowDim(launchArgs.count(0), "global_size[0] / count")
+                    : 1;
+  uint32_t gy = launchArgs.dims() >= 2
+                    ? narrowDim(launchArgs.count(1), "global_size[1] / count")
+                    : 1;
+  uint32_t gz = launchArgs.dims() >= 3
+                    ? narrowDim(launchArgs.count(2), "global_size[2] / count")
+                    : 1;
+  vkCmdDispatch(stream.commandBuffer, gx, gy, gz);
 
   // Memory barrier for compute shader writes
   VkMemoryBarrier barrier = {};
@@ -423,13 +437,25 @@ Attribute FunctionVulkan::getAttribute(FunctionAttributeId what) const {
     case kFunctionRequiredWorkSize:
       return Attribute((int32_t)0, (int32_t)0, (int32_t)0);
     case kFunctionPreferredWorkMultiple:
-      // Typical subgroup size for most Vulkan GPUs
-      return Attribute((int32_t)32);
+      return Attribute((int32_t)preferredSubgroupSize());
     case kFunctionThreadWidth:
-      return Attribute((int32_t)32);
+      return Attribute((int32_t)preferredSubgroupSize());
     default:
       return Attribute();
   }
+}
+
+uint32_t FunctionVulkan::preferredSubgroupSize() const {
+  // VkPhysicalDeviceSubgroupProperties is core in Vulkan 1.1; the device is
+  // created with VK_API_VERSION_1_2 so vkGetPhysicalDeviceProperties2 is
+  // available.
+  VkPhysicalDeviceSubgroupProperties subgroupProps = {};
+  subgroupProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+  VkPhysicalDeviceProperties2 props2 = {};
+  props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+  props2.pNext = &subgroupProps;
+  vkGetPhysicalDeviceProperties2(_dev.physicalDevice, &props2);
+  return subgroupProps.subgroupSize ? subgroupProps.subgroupSize : 32u;
 }
 
 // ---------------------------------------------------------------------------

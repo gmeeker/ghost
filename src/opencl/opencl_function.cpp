@@ -116,6 +116,16 @@ void FunctionOpenCL::execute(const ghost::Stream& s,
     }
   }
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
+  if (launchArgs.requiredSubgroupSize() != 0) {
+    uint32_t actual = preferredSubgroupSize();
+    if (launchArgs.requiredSubgroupSize() != actual) {
+      throw std::invalid_argument(
+          "OpenCL: requiredSubgroupSize (" +
+          std::to_string(launchArgs.requiredSubgroupSize()) +
+          ") does not match kernel subgroup width (" + std::to_string(actual) +
+          ")");
+    }
+  }
   opencl::ptr<cl_event> outEvent;
   std::vector<cl_event> waitEvents;
   size_t global_size[3];
@@ -125,7 +135,7 @@ void FunctionOpenCL::execute(const ghost::Stream& s,
     local_size[i] = launchArgs.local_size()[i];
   }
   err = clEnqueueNDRangeKernel(
-      stream_impl->queue, kernel, launchArgs.dims(), NULL, global_size,
+      stream_impl->queue, kernel, (cl_uint)launchArgs.dims(), NULL, global_size,
       launchArgs.is_local_defined() ? local_size : nullptr, waitEvents.size(),
       waitEvents.empty() ? nullptr : &waitEvents[0], &outEvent);
   checkError(err);
@@ -194,6 +204,25 @@ Attribute FunctionOpenCL::getAttribute(FunctionAttributeId what) const {
     default:
       return Attribute();
   }
+}
+
+uint32_t FunctionOpenCL::preferredSubgroupSize() const {
+  std::vector<cl_device_id> devices;
+  cl_int err;
+  size_t numDevs;
+  err =
+      clGetContextInfo(_dev.context, CL_CONTEXT_DEVICES, 0, nullptr, &numDevs);
+  checkError(err);
+  numDevs /= sizeof(cl_device_id);
+  devices.resize(numDevs);
+  err = clGetContextInfo(_dev.context, CL_CONTEXT_DEVICES,
+                         numDevs * sizeof(cl_device_id), &devices[0], nullptr);
+  checkError(err);
+  size_t v = 0;
+  checkError(clGetKernelWorkGroupInfo(
+      kernel, devices[0], CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE,
+      sizeof(v), &v, nullptr));
+  return (uint32_t)v;
 }
 
 LibraryOpenCL::LibraryOpenCL(const DeviceOpenCL& dev) : program(0), _dev(dev) {}

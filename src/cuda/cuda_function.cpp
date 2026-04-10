@@ -163,11 +163,25 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
     }
   }
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  if (launchArgs.requiredSubgroupSize() != 0) {
+    int warpSize = 0;
+    checkError(cuDeviceGetAttribute(&warpSize, CU_DEVICE_ATTRIBUTE_WARP_SIZE,
+                                    _dev.device));
+    if ((int)launchArgs.requiredSubgroupSize() != warpSize) {
+      throw std::invalid_argument(
+          "CUDA: requiredSubgroupSize must equal warp size (" +
+          std::to_string(warpSize) + ")");
+    }
+  }
+  static const char* kDimNames[3] = {"global_size[0]", "global_size[1]",
+                                     "global_size[2]"};
+  static const char* kLocalNames[3] = {"local_size[0]", "local_size[1]",
+                                       "local_size[2]"};
   unsigned int grid_size[3];
   unsigned int local_size[3];
   for (size_t i = 0; i < 3; i++) {
-    grid_size[i] = launchArgs.count(i);
-    local_size[i] = launchArgs.local_size()[i];
+    grid_size[i] = narrowDim(launchArgs.count(i), kDimNames[i]);
+    local_size[i] = narrowDim(launchArgs.local_size()[i], kLocalNames[i]);
   }
   if (launchArgs.is_cooperative()) {
     err = cuLaunchCooperativeKernel(kernel, grid_size[0], grid_size[1],
@@ -230,6 +244,13 @@ Attribute FunctionCUDA::getAttribute(FunctionAttributeId what) const {
     default:
       return Attribute();
   }
+}
+
+uint32_t FunctionCUDA::preferredSubgroupSize() const {
+  int v = 0;
+  checkError(
+      cuDeviceGetAttribute(&v, CU_DEVICE_ATTRIBUTE_WARP_SIZE, _dev.device));
+  return (uint32_t)v;
 }
 
 LibraryCUDA::LibraryCUDA(const DeviceCUDA& dev, bool retainBinary)

@@ -32,23 +32,29 @@ namespace ghost {
 /// @endcode
 ///
 /// If local_size is not explicitly set, the backend chooses a default.
+///
+/// Sizes are stored as @c size_t so very large 1D dispatches (>2^32 elements)
+/// are expressible. Backends that take 32-bit dispatch dimensions natively
+/// (CUDA, Vulkan, DirectX) narrow at the dispatch boundary and throw
+/// @c std::overflow_error if a value would be truncated.
 class LaunchArgs {
  private:
-  uint32_t _dims;
-  uint32_t _global_size[3];
-  uint32_t _local_size[3];
+  size_t _dims;
+  size_t _global_size[3];
+  size_t _local_size[3];
+  uint32_t _requiredSubgroupSize;
   bool _local_defined;
   bool _cooperative;
 
  public:
   /// @brief Get the number of dimensions (1, 2, or 3).
-  uint32_t dims() const { return _dims; }
+  size_t dims() const { return _dims; }
 
   /// @brief Get the global work size array (3 elements, unused dims are 1).
-  const uint32_t* global_size() const { return _global_size; }
+  const size_t* global_size() const { return _global_size; }
 
   /// @brief Get the local work size array (3 elements, unused dims are 1).
-  const uint32_t* local_size() const { return _local_size; }
+  const size_t* local_size() const { return _local_size; }
 
   /// @brief Check whether local_size was explicitly set.
   bool is_local_defined() const { return _local_defined; }
@@ -56,24 +62,31 @@ class LaunchArgs {
   /// @brief Check whether cooperative launch is enabled.
   bool is_cooperative() const { return _cooperative; }
 
+  /// @brief Required subgroup size, or 0 if not set.
+  uint32_t requiredSubgroupSize() const { return _requiredSubgroupSize; }
+
   /// @brief Compute the number of work groups in dimension @p i.
   /// @param i Dimension index (0, 1, or 2).
   /// @return Ceiling division of global_size[i] by local_size[i].
-  size_t count(uint32_t i) const {
-    return size_t((global_size()[i] + local_size()[i] - 1) / local_size()[i]);
+  size_t count(size_t i) const {
+    return (global_size()[i] + local_size()[i] - 1) / local_size()[i];
   }
 
   /// @brief Compute the total number of work groups across all dimensions.
   size_t count() const {
     size_t v = 1;
-    for (uint32_t i = 0; i < dims(); i++) {
+    for (size_t i = 0; i < dims(); i++) {
       v *= count(i);
     }
     return v;
   }
 
   /// @brief Construct with default values (0 dimensions, all sizes 1).
-  LaunchArgs() : _dims(0), _local_defined(false), _cooperative(false) {
+  LaunchArgs()
+      : _dims(0),
+        _requiredSubgroupSize(0),
+        _local_defined(false),
+        _cooperative(false) {
     _global_size[0] = 1;
     _global_size[1] = 1;
     _global_size[2] = 1;
@@ -86,20 +99,20 @@ class LaunchArgs {
   /// Set the global work size for 1D, 2D, or 3D dispatch. Returns @c *this for
   /// chaining.
   /// @{
-  LaunchArgs& global_size(uint32_t v0) {
+  LaunchArgs& global_size(size_t v0) {
     _dims = 1;
     _global_size[0] = v0;
     return *this;
   }
 
-  LaunchArgs& global_size(uint32_t v0, uint32_t v1) {
+  LaunchArgs& global_size(size_t v0, size_t v1) {
     _dims = 2;
     _global_size[0] = v0;
     _global_size[1] = v1;
     return *this;
   }
 
-  LaunchArgs& global_size(uint32_t v0, uint32_t v1, uint32_t v2) {
+  LaunchArgs& global_size(size_t v0, size_t v1, size_t v2) {
     _dims = 3;
     _global_size[0] = v0;
     _global_size[1] = v1;
@@ -113,14 +126,14 @@ class LaunchArgs {
   /// Set the local (work-group) size for 1D, 2D, or 3D dispatch.
   /// Returns @c *this for chaining.
   /// @{
-  LaunchArgs& local_size(uint32_t v0) {
+  LaunchArgs& local_size(size_t v0) {
     _dims = 1;
     _local_size[0] = v0;
     _local_defined = true;
     return *this;
   }
 
-  LaunchArgs& local_size(uint32_t v0, uint32_t v1) {
+  LaunchArgs& local_size(size_t v0, size_t v1) {
     _dims = 2;
     _local_size[0] = v0;
     _local_size[1] = v1;
@@ -128,7 +141,7 @@ class LaunchArgs {
     return *this;
   }
 
-  LaunchArgs& local_size(uint32_t v0, uint32_t v1, uint32_t v2) {
+  LaunchArgs& local_size(size_t v0, size_t v1, size_t v2) {
     _dims = 3;
     _local_size[0] = v0;
     _local_size[1] = v1;
@@ -148,6 +161,23 @@ class LaunchArgs {
   /// @return @c *this for chaining.
   LaunchArgs& cooperative(bool enable = true) {
     _cooperative = enable;
+    return *this;
+  }
+
+  /// @brief Require the kernel to dispatch with a specific subgroup size.
+  ///
+  /// Backends validate the request against what the compiled pipeline can
+  /// actually do:
+  /// - Vulkan: requires @c VK_EXT_subgroup_size_control; throws
+  ///   @c ghost::unsupported_error if the extension is not available.
+  /// - Metal / CUDA / OpenCL / DirectX / CPU: validated against the kernel's
+  ///   actual subgroup width; throws @c std::invalid_argument on mismatch.
+  ///
+  /// Pass 0 to clear the requirement.
+  /// @param n Required subgroup size, or 0 for no requirement.
+  /// @return @c *this for chaining.
+  LaunchArgs& requireSubgroupSize(uint32_t n) {
+    _requiredSubgroupSize = n;
     return *this;
   }
 };
@@ -199,6 +229,15 @@ class Function {
   /// @param what The attribute to query (e.g., kFunctionMaxThreads).
   /// @return The attribute value.
   Attribute getAttribute(FunctionAttributeId what) const;
+
+  /// @brief The subgroup (warp / SIMD-group / wavefront) width this kernel
+  /// will use when dispatched.
+  ///
+  /// This may differ from the device-wide subgroup width: Metal and Vulkan
+  /// can lock a specific size at pipeline creation, and that locked value is
+  /// what the kernel actually sees. Returns 1 for backends without subgroup
+  /// execution (CPU).
+  uint32_t preferredSubgroupSize() const;
 
  private:
   std::shared_ptr<implementation::Function> _impl;

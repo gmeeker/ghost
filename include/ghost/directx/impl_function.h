@@ -42,6 +42,8 @@ class FunctionDirectX : public Function {
 
   virtual Attribute getAttribute(FunctionAttributeId what) const override;
 
+  virtual uint32_t preferredSubgroupSize() const override;
+
  private:
   const DeviceDirectX& _dev;
   Microsoft::WRL::ComPtr<ID3D12PipelineState> _pso;

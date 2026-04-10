@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <stdexcept>
 #include <vector>
 
 #if WIN32
@@ -43,6 +44,10 @@ FunctionCPU::FunctionCPU(const DeviceCPU& dev, Type f)
 
 void FunctionCPU::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                           const std::vector<Attribute>& args) {
+  if (launchArgs.requiredSubgroupSize() != 0 &&
+      launchArgs.requiredSubgroupSize() != 1) {
+    throw std::invalid_argument("CPU backend: requiredSubgroupSize must be 1");
+  }
   size_t count = launchArgs.count();
   count = std::min(count, _dev.cores);
   auto stream = static_cast<const StreamCPU*>(s.impl().get());

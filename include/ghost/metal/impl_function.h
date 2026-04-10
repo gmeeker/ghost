@@ -48,6 +48,10 @@ class FunctionMetal : public Function {
                                const std::vector<Attribute>& args) override;
 
   virtual Attribute getAttribute(FunctionAttributeId what) const override;
+
+  virtual uint32_t preferredSubgroupSize() const override {
+    return (uint32_t)pipeline.get().threadExecutionWidth;
+  }
 };
 
 class LibraryMetal : public Library {

@@ -46,6 +46,10 @@ void Function::executeIndirect(const ghost::Stream& s,
   la.global_size(counts[0], counts[1], counts[2]);
   execute(s, la, args);
 }
+
+uint32_t Function::preferredSubgroupSize() const {
+  return (uint32_t)getAttribute(kFunctionThreadWidth).asInt();
+}
 }  // namespace implementation
 
 Function::Function(std::shared_ptr<implementation::Function> impl)
@@ -58,6 +62,10 @@ void Function::execute(const Stream& s, const LaunchArgs& launchArgs,
 
 Attribute Function::getAttribute(FunctionAttributeId what) const {
   return _impl->getAttribute(what);
+}
+
+uint32_t Function::preferredSubgroupSize() const {
+  return _impl->preferredSubgroupSize();
 }
 
 Library::Library(std::shared_ptr<implementation::Library> impl) : _impl(impl) {}

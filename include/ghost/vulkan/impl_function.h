@@ -39,6 +39,8 @@ class FunctionVulkan : public Function {
 
   virtual Attribute getAttribute(FunctionAttributeId what) const override;
 
+  virtual uint32_t preferredSubgroupSize() const override;
+
  private:
   void createPipeline(const std::vector<Attribute>& args);
   void buildSpecializationData(const std::vector<Attribute>& specConstants);

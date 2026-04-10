@@ -225,3 +225,21 @@ TEST(LaunchArgsTest, Cooperative) {
   la.cooperative(false);
   EXPECT_FALSE(la.is_cooperative());
 }
+
+TEST(LaunchArgsTest, GlobalSize64Bit) {
+  // Element counts beyond UINT32_MAX must round-trip through LaunchArgs
+  // intact; backends are responsible for narrowing at dispatch time.
+  LaunchArgs la;
+  const size_t big = (size_t(1) << 33) + 7;
+  la.global_size(big);
+  EXPECT_EQ(la.global_size()[0], big);
+}
+
+TEST(LaunchArgsTest, RequiredSubgroupSizeDefault) {
+  LaunchArgs la;
+  EXPECT_EQ(la.requiredSubgroupSize(), 0u);
+  la.requireSubgroupSize(32);
+  EXPECT_EQ(la.requiredSubgroupSize(), 32u);
+  la.requireSubgroupSize(0);
+  EXPECT_EQ(la.requiredSubgroupSize(), 0u);
+}

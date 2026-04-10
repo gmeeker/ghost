@@ -19,7 +19,9 @@
 #include <ghost/exception.h>
 #include <stdlib.h>
 
+#include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -130,6 +132,27 @@ class Function {
                                const std::vector<Attribute>& args);
 
   virtual Attribute getAttribute(FunctionAttributeId what) const = 0;
+
+  /// @brief Subgroup width the compiled pipeline will actually use.
+  ///
+  /// Default implementation returns the value of @c kFunctionThreadWidth from
+  /// @ref getAttribute. Backends where the pipeline can lock a different
+  /// subgroup size (Metal, Vulkan with @c VK_EXT_subgroup_size_control)
+  /// override this.
+  virtual uint32_t preferredSubgroupSize() const;
+
+  /// @brief Helper to narrow a @c size_t dispatch dimension to @c uint32_t.
+  ///
+  /// Backends that pass dispatch dimensions to native APIs taking 32-bit
+  /// integers (CUDA, Vulkan, DirectX) call this at the dispatch boundary.
+  /// @throws std::overflow_error if @p v exceeds @c UINT32_MAX.
+  static uint32_t narrowDim(size_t v, const char* dim) {
+    if (v > std::numeric_limits<uint32_t>::max()) {
+      throw std::overflow_error(std::string("LaunchArgs ") + dim +
+                                " exceeds uint32_t: " + std::to_string(v));
+    }
+    return static_cast<uint32_t>(v);
+  }
 
   /// @brief Helper to build an Attribute vector from variadic arguments.
   /// @{
