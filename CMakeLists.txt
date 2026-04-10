@@ -127,6 +127,7 @@ set(GHOST_PUBLIC_HEADERS
     include/ghost/vulkan/exception.h
     include/ghost/vulkan/impl_device.h
     include/ghost/vulkan/impl_function.h
+    include/ghost/vulkan/ptr.h
     include/ghost/implementation/impl_device.h
     include/ghost/implementation/impl_function.h
   )

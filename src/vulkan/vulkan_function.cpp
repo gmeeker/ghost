@@ -35,9 +35,9 @@ FunctionVulkan::FunctionVulkan(const DeviceVulkan& dev, VkShaderModule module,
     : _dev(dev),
       _module(module),
       _entryPoint(entryPoint),
-      _descriptorSetLayout(VK_NULL_HANDLE),
-      _pipelineLayout(VK_NULL_HANDLE),
-      _pipeline(VK_NULL_HANDLE),
+      _descriptorSetLayout(dev.device),
+      _pipelineLayout(dev.device),
+      _pipeline(dev.device),
       _pipelineCreated(false),
       _numBuffers(0),
       _numImages(0),
@@ -49,9 +49,9 @@ FunctionVulkan::FunctionVulkan(const DeviceVulkan& dev, VkShaderModule module,
     : _dev(dev),
       _module(module),
       _entryPoint(entryPoint),
-      _descriptorSetLayout(VK_NULL_HANDLE),
-      _pipelineLayout(VK_NULL_HANDLE),
-      _pipeline(VK_NULL_HANDLE),
+      _descriptorSetLayout(dev.device),
+      _pipelineLayout(dev.device),
+      _pipeline(dev.device),
       _pipelineCreated(false),
       _numBuffers(0),
       _numImages(0),
@@ -105,14 +105,8 @@ void FunctionVulkan::buildSpecializationData(
   }
 }
 
-FunctionVulkan::~FunctionVulkan() {
-  if (_pipeline != VK_NULL_HANDLE)
-    vkDestroyPipeline(_dev.device, _pipeline, nullptr);
-  if (_pipelineLayout != VK_NULL_HANDLE)
-    vkDestroyPipelineLayout(_dev.device, _pipelineLayout, nullptr);
-  if (_descriptorSetLayout != VK_NULL_HANDLE)
-    vkDestroyDescriptorSetLayout(_dev.device, _descriptorSetLayout, nullptr);
-}
+// ~FunctionVulkan: implicit. _pipeline / _pipelineLayout / _descriptorSetLayout
+// each destroy themselves via their vk::ptr destructors.
 
 void FunctionVulkan::createPipeline(const std::vector<Attribute>& args) {
   // Count argument types to determine layout
@@ -189,11 +183,14 @@ void FunctionVulkan::createPipeline(const std::vector<Attribute>& args) {
   checkError(vkCreateDescriptorSetLayout(_dev.device, &layoutInfo, nullptr,
                                          &_descriptorSetLayout));
 
-  // Create pipeline layout
+  // Create pipeline layout. pSetLayouts wants a const VkDescriptorSetLayout*,
+  // so use a local temporary rather than &_descriptorSetLayout (which would
+  // invoke the destroying operator& overload).
+  VkDescriptorSetLayout setLayout = _descriptorSetLayout;
   VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
   pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
   pipelineLayoutInfo.setLayoutCount = 1;
-  pipelineLayoutInfo.pSetLayouts = &_descriptorSetLayout;
+  pipelineLayoutInfo.pSetLayouts = &setLayout;
 
   VkPushConstantRange pushRange = {};
   if (_pushConstantSize > 0) {
@@ -244,12 +241,14 @@ void FunctionVulkan::execute(const ghost::Stream& s,
 
   stream.begin();
 
-  // Allocate descriptor set
+  // Allocate descriptor set. pSetLayouts wants a const VkDescriptorSetLayout*,
+  // so use a local temporary (see createPipeline for the same pattern).
+  VkDescriptorSetLayout setLayout = _descriptorSetLayout;
   VkDescriptorSetAllocateInfo allocInfo = {};
   allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
   allocInfo.descriptorPool = _dev.descriptorPool;
   allocInfo.descriptorSetCount = 1;
-  allocInfo.pSetLayouts = &_descriptorSetLayout;
+  allocInfo.pSetLayouts = &setLayout;
 
   VkDescriptorSet descriptorSet;
   checkError(vkAllocateDescriptorSets(_dev.device, &allocInfo, &descriptorSet));
@@ -461,12 +460,10 @@ uint32_t FunctionVulkan::preferredSubgroupSize() const {
 // ---------------------------------------------------------------------------
 
 LibraryVulkan::LibraryVulkan(const DeviceVulkan& dev, bool retainBinary)
-    : Library(retainBinary), _dev(dev), _module(VK_NULL_HANDLE) {}
+    : Library(retainBinary), _dev(dev), _module(dev.device) {}
 
-LibraryVulkan::~LibraryVulkan() {
-  if (_module != VK_NULL_HANDLE)
-    vkDestroyShaderModule(_dev.device, _module, nullptr);
-}
+// ~LibraryVulkan: implicit. _module's vk::ptr destructor unloads the
+// shader module.
 
 void LibraryVulkan::loadFromCache(const void* data, size_t length,
                                   const CompilerOptions& options) {
@@ -486,7 +483,7 @@ void LibraryVulkan::loadFromCache(const void* data, size_t length,
           VK_SUCCESS) {
         return;
       }
-      _module = VK_NULL_HANDLE;
+      _module.reset();
     }
   }
 }
@@ -506,7 +503,7 @@ void LibraryVulkan::loadFromData(const void* data, size_t len,
                                  const CompilerOptions& options) {
   // Try cache first
   loadFromCache(data, len, options);
-  if (_module != VK_NULL_HANDLE) return;
+  if ((VkShaderModule)_module != VK_NULL_HANDLE) return;
 
   // SPIR-V data must be uint32-aligned
   VkShaderModuleCreateInfo createInfo = {};

@@ -16,7 +16,7 @@
 #define GHOST_VULKAN_IMPL_FUNCTION_H
 
 #include <ghost/implementation/impl_function.h>
-#include <vulkan/vulkan.h>
+#include <ghost/vulkan/ptr.h>
 
 #include <string>
 #include <vector>
@@ -32,7 +32,6 @@ class FunctionVulkan : public Function {
   FunctionVulkan(const DeviceVulkan& dev, VkShaderModule module,
                  const std::string& entryPoint,
                  const std::vector<Attribute>& specConstants);
-  ~FunctionVulkan();
 
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
@@ -46,12 +45,13 @@ class FunctionVulkan : public Function {
   void buildSpecializationData(const std::vector<Attribute>& specConstants);
 
   const DeviceVulkan& _dev;
+  // Borrowed from the parent LibraryVulkan; not owned here.
   VkShaderModule _module;
   std::string _entryPoint;
 
-  VkDescriptorSetLayout _descriptorSetLayout;
-  VkPipelineLayout _pipelineLayout;
-  VkPipeline _pipeline;
+  vk::ptr<VkDescriptorSetLayout> _descriptorSetLayout;
+  vk::ptr<VkPipelineLayout> _pipelineLayout;
+  vk::ptr<VkPipeline> _pipeline;
   bool _pipelineCreated;
   uint32_t _numBuffers;
   uint32_t _numImages;
@@ -64,7 +64,6 @@ class FunctionVulkan : public Function {
 class LibraryVulkan : public Library {
  public:
   LibraryVulkan(const DeviceVulkan& dev, bool retainBinary = false);
-  ~LibraryVulkan();
 
   void loadFromData(const void* data, size_t len,
                     const CompilerOptions& options);
@@ -82,7 +81,7 @@ class LibraryVulkan : public Library {
                    const CompilerOptions& options) const;
 
   const DeviceVulkan& _dev;
-  VkShaderModule _module;
+  vk::ptr<VkShaderModule> _module;
   std::vector<uint8_t> _spirvData;
 };
 }  // namespace implementation
