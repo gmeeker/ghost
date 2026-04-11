@@ -113,6 +113,7 @@ set(GHOST_PUBLIC_HEADERS
     include/ghost/directx/exception.h
     include/ghost/directx/impl_device.h
     include/ghost/directx/impl_function.h
+    include/ghost/directx/reflect.h
     include/ghost/metal/device.h
     include/ghost/metal/exception.h
     include/ghost/metal/impl_device.h
@@ -128,6 +129,7 @@ set(GHOST_PUBLIC_HEADERS
     include/ghost/vulkan/impl_device.h
     include/ghost/vulkan/impl_function.h
     include/ghost/vulkan/ptr.h
+    include/ghost/vulkan/reflect.h
     include/ghost/implementation/impl_device.h
     include/ghost/implementation/impl_function.h
   )
@@ -162,12 +164,14 @@ set(GHOST_SOURCES
     src/directx/directx_device.cpp
     src/directx/directx_exception.cpp
     src/directx/directx_function.cpp
+    src/directx/directx_reflect.cpp
     src/opencl/opencl_device.cpp
     src/opencl/opencl_exception.cpp
     src/opencl/opencl_function.cpp
     src/vulkan/vulkan_device.cpp
     src/vulkan/vulkan_exception.cpp
     src/vulkan/vulkan_function.cpp
+    src/vulkan/vulkan_reflect.cpp
     ${GHOST_OBJC_SOURCES}
   )
 
@@ -233,6 +237,124 @@ if(NOT GTest_FOUND)
   set(GTest_FOUND TRUE)
 endif()
 option(WITH_SPIRV_ASM "Use spirv-as for SPIR-V generation (simpler build)" ON)
+
+# Locate the DirectX Shader Compiler (dxc). Caches the result in
+# DXC_EXECUTABLE. dxc isn't on PATH on most machines: outside a Visual
+# Studio Developer Command Prompt on Windows, and outside a sourced
+# `setup-env.sh` on Linux/macOS. We search PATH first, then the Vulkan
+# SDK bin dir (LunarG ships dxc on every host platform), then the
+# Windows SDK bin dir on Windows.
+function(ghost_find_dxc)
+  if(DXC_EXECUTABLE)
+    return()
+  endif()
+  find_program(DXC_EXECUTABLE dxc)
+  if(DXC_EXECUTABLE)
+    return()
+  endif()
+
+  # LunarG Vulkan SDK ships dxc at $VULKAN_SDK/bin (or Bin/Bin32 on Windows,
+  # macOS/iOSOpenGL).
+  if(DEFINED ENV{VULKAN_SDK})
+    find_program(DXC_EXECUTABLE dxc
+        HINTS
+            "$ENV{VULKAN_SDK}/bin"
+            "$ENV{VULKAN_SDK}/Bin"
+            "$ENV{VULKAN_SDK}/macOS/bin")
+    if(DXC_EXECUTABLE)
+      return()
+    endif()
+  endif()
+
+  if(NOT CMAKE_HOST_WIN32)
+    return()
+  endif()
+  if(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64")
+    set(_arch arm64)
+  elseif(CMAKE_VS_PLATFORM_NAME STREQUAL "Win32")
+    set(_arch x86)
+  else()
+    set(_arch x64)
+  endif()
+  find_program(DXC_EXECUTABLE dxc
+      HINTS
+          "$ENV{WindowsSdkDir}bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/${_arch}"
+          "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/${_arch}"
+          "$ENV{ProgramFiles}/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/${_arch}")
+endfunction()
+
+# Probe a candidate dxc for SPIR-V CodeGen support. The Windows SDK ships
+# a dxc.exe built without -DENABLE_SPIRV_CODEGEN; the LunarG Vulkan SDK
+# ships one with it. The two are otherwise interchangeable, including in
+# their `-help` text — both advertise the `-spirv` flag, but only the
+# LunarG build can actually act on it. So we probe by running an actual
+# minimal HLSL → SPIR-V compile and checking the exit code.
+function(ghost_dxc_supports_spirv dxc _outVar)
+  set(_probe_hlsl "${CMAKE_CURRENT_BINARY_DIR}/_dxc_probe.hlsl")
+  set(_probe_spv "${CMAKE_CURRENT_BINARY_DIR}/_dxc_probe.spv")
+  file(WRITE "${_probe_hlsl}"
+       "RWStructuredBuffer<float> b : register(u0);\n"
+       "[numthreads(1,1,1)] void m() { b[0] = 1.0; }\n")
+  if(EXISTS "${_probe_spv}")
+    file(REMOVE "${_probe_spv}")
+  endif()
+  execute_process(
+      COMMAND ${dxc} -T cs_6_0 -E m -spirv "${_probe_hlsl}" -Fo "${_probe_spv}"
+      OUTPUT_QUIET
+      ERROR_QUIET
+      RESULT_VARIABLE _rc)
+  if(_rc EQUAL 0 AND EXISTS "${_probe_spv}")
+    set(${_outVar} TRUE PARENT_SCOPE)
+  else()
+    set(${_outVar} FALSE PARENT_SCOPE)
+  endif()
+endfunction()
+
+# Locate a dxc.exe with SPIR-V CodeGen enabled. Caches the result in
+# DXC_SPIRV_EXECUTABLE. Falls back through the same search order as
+# ghost_find_dxc, but probes each candidate and rejects ones built
+# without SPIR-V support (which is the case for the Windows SDK dxc).
+function(ghost_find_dxc_spirv)
+  if(DEFINED DXC_SPIRV_EXECUTABLE_CACHED)
+    return()
+  endif()
+  set(_candidates "")
+
+  # Candidate 1: whatever ghost_find_dxc already found / will find now.
+  ghost_find_dxc()
+  if(DXC_EXECUTABLE)
+    list(APPEND _candidates "${DXC_EXECUTABLE}")
+  endif()
+
+  # Candidate 2: explicitly the Vulkan SDK dxc, even if a different one
+  # was found above (the Windows SDK one is preferred for DXIL but
+  # doesn't support SPIR-V).
+  if(DEFINED ENV{VULKAN_SDK})
+    find_program(_vk_dxc dxc
+        HINTS
+            "$ENV{VULKAN_SDK}/bin"
+            "$ENV{VULKAN_SDK}/Bin"
+            "$ENV{VULKAN_SDK}/macOS/bin"
+        NO_DEFAULT_PATH)
+    if(_vk_dxc)
+      list(APPEND _candidates "${_vk_dxc}")
+    endif()
+    unset(_vk_dxc CACHE)
+  endif()
+
+  list(REMOVE_DUPLICATES _candidates)
+  foreach(_c IN LISTS _candidates)
+    ghost_dxc_supports_spirv("${_c}" _ok)
+    if(_ok)
+      set(DXC_SPIRV_EXECUTABLE "${_c}" CACHE FILEPATH "dxc with SPIR-V CodeGen")
+      set(DXC_SPIRV_EXECUTABLE_CACHED TRUE CACHE INTERNAL "")
+      return()
+    endif()
+  endforeach()
+  set(DXC_SPIRV_EXECUTABLE "DXC_SPIRV_EXECUTABLE-NOTFOUND"
+      CACHE FILEPATH "dxc with SPIR-V CodeGen")
+  set(DXC_SPIRV_EXECUTABLE_CACHED TRUE CACHE INTERNAL "")
+endfunction()
 
 if(GTest_FOUND)
   add_executable(TestGhostGTest
@@ -362,12 +484,12 @@ if(GTest_FOUND)
             COMMENT "Assembling Vulkan SPIR-V from .spvasm")
       endif()
     else()
-      find_program(DXC_EXECUTABLE dxc)
-      if(DXC_EXECUTABLE)
+      ghost_find_dxc_spirv()
+      if(DXC_SPIRV_EXECUTABLE)
         set(HLSL_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/test/kernels/test_kernel.hlsl)
         add_custom_command(
             OUTPUT ${VULKAN_SPV_OUTPUT}
-            COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E mult_const_f -spirv
+            COMMAND ${DXC_SPIRV_EXECUTABLE} -T cs_6_0 -E mult_const_f -spirv
                     -fspv-target-env=vulkan1.1 ${HLSL_SOURCE} -Fo ${VULKAN_SPV_OUTPUT}
             DEPENDS ${HLSL_SOURCE}
             COMMENT "Compiling HLSL to Vulkan SPIR-V")
@@ -388,13 +510,49 @@ if(GTest_FOUND)
       target_compile_definitions(TestGhostGTest PRIVATE
           GHOST_TEST_VULKAN_SPIRV="ghost_test_vulkan_spirv.h")
     endif()
+
+    # Additional opportunistic build: compile the HLSL kernel through a
+    # SPIR-V-capable dxc to verify the HLSL → SPIR-V → Vulkan path
+    # end-to-end. Skips silently if no SPIR-V-capable dxc is available;
+    # the hand-written .spvasm test above remains the always-on baseline.
+    ghost_find_dxc_spirv()
+    if(DXC_SPIRV_EXECUTABLE)
+      set(VULKAN_HLSL_SPV_OUTPUT
+          ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel_vulkan_hlsl.spv)
+      set(VULKAN_HLSL_SPV_HEADER
+          ${GHOST_TEST_GENERATED_DIR}/ghost_test_vulkan_hlsl_spirv.h)
+      set(VULKAN_HLSL_SOURCE
+          ${CMAKE_CURRENT_SOURCE_DIR}/test/kernels/test_kernel.hlsl)
+      add_custom_command(
+          OUTPUT ${VULKAN_HLSL_SPV_OUTPUT}
+          COMMAND ${DXC_SPIRV_EXECUTABLE} -T cs_6_0 -E mult_const_f -spirv
+                  -fspv-target-env=vulkan1.1 ${VULKAN_HLSL_SOURCE}
+                  -Fo ${VULKAN_HLSL_SPV_OUTPUT}
+          DEPENDS ${VULKAN_HLSL_SOURCE}
+          COMMENT "Compiling HLSL to Vulkan SPIR-V via dxc")
+      add_custom_command(
+          OUTPUT ${VULKAN_HLSL_SPV_HEADER}
+          COMMAND ${CMAKE_COMMAND}
+              -DINPUT_FILE=${VULKAN_HLSL_SPV_OUTPUT}
+              -DOUTPUT_FILE=${VULKAN_HLSL_SPV_HEADER}
+              -DVAR_NAME=ghost_test_vulkan_hlsl_spirv
+              -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+          DEPENDS ${VULKAN_HLSL_SPV_OUTPUT}
+                  ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+          COMMENT "Generating Vulkan HLSL SPIR-V header")
+      add_custom_target(ghost_test_vulkan_hlsl_spirv
+          DEPENDS ${VULKAN_HLSL_SPV_HEADER})
+      add_dependencies(TestGhostGTest ghost_test_vulkan_hlsl_spirv)
+      target_compile_definitions(TestGhostGTest PRIVATE
+          GHOST_TEST_VULKAN_HLSL_SPIRV="ghost_test_vulkan_hlsl_spirv.h")
+    endif()
   endif()
 
   # -----------------------------------------------------------------------
   # DirectX DXIL compilation (build-time)
   # -----------------------------------------------------------------------
   if(WITH_DIRECTX AND WIN32)
-    find_program(DXC_EXECUTABLE dxc)
+    ghost_find_dxc()
     if(DXC_EXECUTABLE)
       set(HLSL_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/test/kernels/test_kernel.hlsl)
       set(DXIL_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel.cso)

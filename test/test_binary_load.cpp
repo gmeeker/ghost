@@ -104,6 +104,85 @@ TEST_P(BinaryLoadTest, VulkanSpirvLoad) {
 }
 
 // ---------------------------------------------------------------------------
+// Vulkan SPIR-V dispatch (hand-written .spvasm path)
+//
+// Loads the spvasm-derived SPIR-V — which has a uniform buffer for the
+// constant — and actually dispatches it. Exercises both the storage-buffer
+// and uniform-buffer descriptor binding paths in FunctionVulkan.
+// ---------------------------------------------------------------------------
+
+TEST_P(BinaryLoadTest, VulkanSpirvDispatch) {
+  if (backend() != Backend::Vulkan) GTEST_SKIP() << "Vulkan-only test";
+#ifndef GHOST_TEST_VULKAN_SPIRV
+  GTEST_SKIP() << "Vulkan SPIR-V not compiled at build time";
+#else
+  auto lib = device().loadLibraryFromData(ghost_test_vulkan_spirv,
+                                          ghost_test_vulkan_spirv_size);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  const size_t N = 64;  // matches the kernel's [numthreads(64,1,1)]
+  std::vector<float> input(N), output(N, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto inBuf = device().allocateBuffer(N * sizeof(float));
+  auto outBuf = device().allocateBuffer(N * sizeof(float));
+  inBuf.copy(stream(), input.data(), N * sizeof(float));
+
+  LaunchArgs la;
+  la.global_size(static_cast<uint32_t>(N)).local_size(64);
+  fn(stream(), la, outBuf, inBuf, 1.5f);
+  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 1.5f) << "index " << i;
+  }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Vulkan HLSL → SPIR-V dispatch (dxc path)
+//
+// Compiles test_kernel.hlsl through dxc -spirv at build time and dispatches
+// the result. Skips silently if dxc isn't available, since dxc is an
+// optional toolchain dep (LunarG Vulkan SDK on Linux/macOS, Windows SDK or
+// LunarG on Windows).
+// ---------------------------------------------------------------------------
+
+#ifdef GHOST_TEST_VULKAN_HLSL_SPIRV
+#include GHOST_TEST_VULKAN_HLSL_SPIRV
+#endif
+
+TEST_P(BinaryLoadTest, VulkanHlslDispatch) {
+  if (backend() != Backend::Vulkan) GTEST_SKIP() << "Vulkan-only test";
+#ifndef GHOST_TEST_VULKAN_HLSL_SPIRV
+  GTEST_SKIP() << "HLSL→SPIR-V via dxc not compiled at build time";
+#else
+  auto lib = device().loadLibraryFromData(ghost_test_vulkan_hlsl_spirv,
+                                          ghost_test_vulkan_hlsl_spirv_size);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  const size_t N = 64;
+  std::vector<float> input(N), output(N, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto inBuf = device().allocateBuffer(N * sizeof(float));
+  auto outBuf = device().allocateBuffer(N * sizeof(float));
+  inBuf.copy(stream(), input.data(), N * sizeof(float));
+
+  LaunchArgs la;
+  la.global_size(static_cast<uint32_t>(N)).local_size(64);
+  fn(stream(), la, outBuf, inBuf, 1.5f);
+  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 1.5f) << "index " << i;
+  }
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // DirectX DXIL loading
 // ---------------------------------------------------------------------------
 
@@ -120,6 +199,43 @@ TEST_P(BinaryLoadTest, DirectXDxilLoad) {
                                           ghost_test_directx_dxil_size);
   auto fn = lib.lookupFunction("mult_const_f");
   EXPECT_NE(fn.impl().get(), nullptr);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// DirectX DXIL dispatch
+//
+// Compiles test_kernel.hlsl to DXIL via dxc at build time and dispatches
+// it through the reflected root signature. Verifies the UAV/SRV/CBV
+// binding paths in FunctionDirectX with a real HLSL kernel.
+// ---------------------------------------------------------------------------
+
+TEST_P(BinaryLoadTest, DirectXDxilDispatch) {
+  if (backend() != Backend::DirectX) GTEST_SKIP() << "DirectX-only test";
+#ifndef GHOST_TEST_DIRECTX_DXIL
+  GTEST_SKIP() << "DirectX DXIL not compiled at build time";
+#else
+  auto lib = device().loadLibraryFromData(ghost_test_directx_dxil,
+                                          ghost_test_directx_dxil_size);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  const size_t N = 64;
+  std::vector<float> input(N), output(N, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto inBuf = device().allocateBuffer(N * sizeof(float));
+  auto outBuf = device().allocateBuffer(N * sizeof(float));
+  inBuf.copy(stream(), input.data(), N * sizeof(float));
+
+  LaunchArgs la;
+  la.global_size(static_cast<uint32_t>(N)).local_size(64);
+  fn(stream(), la, outBuf, inBuf, 1.5f);
+  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 1.5f) << "index " << i;
+  }
 #endif
 }
 

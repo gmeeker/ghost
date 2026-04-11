@@ -18,7 +18,9 @@
 #include <ghost/vulkan/exception.h>
 #include <ghost/vulkan/impl_device.h>
 #include <ghost/vulkan/impl_function.h>
+#include <ghost/vulkan/reflect.h>
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
@@ -31,32 +33,31 @@ using namespace vk;
 // ---------------------------------------------------------------------------
 
 FunctionVulkan::FunctionVulkan(const DeviceVulkan& dev, VkShaderModule module,
-                               const std::string& entryPoint)
+                               const std::string& entryPoint,
+                               const ghost::vk::ReflectedShader& reflection)
     : _dev(dev),
       _module(module),
       _entryPoint(entryPoint),
-      _descriptorSetLayout(dev.device),
+      _reflection(reflection),
       _pipelineLayout(dev.device),
       _pipeline(dev.device),
-      _pipelineCreated(false),
-      _numBuffers(0),
-      _numImages(0),
-      _pushConstantSize(0) {}
+      _pipelineCreated(false) {
+  createPipeline();
+}
 
 FunctionVulkan::FunctionVulkan(const DeviceVulkan& dev, VkShaderModule module,
                                const std::string& entryPoint,
+                               const ghost::vk::ReflectedShader& reflection,
                                const std::vector<Attribute>& specConstants)
     : _dev(dev),
       _module(module),
       _entryPoint(entryPoint),
-      _descriptorSetLayout(dev.device),
+      _reflection(reflection),
       _pipelineLayout(dev.device),
       _pipeline(dev.device),
-      _pipelineCreated(false),
-      _numBuffers(0),
-      _numImages(0),
-      _pushConstantSize(0) {
+      _pipelineCreated(false) {
   buildSpecializationData(specConstants);
+  createPipeline();
 }
 
 void FunctionVulkan::buildSpecializationData(
@@ -105,106 +106,166 @@ void FunctionVulkan::buildSpecializationData(
   }
 }
 
-// ~FunctionVulkan: implicit. _pipeline / _pipelineLayout / _descriptorSetLayout
-// each destroy themselves via their vk::ptr destructors.
+namespace {
 
-void FunctionVulkan::createPipeline(const std::vector<Attribute>& args) {
-  // Count argument types to determine layout
-  _numBuffers = 0;
-  _numImages = 0;
-  _pushConstantSize = 0;
+VkDescriptorType vulkanDescriptorType(ghost::vk::ResourceKind kind) {
+  switch (kind) {
+    case ghost::vk::ResourceKind::StorageBuffer:
+      return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    case ghost::vk::ResourceKind::UniformBuffer:
+      return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    case ghost::vk::ResourceKind::StorageImage:
+      return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    case ghost::vk::ResourceKind::SampledImage:
+      return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    case ghost::vk::ResourceKind::Sampler:
+      return VK_DESCRIPTOR_TYPE_SAMPLER;
+    case ghost::vk::ResourceKind::CombinedImageSampler:
+      return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  }
+  return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+}
 
-  for (auto& arg : args) {
-    switch (arg.type()) {
-      case Attribute::Type_Buffer:
-        _numBuffers++;
-        break;
-      case Attribute::Type_Image:
-        _numImages++;
-        break;
-      case Attribute::Type_Float:
-        _pushConstantSize += (uint32_t)(sizeof(float) * arg.count());
-        break;
-      case Attribute::Type_Int:
-        _pushConstantSize += (uint32_t)(sizeof(int32_t) * arg.count());
-        break;
-      case Attribute::Type_UInt:
-        _pushConstantSize += (uint32_t)(sizeof(uint32_t) * arg.count());
-        break;
-      case Attribute::Type_Bool:
-        _pushConstantSize += (uint32_t)(sizeof(uint32_t) * arg.count());
-        break;
-      case Attribute::Type_ArgumentBuffer: {
-        auto* ab = arg.argumentBuffer();
-        if (ab->isStruct()) {
-          _pushConstantSize += (uint32_t)ab->size();
-        } else {
-          _numBuffers++;
-        }
-        break;
+bool isBufferKind(ghost::vk::ResourceKind kind) {
+  return kind == ghost::vk::ResourceKind::StorageBuffer ||
+         kind == ghost::vk::ResourceKind::UniformBuffer;
+}
+
+bool isImageKind(ghost::vk::ResourceKind kind) {
+  return kind == ghost::vk::ResourceKind::StorageImage ||
+         kind == ghost::vk::ResourceKind::SampledImage ||
+         kind == ghost::vk::ResourceKind::CombinedImageSampler;
+}
+
+// Append the host bytes of a scalar/struct Attribute to a byte vector.
+// Returns false if the Attribute type can't contribute to a constant block.
+bool appendScalarBytes(const Attribute& a, std::vector<uint8_t>& out) {
+  size_t before = out.size();
+  switch (a.type()) {
+    case Attribute::Type_Float: {
+      size_t sz = sizeof(float) * a.count();
+      out.resize(before + sz);
+      memcpy(out.data() + before, a.floatArray(), sz);
+      return true;
+    }
+    case Attribute::Type_Int: {
+      size_t sz = sizeof(int32_t) * a.count();
+      out.resize(before + sz);
+      memcpy(out.data() + before, a.intArray(), sz);
+      return true;
+    }
+    case Attribute::Type_UInt: {
+      size_t sz = sizeof(uint32_t) * a.count();
+      out.resize(before + sz);
+      memcpy(out.data() + before, a.uintArray(), sz);
+      return true;
+    }
+    case Attribute::Type_Bool: {
+      for (size_t i = 0; i < a.count(); i++) {
+        uint32_t v = a.boolArray()[i] ? 1u : 0u;
+        size_t pos = out.size();
+        out.resize(pos + sizeof(uint32_t));
+        memcpy(out.data() + pos, &v, sizeof(uint32_t));
       }
-      case Attribute::Type_LocalMem:
-        // Vulkan shared memory is declared in the shader
-        break;
-      default:
-        break;
+      return true;
+    }
+    case Attribute::Type_ArgumentBuffer: {
+      auto* ab = a.argumentBuffer();
+      if (ab && ab->isStruct()) {
+        out.resize(before + ab->size());
+        memcpy(out.data() + before, ab->data(), ab->size());
+        return true;
+      }
+      return false;
+    }
+    default:
+      return false;
+  }
+}
+
+}  // namespace
+
+void FunctionVulkan::createPipeline() {
+  // Group bindings by descriptor set. Reflection has them in (set, binding)
+  // sorted order, so consecutive runs share a set.
+  std::vector<std::vector<VkDescriptorSetLayoutBinding>> perSetBindings;
+  std::vector<uint32_t>
+      perSetIndex;  // setIndex for each entry of perSetBindings
+
+  uint32_t currentSet = UINT32_MAX;
+  for (auto& b : _reflection.bindings) {
+    if (b.set != currentSet) {
+      currentSet = b.set;
+      perSetBindings.emplace_back();
+      perSetIndex.push_back(b.set);
+    }
+    VkDescriptorSetLayoutBinding lb = {};
+    lb.binding = b.binding;
+    lb.descriptorType = vulkanDescriptorType(b.kind);
+    lb.descriptorCount = 1;
+    lb.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    perSetBindings.back().push_back(lb);
+  }
+
+  // Build a VkDescriptorSetLayout per used set, plus null layouts for any
+  // gaps in set indices (Vulkan requires contiguous pSetLayouts).
+  uint32_t maxSet = 0;
+  for (auto s : perSetIndex)
+    if (s > maxSet) maxSet = s;
+  size_t numSetLayouts = perSetIndex.empty() ? 0 : (maxSet + 1);
+
+  // Empty layout used for any unused set indices below maxSet.
+  vk::ptr<VkDescriptorSetLayout> emptyLayout(_dev.device);
+  if (numSetLayouts > perSetIndex.size()) {
+    VkDescriptorSetLayoutCreateInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    info.bindingCount = 0;
+    info.pBindings = nullptr;
+    checkError(
+        vkCreateDescriptorSetLayout(_dev.device, &info, nullptr, &emptyLayout));
+  }
+
+  std::vector<VkDescriptorSetLayout> setLayoutHandles(numSetLayouts,
+                                                      VK_NULL_HANDLE);
+  for (size_t i = 0; i < perSetIndex.size(); i++) {
+    DescriptorSetInfo dsi(_dev.device);
+    dsi.setIndex = perSetIndex[i];
+    VkDescriptorSetLayoutCreateInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    info.bindingCount = (uint32_t)perSetBindings[i].size();
+    info.pBindings = perSetBindings[i].data();
+    checkError(
+        vkCreateDescriptorSetLayout(_dev.device, &info, nullptr, &dsi.layout));
+    setLayoutHandles[perSetIndex[i]] = dsi.layout;
+    _descriptorSets.push_back(std::move(dsi));
+  }
+  for (size_t i = 0; i < numSetLayouts; i++) {
+    if (setLayoutHandles[i] == VK_NULL_HANDLE) {
+      setLayoutHandles[i] = emptyLayout;
     }
   }
 
-  // Align push constant size to 4 bytes
-  _pushConstantSize = (_pushConstantSize + 3) & ~3u;
-
-  // Create descriptor set layout
-  std::vector<VkDescriptorSetLayoutBinding> bindings;
-  uint32_t bindingIdx = 0;
-
-  for (uint32_t i = 0; i < _numBuffers; i++) {
-    VkDescriptorSetLayoutBinding binding = {};
-    binding.binding = bindingIdx++;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings.push_back(binding);
-  }
-
-  for (uint32_t i = 0; i < _numImages; i++) {
-    VkDescriptorSetLayoutBinding binding = {};
-    binding.binding = bindingIdx++;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings.push_back(binding);
-  }
-
-  VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-  layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  layoutInfo.bindingCount = (uint32_t)bindings.size();
-  layoutInfo.pBindings = bindings.data();
-  checkError(vkCreateDescriptorSetLayout(_dev.device, &layoutInfo, nullptr,
-                                         &_descriptorSetLayout));
-
-  // Create pipeline layout. pSetLayouts wants a const VkDescriptorSetLayout*,
-  // so use a local temporary rather than &_descriptorSetLayout (which would
-  // invoke the destroying operator& overload).
-  VkDescriptorSetLayout setLayout = _descriptorSetLayout;
+  // Pipeline layout: includes the per-set descriptor layouts plus a push
+  // constant range derived from reflection.
   VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
   pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  pipelineLayoutInfo.setLayoutCount = 1;
-  pipelineLayoutInfo.pSetLayouts = &setLayout;
+  pipelineLayoutInfo.setLayoutCount = (uint32_t)numSetLayouts;
+  pipelineLayoutInfo.pSetLayouts =
+      numSetLayouts ? setLayoutHandles.data() : nullptr;
 
-  VkPushConstantRange pushRange = {};
-  if (_pushConstantSize > 0) {
-    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pushRange.offset = 0;
-    pushRange.size = _pushConstantSize;
+  VkPushConstantRange pcRange = {};
+  if (_reflection.pushConstants.present && _reflection.pushConstants.size > 0) {
+    pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pcRange.offset = 0;
+    pcRange.size = _reflection.pushConstants.size;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
-    pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+    pipelineLayoutInfo.pPushConstantRanges = &pcRange;
   }
 
   checkError(vkCreatePipelineLayout(_dev.device, &pipelineLayoutInfo, nullptr,
                                     &_pipelineLayout));
 
-  // Create compute pipeline
+  // Compute pipeline.
   VkComputePipelineCreateInfo pipelineInfo = {};
   pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   pipelineInfo.stage.sType =
@@ -234,146 +295,189 @@ void FunctionVulkan::execute(const ghost::Stream& s,
                              const std::vector<Attribute>& args) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
 
-  // Create pipeline on first execution
-  if (!_pipelineCreated) {
-    createPipeline(args);
-  }
-
   stream.begin();
 
-  // Allocate descriptor set. pSetLayouts wants a const VkDescriptorSetLayout*,
-  // so use a local temporary (see createPipeline for the same pattern).
-  VkDescriptorSetLayout setLayout = _descriptorSetLayout;
-  VkDescriptorSetAllocateInfo allocInfo = {};
-  allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  allocInfo.descriptorPool = _dev.descriptorPool;
-  allocInfo.descriptorSetCount = 1;
-  allocInfo.pSetLayouts = &setLayout;
+  // Allocate one VkDescriptorSet per used set. Vulkan requires writes to
+  // happen against a concrete descriptor set, not against a layout, so
+  // we allocate them fresh per dispatch from the device pool.
+  std::vector<VkDescriptorSet> sets;
+  if (!_descriptorSets.empty()) {
+    std::vector<VkDescriptorSetLayout> layouts;
+    layouts.reserve(_descriptorSets.size());
+    for (auto& dsi : _descriptorSets) layouts.push_back(dsi.layout);
 
-  VkDescriptorSet descriptorSet;
-  checkError(vkAllocateDescriptorSets(_dev.device, &allocInfo, &descriptorSet));
+    VkDescriptorSetAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = _dev.descriptorPool;
+    allocInfo.descriptorSetCount = (uint32_t)layouts.size();
+    allocInfo.pSetLayouts = layouts.data();
 
-  // Write descriptors and push constants
+    sets.resize(layouts.size());
+    checkError(vkAllocateDescriptorSets(_dev.device, &allocInfo, sets.data()));
+  }
+
+  // Walk the reflected slot list, consuming user args one-for-one. Bindings
+  // come first (in (set, binding) order), then the push-constant block as
+  // a single trailing slot.
   std::vector<VkWriteDescriptorSet> writes;
+  // Hold backing storage for buffer/image descriptor infos until
+  // vkUpdateDescriptorSets is called.
   std::vector<VkDescriptorBufferInfo> bufferInfos;
   std::vector<VkDescriptorImageInfo> imageInfos;
-  bufferInfos.reserve(_numBuffers);
-  imageInfos.reserve(_numImages);
+  bufferInfos.reserve(_reflection.bindings.size());
+  imageInfos.reserve(_reflection.bindings.size());
 
-  std::vector<uint8_t> pushData;
-  pushData.reserve(_pushConstantSize);
+  std::vector<uint8_t> pushBytes;
 
-  uint32_t bindingIdx = 0;
+  size_t argIdx = 0;
+  auto nextArg = [&]() -> const Attribute* {
+    while (argIdx < args.size()) {
+      const Attribute& a = args[argIdx++];
+      // Skip Type_LocalMem and Type_Unknown — they don't bind to a slot.
+      if (a.type() == Attribute::Type_LocalMem) continue;
+      if (a.type() == Attribute::Type_Unknown) continue;
+      return &a;
+    }
+    return nullptr;
+  };
 
-  for (auto& arg : args) {
-    switch (arg.type()) {
-      case Attribute::Type_Buffer: {
-        auto* vkBuf = static_cast<BufferVulkan*>(arg.bufferImpl().get());
+  // Match bindings.
+  for (size_t bIdx = 0; bIdx < _reflection.bindings.size(); bIdx++) {
+    const auto& b = _reflection.bindings[bIdx];
 
-        VkDescriptorBufferInfo bufInfo = {};
-        bufInfo.buffer = vkBuf->buffer;
-        bufInfo.offset = vkBuf->baseOffset();
-        bufInfo.range = vkBuf->size();
-        bufferInfos.push_back(bufInfo);
-
-        VkWriteDescriptorSet write = {};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = descriptorSet;
-        write.dstBinding = bindingIdx++;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        write.pBufferInfo = &bufferInfos.back();
-        writes.push_back(write);
+    // Find the descriptor set we allocated for b.set.
+    size_t setSlot = SIZE_MAX;
+    for (size_t i = 0; i < _descriptorSets.size(); i++) {
+      if (_descriptorSets[i].setIndex == b.set) {
+        setSlot = i;
         break;
       }
-      case Attribute::Type_Image: {
-        auto* vkImg = static_cast<ImageVulkan*>(arg.imageImpl().get());
+    }
+    if (setSlot == SIZE_MAX)
+      continue;  // shouldn't happen if reflection is correct
 
-        VkDescriptorImageInfo imgInfo = {};
-        imgInfo.imageView = vkImg->imageView;
-        imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-        imageInfos.push_back(imgInfo);
+    const Attribute* arg = nextArg();
+    if (!arg) {
+      throw std::invalid_argument(
+          "FunctionVulkan: not enough arguments for shader bindings");
+    }
 
-        VkWriteDescriptorSet write = {};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = descriptorSet;
-        write.dstBinding = bindingIdx++;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        write.pImageInfo = &imageInfos.back();
-        writes.push_back(write);
-        break;
-      }
-      case Attribute::Type_Float: {
-        size_t n = arg.count();
-        const float* vals = arg.floatArray();
-        size_t sz = sizeof(float) * n;
-        size_t off = pushData.size();
-        pushData.resize(off + sz);
-        memcpy(pushData.data() + off, vals, sz);
-        break;
-      }
-      case Attribute::Type_Int: {
-        size_t n = arg.count();
-        const int32_t* vals = arg.intArray();
-        size_t sz = sizeof(int32_t) * n;
-        size_t off = pushData.size();
-        pushData.resize(off + sz);
-        memcpy(pushData.data() + off, vals, sz);
-        break;
-      }
-      case Attribute::Type_UInt: {
-        size_t n = arg.count();
-        const uint32_t* vals = arg.uintArray();
-        size_t sz = sizeof(uint32_t) * n;
-        size_t off = pushData.size();
-        pushData.resize(off + sz);
-        memcpy(pushData.data() + off, vals, sz);
-        break;
-      }
-      case Attribute::Type_Bool: {
-        size_t n = arg.count();
-        const bool* vals = arg.boolArray();
-        for (size_t i = 0; i < n; i++) {
-          uint32_t v = vals[i] ? 1 : 0;
-          size_t off = pushData.size();
-          pushData.resize(off + sizeof(uint32_t));
-          memcpy(pushData.data() + off, &v, sizeof(uint32_t));
-        }
-        break;
-      }
-      case Attribute::Type_ArgumentBuffer: {
-        auto* ab = arg.argumentBuffer();
-        if (ab->isStruct()) {
-          size_t sz = ab->size();
-          size_t off = pushData.size();
-          pushData.resize(off + sz);
-          memcpy(pushData.data() + off, ab->data(), sz);
+    if (isBufferKind(b.kind)) {
+      // Two routes: a Buffer arg binds the buffer directly; a scalar/struct
+      // arg gets staged into a transient buffer of the right kind.
+      if (arg->type() == Attribute::Type_Buffer ||
+          (arg->type() == Attribute::Type_ArgumentBuffer &&
+           arg->argumentBuffer() && !arg->argumentBuffer()->isStruct())) {
+        std::shared_ptr<implementation::Buffer> bufImpl;
+        if (arg->type() == Attribute::Type_Buffer) {
+          bufImpl = arg->bufferImpl();
         } else {
-          auto bufImpl = ab->bufferImpl();
-          auto* vkBuf = static_cast<BufferVulkan*>(bufImpl.get());
-
-          VkDescriptorBufferInfo bufInfo = {};
-          bufInfo.buffer = vkBuf->buffer;
-          bufInfo.offset = vkBuf->baseOffset();
-          bufInfo.range = vkBuf->size();
-          bufferInfos.push_back(bufInfo);
-
-          VkWriteDescriptorSet write = {};
-          write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-          write.dstSet = descriptorSet;
-          write.dstBinding = bindingIdx++;
-          write.descriptorCount = 1;
-          write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-          write.pBufferInfo = &bufferInfos.back();
-          writes.push_back(write);
+          bufImpl = arg->argumentBuffer()->bufferImpl();
         }
-        break;
+        auto* vkBuf = static_cast<BufferVulkan*>(bufImpl.get());
+        VkDescriptorBufferInfo info = {};
+        info.buffer = vkBuf->buffer;
+        info.offset = vkBuf->baseOffset();
+        info.range = vkBuf->size();
+        bufferInfos.push_back(info);
+
+        VkWriteDescriptorSet w = {};
+        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet = sets[setSlot];
+        w.dstBinding = b.binding;
+        w.descriptorCount = 1;
+        w.descriptorType = vulkanDescriptorType(b.kind);
+        w.pBufferInfo = &bufferInfos.back();
+        writes.push_back(w);
+      } else {
+        // Scalar/struct → transient buffer.
+        std::vector<uint8_t> bytes;
+        if (!appendScalarBytes(*arg, bytes)) {
+          throw std::invalid_argument(
+              "FunctionVulkan: unsupported argument type for buffer binding");
+        }
+        if (bytes.size() < 4) bytes.resize(4, 0);
+
+        BufferOptions opts;
+        opts.hint = AllocHint::Staging;  // host-visible upload buffer
+        vk::ptr<VkBuffer> tmpBuf(_dev.device);
+        vk::ptr<VkDeviceMemory> tmpMem(_dev.device);
+        VkBufferUsageFlags usage =
+            (b.kind == ghost::vk::ResourceKind::UniformBuffer)
+                ? VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
+                : VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        _dev.createBuffer(bytes.size(), usage,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          tmpBuf, tmpMem);
+
+        void* mapped = nullptr;
+        checkError(
+            vkMapMemory(_dev.device, tmpMem, 0, bytes.size(), 0, &mapped));
+        memcpy(mapped, bytes.data(), bytes.size());
+        vkUnmapMemory(_dev.device, tmpMem);
+
+        VkDescriptorBufferInfo info = {};
+        info.buffer = tmpBuf;
+        info.offset = 0;
+        info.range = bytes.size();
+        bufferInfos.push_back(info);
+
+        VkWriteDescriptorSet w = {};
+        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet = sets[setSlot];
+        w.dstBinding = b.binding;
+        w.descriptorCount = 1;
+        w.descriptorType = vulkanDescriptorType(b.kind);
+        w.pBufferInfo = &bufferInfos.back();
+        writes.push_back(w);
+
+        // Hand the buffer/memory off to the stream so they get freed
+        // after the dispatch completes.
+        stream.addStagingResource(std::move(tmpBuf), std::move(tmpMem));
       }
-      case Attribute::Type_LocalMem:
-        break;
-      default:
-        break;
+    } else if (isImageKind(b.kind)) {
+      if (arg->type() != Attribute::Type_Image) {
+        throw std::invalid_argument(
+            "FunctionVulkan: argument type does not match image binding");
+      }
+      auto* vkImg = static_cast<ImageVulkan*>(arg->imageImpl().get());
+
+      VkDescriptorImageInfo info = {};
+      info.imageView = vkImg->imageView;
+      info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+      imageInfos.push_back(info);
+
+      VkWriteDescriptorSet w = {};
+      w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      w.dstSet = sets[setSlot];
+      w.dstBinding = b.binding;
+      w.descriptorCount = 1;
+      w.descriptorType = vulkanDescriptorType(b.kind);
+      w.pImageInfo = &imageInfos.back();
+      writes.push_back(w);
+    } else {
+      throw ghost::unsupported_error();
+    }
+  }
+
+  // Push constant block (always last in the slot order). Greedily
+  // consume any remaining scalar/struct args.
+  if (_reflection.pushConstants.present && _reflection.pushConstants.size > 0) {
+    while (true) {
+      const Attribute* arg = nextArg();
+      if (!arg) break;
+      if (!appendScalarBytes(*arg, pushBytes)) {
+        throw std::invalid_argument(
+            "FunctionVulkan: argument can't be packed into push constants");
+      }
+    }
+    if (pushBytes.size() < _reflection.pushConstants.size) {
+      pushBytes.resize(_reflection.pushConstants.size, 0);
+    } else if (pushBytes.size() > _reflection.pushConstants.size) {
+      // Trim to declared size — extra trailing bytes are ignored. This
+      // matches what the SPIR-V actually reads.
+      pushBytes.resize(_reflection.pushConstants.size);
     }
   }
 
@@ -382,18 +486,19 @@ void FunctionVulkan::execute(const ghost::Stream& s,
                            0, nullptr);
   }
 
-  // Record compute dispatch
+  // Record compute dispatch.
   vkCmdBindPipeline(stream.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                     _pipeline);
-  vkCmdBindDescriptorSets(stream.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          _pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+  if (!sets.empty()) {
+    vkCmdBindDescriptorSets(stream.commandBuffer,
+                            VK_PIPELINE_BIND_POINT_COMPUTE, _pipelineLayout, 0,
+                            (uint32_t)sets.size(), sets.data(), 0, nullptr);
+  }
 
-  if (!pushData.empty()) {
-    // Pad to 4-byte alignment
-    while (pushData.size() % 4 != 0) pushData.push_back(0);
+  if (!pushBytes.empty()) {
     vkCmdPushConstants(stream.commandBuffer, _pipelineLayout,
                        VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                       (uint32_t)pushData.size(), pushData.data());
+                       (uint32_t)pushBytes.size(), pushBytes.data());
   }
 
   if (launchArgs.requiredSubgroupSize() != 0) {
@@ -414,7 +519,7 @@ void FunctionVulkan::execute(const ghost::Stream& s,
                     : 1;
   vkCmdDispatch(stream.commandBuffer, gx, gy, gz);
 
-  // Memory barrier for compute shader writes
+  // Memory barrier for compute shader writes.
   VkMemoryBarrier barrier = {};
   barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
   barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -481,6 +586,8 @@ void LibraryVulkan::loadFromCache(const void* data, size_t length,
 
       if (vkCreateShaderModule(_dev.device, &createInfo, nullptr, &_module) ==
           VK_SUCCESS) {
+        ghost::vk::reflectSpirv(binaries[0].data(), binaries[0].size(),
+                                _reflection);
         return;
       }
       _module.reset();
@@ -513,6 +620,10 @@ void LibraryVulkan::loadFromData(const void* data, size_t len,
 
   checkError(vkCreateShaderModule(_dev.device, &createInfo, nullptr, &_module));
 
+  // Reflect the SPIR-V binary now so lookupFunction can build a matching
+  // pipeline layout without re-parsing.
+  ghost::vk::reflectSpirv(data, len, _reflection);
+
   if (retainBinary()) {
     auto bytes = reinterpret_cast<const uint8_t*>(data);
     _spirvData.assign(bytes, bytes + len);
@@ -525,13 +636,14 @@ ghost::Function LibraryVulkan::lookupFunction(const std::string& name) const {
   // Each function gets its own reference to the same shader module.
   // The FunctionVulkan does NOT own the shader module (LibraryVulkan does).
   // We pass the module but the function won't destroy it.
-  return ghost::Function(std::make_shared<FunctionVulkan>(_dev, _module, name));
+  return ghost::Function(
+      std::make_shared<FunctionVulkan>(_dev, _module, name, _reflection));
 }
 
 ghost::Function LibraryVulkan::specializeFunction(
     const std::string& name, const std::vector<Attribute>& args) const {
   return ghost::Function(
-      std::make_shared<FunctionVulkan>(_dev, _module, name, args));
+      std::make_shared<FunctionVulkan>(_dev, _module, name, _reflection, args));
 }
 
 std::vector<uint8_t> LibraryVulkan::getBinary() const { return _spirvData; }

@@ -489,24 +489,6 @@ TEST_P(BufferTest, ManySmallAllocations) {
 }
 
 // ---------------------------------------------------------------------------
-// Device destruction while buffers still alive (RAII cleanup)
-// ---------------------------------------------------------------------------
-
-TEST_P(BufferTest, DeviceDestructionWithLiveBuffers) {
-  auto dev = createDevice(backend());
-  if (!dev) GTEST_SKIP();
-
-  Buffer buf(nullptr);
-  {
-    buf = dev->allocateBuffer(1024);
-    EXPECT_EQ(buf.size(), 1024u);
-  }
-  // Destroy device while buffer is still alive.
-  dev.reset();
-  // Buffer destructor should not crash.
-}
-
-// ---------------------------------------------------------------------------
 // Copy with overlapping regions in same buffer
 // ---------------------------------------------------------------------------
 

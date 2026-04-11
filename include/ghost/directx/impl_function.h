@@ -19,6 +19,7 @@
 #define NOMINMAX
 #endif
 #include <d3d12.h>
+#include <ghost/directx/reflect.h>
 #include <ghost/implementation/impl_function.h>
 #include <wrl/client.h>
 
@@ -31,10 +32,22 @@ class DeviceDirectX;
 
 class FunctionDirectX : public Function {
  public:
+  /// @brief How a single root parameter slot is bound to a user argument.
+  struct RootSlot {
+    enum Kind {
+      RootCBV,  ///< root descriptor: CBV (uses a transient upload buffer)
+      RootSRV,  ///< root descriptor: SRV (binds the user's BufferDirectX)
+      RootUAV,  ///< root descriptor: UAV (binds the user's BufferDirectX)
+    };
+
+    Kind kind;
+    uint32_t rootParamIndex;  ///< root parameter index in the root sig
+  };
+
   FunctionDirectX(const DeviceDirectX& dev,
                   Microsoft::WRL::ComPtr<ID3D12PipelineState> pso,
                   Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSig,
-                  uint32_t numDescriptors);
+                  std::vector<RootSlot> slots);
   ~FunctionDirectX();
 
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
@@ -48,7 +61,7 @@ class FunctionDirectX : public Function {
   const DeviceDirectX& _dev;
   Microsoft::WRL::ComPtr<ID3D12PipelineState> _pso;
   Microsoft::WRL::ComPtr<ID3D12RootSignature> _rootSignature;
-  uint32_t _numDescriptors;
+  std::vector<RootSlot> _slots;
 };
 
 class LibraryDirectX : public Library {
@@ -70,6 +83,7 @@ class LibraryDirectX : public Library {
 
   const DeviceDirectX& _dev;
   std::vector<uint8_t> _bytecode;
+  ghost::dx::ReflectedDxilShader _reflection;
 };
 }  // namespace implementation
 }  // namespace ghost

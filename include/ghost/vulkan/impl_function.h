@@ -17,6 +17,7 @@
 
 #include <ghost/implementation/impl_function.h>
 #include <ghost/vulkan/ptr.h>
+#include <ghost/vulkan/reflect.h>
 
 #include <string>
 #include <vector>
@@ -28,9 +29,11 @@ class DeviceVulkan;
 class FunctionVulkan : public Function {
  public:
   FunctionVulkan(const DeviceVulkan& dev, VkShaderModule module,
-                 const std::string& entryPoint);
+                 const std::string& entryPoint,
+                 const ghost::vk::ReflectedShader& reflection);
   FunctionVulkan(const DeviceVulkan& dev, VkShaderModule module,
                  const std::string& entryPoint,
+                 const ghost::vk::ReflectedShader& reflection,
                  const std::vector<Attribute>& specConstants);
 
   virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
@@ -41,21 +44,33 @@ class FunctionVulkan : public Function {
   virtual uint32_t preferredSubgroupSize() const override;
 
  private:
-  void createPipeline(const std::vector<Attribute>& args);
+  void createPipeline();
   void buildSpecializationData(const std::vector<Attribute>& specConstants);
+
+  // Per descriptor set: which set index it represents and the layout we
+  // built for the bindings inside it.
+  struct DescriptorSetInfo {
+    uint32_t setIndex;
+    vk::ptr<VkDescriptorSetLayout> layout;
+
+    // Move-only because vk::ptr is move-only. Used so we can grow the
+    // vector during pipeline build.
+    DescriptorSetInfo(VkDevice dev) : setIndex(0), layout(dev) {}
+
+    DescriptorSetInfo(DescriptorSetInfo&&) = default;
+    DescriptorSetInfo& operator=(DescriptorSetInfo&&) = default;
+  };
 
   const DeviceVulkan& _dev;
   // Borrowed from the parent LibraryVulkan; not owned here.
   VkShaderModule _module;
   std::string _entryPoint;
+  ghost::vk::ReflectedShader _reflection;
 
-  vk::ptr<VkDescriptorSetLayout> _descriptorSetLayout;
+  std::vector<DescriptorSetInfo> _descriptorSets;
   vk::ptr<VkPipelineLayout> _pipelineLayout;
   vk::ptr<VkPipeline> _pipeline;
   bool _pipelineCreated;
-  uint32_t _numBuffers;
-  uint32_t _numImages;
-  uint32_t _pushConstantSize;
 
   std::vector<uint8_t> _specData;
   std::vector<VkSpecializationMapEntry> _specEntries;
@@ -83,6 +98,11 @@ class LibraryVulkan : public Library {
   const DeviceVulkan& _dev;
   vk::ptr<VkShaderModule> _module;
   std::vector<uint8_t> _spirvData;
+  // Always reflected at load time so lookupFunction is cheap and so we
+  // can build matching descriptor set layouts even before the first
+  // dispatch. Stored even when retainBinary is false (where _spirvData
+  // is empty).
+  ghost::vk::ReflectedShader _reflection;
 };
 }  // namespace implementation
 }  // namespace ghost
