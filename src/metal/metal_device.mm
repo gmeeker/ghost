@@ -28,6 +28,11 @@ namespace ghost {
 namespace implementation {
 using namespace metal;
 
+#if !defined(MAC_OS_VERSION_26_0)
+// SDK is too old for MTLGPUFamilyApple10
+#define MTLGPUFamilyApple10 (MTLGPUFamily)1010
+#endif
+
 namespace {
 MTLPixelFormat getFormat(const ImageDescription &descr) {
   switch (descr.channels) {
@@ -994,7 +999,7 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
   case kDeviceProcessorCount:
     return 1;
   case kDeviceUnifiedMemory:
-    return dev.get().hasUnifiedMemory;
+    return (bool)dev.get().hasUnifiedMemory;
   case kDeviceMemory:
     return (uint64_t)dev.get().recommendedMaxWorkingSetSize;
   case kDeviceLocalMemory:
