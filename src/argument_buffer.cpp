@@ -33,7 +33,7 @@ void ArgumentBuffer::ensureSize(size_t minSize) {
   if (_data.size() < minSize) _data.resize(minSize, 0);
 }
 
-void ArgumentBuffer::upload(const Device& device, const Stream& stream) {
+void ArgumentBuffer::upload(const Device& device, const Encoder& stream) {
   if (_data.empty()) return;
   if (!_gpuBuffer.impl() || _gpuBuffer.size() < _data.size()) {
     _gpuBuffer = device.allocateBuffer(_data.size());

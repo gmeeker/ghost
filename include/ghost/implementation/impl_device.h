@@ -137,6 +137,7 @@ class SharedContext {
 class Event;
 class Function;
 class Library;
+class Encoder;
 class Stream;
 class Buffer;
 class MappedBuffer;
@@ -181,17 +182,40 @@ class Event {
   virtual double elapsed(const Event& other) const;
 };
 
+/// @brief Abstract backend interface for an operation encoder.
+///
+/// Base class for Stream and CommandBuffer implementations.
+/// Buffer, Image, and Function impls receive this type and downcast
+/// to the backend-specific subclass.
+class CommandBuffer;
+
+class Encoder {
+ protected:
+  Encoder() {}
+
+  Encoder(const Encoder& rhs) = delete;
+
+  virtual ~Encoder() {}
+
+  Encoder& operator=(const Encoder& rhs) = delete;
+
+ public:
+  /// @brief If this encoder is a CommandBuffer, return it; otherwise nullptr.
+  ///
+  /// Used by Buffer/Image/Function to dispatch between immediate execution
+  /// (Stream) and deferred recording (CommandBuffer).
+  virtual CommandBuffer* asCommandBuffer();
+};
+
 /// @brief Abstract backend interface for a GPU command stream.
 ///
 /// Backend implementations derive from this class to provide stream
 /// synchronization. Not copyable.
-class Stream {
+class Stream : public Encoder {
  protected:
   Stream() {}
 
   Stream(const Stream& rhs) = delete;
-
-  virtual ~Stream() {}
 
   Stream& operator=(const Stream& rhs) = delete;
 
@@ -245,22 +269,22 @@ class Buffer {
   virtual std::shared_ptr<Buffer> createSubBuffer(
       const std::shared_ptr<Buffer>& self, size_t offset, size_t size);
 
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     size_t bytes) = 0;
-  virtual void copy(const ghost::Stream& s, const void* src, size_t bytes) = 0;
-  virtual void copyTo(const ghost::Stream& s, void* dst,
+  virtual void copy(const ghost::Encoder& s, const void* src, size_t bytes) = 0;
+  virtual void copyTo(const ghost::Encoder& s, void* dst,
                       size_t bytes) const = 0;
 
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     size_t srcOffset, size_t dstOffset, size_t bytes) = 0;
-  virtual void copy(const ghost::Stream& s, const void* src, size_t dstOffset,
+  virtual void copy(const ghost::Encoder& s, const void* src, size_t dstOffset,
                     size_t bytes) = 0;
-  virtual void copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
+  virtual void copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
                       size_t bytes) const = 0;
 
-  virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
+  virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
                     uint8_t value) = 0;
-  virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
+  virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
                     const void* pattern, size_t patternSize) = 0;
 
   /// @brief Map the buffer into host address space.
@@ -268,13 +292,13 @@ class Buffer {
   /// The default implementation throws ghost::unsupported_error. Backends
   /// that support mapped buffers override this method.
   /// @throws ghost::unsupported_error if not supported by the backend.
-  virtual void* map(const ghost::Stream& s, Access access, bool sync = true);
+  virtual void* map(const ghost::Encoder& s, Access access, bool sync = true);
 
   /// @brief Unmap a previously mapped buffer.
   ///
   /// The default implementation throws ghost::unsupported_error.
   /// @throws ghost::unsupported_error if not supported by the backend.
-  virtual void unmap(const ghost::Stream& s);
+  virtual void unmap(const ghost::Encoder& s);
 };
 
 /// @brief Abstract backend interface for a GPU image (texture).
@@ -295,23 +319,23 @@ class Image {
   /// @brief Get the image description this image was allocated with.
   virtual const ImageDescription& description() const = 0;
 
-  virtual void copy(const ghost::Stream& s, const ghost::Image& src) = 0;
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+  virtual void copy(const ghost::Encoder& s, const ghost::Image& src) = 0;
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     const BufferLayout& layout) = 0;
-  virtual void copy(const ghost::Stream& s, const void* src,
+  virtual void copy(const ghost::Encoder& s, const void* src,
                     const BufferLayout& layout) = 0;
-  virtual void copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+  virtual void copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                       const BufferLayout& layout) const = 0;
-  virtual void copyTo(const ghost::Stream& s, void* dst,
+  virtual void copyTo(const ghost::Encoder& s, void* dst,
                       const BufferLayout& layout) const = 0;
 
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     const BufferLayout& layout, const Origin3& imageOrigin);
-  virtual void copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+  virtual void copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                       const BufferLayout& layout,
                       const Origin3& imageOrigin) const;
 
-  virtual void copy(const ghost::Stream& s, const ghost::Image& src,
+  virtual void copy(const ghost::Encoder& s, const ghost::Image& src,
                     const Size3& region, const Origin3& srcOrigin,
                     const Origin3& dstOrigin);
 };

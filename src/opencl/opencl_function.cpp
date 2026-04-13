@@ -35,7 +35,7 @@ FunctionOpenCL::FunctionOpenCL(const DeviceOpenCL& dev,
                                opencl::ptr<cl_kernel> k)
     : kernel(k), _dev(dev) {}
 
-void FunctionOpenCL::execute(const ghost::Stream& s,
+void FunctionOpenCL::execute(const ghost::Encoder& s,
                              const LaunchArgs& launchArgs,
                              const std::vector<Attribute>& args) {
   cl_int err;

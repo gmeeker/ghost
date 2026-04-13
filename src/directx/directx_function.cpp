@@ -90,7 +90,7 @@ FunctionDirectX::FunctionDirectX(const DeviceDirectX& dev,
 
 FunctionDirectX::~FunctionDirectX() {}
 
-void FunctionDirectX::execute(const ghost::Stream& s,
+void FunctionDirectX::execute(const ghost::Encoder& s,
                               const LaunchArgs& launchArgs,
                               const std::vector<Attribute>& args) {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());

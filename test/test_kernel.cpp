@@ -45,7 +45,7 @@ TEST_P(KernelTest, FunctionOutlivesLibrary) {
 
   LaunchArgs la;
   la.global_size(N).local_size(1);
-  fn(stream(), la, outBuf, inBuf, 3.0f);
+  fn(la, stream())(outBuf, inBuf, 3.0f);
   outBuf.copyTo(stream(), output.data(), N * sizeof(float));
   stream().sync();
 
@@ -98,7 +98,7 @@ TEST_P(KernelTest, MultConst1D) {
 
   LaunchArgs la;
   la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
-  fn(stream(), la, outBuf, inBuf, 1.5f);
+  fn(la, stream())(outBuf, inBuf, 1.5f);
   outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
@@ -138,7 +138,7 @@ TEST_P(KernelTest, MultConstScale2) {
 
   LaunchArgs la;
   la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
-  fn(stream(), la, outBuf, inBuf, 2.0f);
+  fn(la, stream())(outBuf, inBuf, 2.0f);
   outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
@@ -183,7 +183,7 @@ TEST_P(KernelTest, AddBuffers) {
 
   LaunchArgs la;
   la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
-  fn(stream(), la, bufOut, bufA, bufB);
+  fn(la, stream())(bufOut, bufA, bufB);
   bufOut.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
@@ -230,8 +230,8 @@ TEST_P(KernelTest, MultipleDispatches) {
   la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
 
   // Chain: buf1 * 2.0 -> buf2, buf2 * 3.0 -> buf3.
-  fn(stream(), la, buf2, buf1, 2.0f);
-  fn(stream(), la, buf3, buf2, 3.0f);
+  fn(la, stream())(buf2, buf1, 2.0f);
+  fn(la, stream())(buf3, buf2, 3.0f);
   buf3.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
@@ -319,7 +319,7 @@ TEST_P(KernelTest, MultConst2D) {
 
   LaunchArgs la;
   la.global_size(W, H).local_size(localW, localH);
-  fn(stream(), la, outBuf, inBuf, 2.0f, static_cast<int32_t>(W));
+  fn(la, stream())(outBuf, inBuf, 2.0f, static_cast<int32_t>(W));
   outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
@@ -366,8 +366,8 @@ TEST_P(KernelTest, MultConst3D) {
 
   LaunchArgs la;
   la.global_size(W, H, D).local_size(localW, localH, localD);
-  fn(stream(), la, outBuf, inBuf, 3.0f, static_cast<int32_t>(W),
-     static_cast<int32_t>(H));
+  fn(la, stream())(outBuf, inBuf, 3.0f, static_cast<int32_t>(W),
+                   static_cast<int32_t>(H));
   outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
@@ -421,8 +421,8 @@ TEST_P(KernelTest, LocalMemoryArgument) {
                {Attribute(&outBuf), Attribute(&inBuf),
                 Attribute().localMem(localSize * sizeof(float))});
   } else {
-    fn(stream(), la, outBuf, inBuf,
-       Attribute().localMem(localSize * sizeof(float)));
+    fn(la, stream())(outBuf, inBuf,
+                     Attribute().localMem(localSize * sizeof(float)));
   }
 
   outBuf.copyTo(stream(), output.data(), safeGroups * sizeof(float));
@@ -655,7 +655,7 @@ TEST_P(KernelTest, FunctionSpecialization) {
     // Re-fill output with sentinel before each dispatch.
     outBuf.copy(stream(), output.data(), safeN * sizeof(float));
     auto fn = lib.lookupSpecializedFunction("specialized_fn", true);
-    fn(stream(), la, outBuf, inBuf, 3.0f);
+    fn(la, stream())(outBuf, inBuf, 3.0f);
     outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
     stream().sync();
 
@@ -676,7 +676,7 @@ TEST_P(KernelTest, FunctionSpecialization) {
     std::fill(output.begin(), output.end(), kSentinel);
     outBuf.copy(stream(), output.data(), safeN * sizeof(float));
     auto fn = lib.lookupSpecializedFunction("specialized_fn", false);
-    fn(stream(), la, outBuf, inBuf, 3.0f);
+    fn(la, stream())(outBuf, inBuf, 3.0f);
     outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
     stream().sync();
 
@@ -724,7 +724,7 @@ TEST_P(KernelTest, SetGlobals) {
   LaunchArgs la;
   la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
 
-  fn(stream(), la, outBuf, inBuf, static_cast<uint32_t>(N));
+  fn(la, stream())(outBuf, inBuf, static_cast<uint32_t>(N));
   outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
@@ -740,7 +740,7 @@ TEST_P(KernelTest, SetGlobals) {
   std::fill(output.begin(), output.end(), kSentinel);
   outBuf.copy(stream(), output.data(), safeN * sizeof(float));
 
-  fn(stream(), la, outBuf, inBuf, static_cast<uint32_t>(N));
+  fn(la, stream())(outBuf, inBuf, static_cast<uint32_t>(N));
   outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
 
@@ -795,12 +795,12 @@ TEST_P(KernelTest, RequireMatchingSubgroupSize) {
   // Vulkan currently does not enable VK_EXT_subgroup_size_control, so it
   // throws unsupported_error for any non-zero requireSubgroupSize.
   if (backend() == Backend::Vulkan) {
-    EXPECT_THROW(fn(stream(), la, outBuf, inBuf, 1.5f),
+    EXPECT_THROW(fn(la, stream())(outBuf, inBuf, 1.5f),
                  ghost::unsupported_error);
     return;
   }
 
-  EXPECT_NO_THROW(fn(stream(), la, outBuf, inBuf, 1.5f));
+  EXPECT_NO_THROW(fn(la, stream())(outBuf, inBuf, 1.5f));
   outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
   stream().sync();
   for (size_t i = 0; i < N; i++) {
@@ -827,7 +827,7 @@ TEST_P(KernelTest, RequireWrongSubgroupSizeThrows) {
 
   // Vulkan throws unsupported_error (extension not enabled). Other backends
   // throw std::invalid_argument from the mismatch check.
-  EXPECT_THROW(fn(stream(), la, outBuf, inBuf, 1.0f), std::exception);
+  EXPECT_THROW(fn(la, stream())(outBuf, inBuf, 1.0f), std::exception);
 }
 
 GHOST_INSTANTIATE_KERNEL_TESTS(KernelTest);

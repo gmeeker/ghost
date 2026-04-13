@@ -28,7 +28,7 @@ class FunctionOpenCL : public Function {
 
   FunctionOpenCL(const DeviceOpenCL& dev, opencl::ptr<cl_kernel> k);
 
-  virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
+  virtual void execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
 
   virtual Attribute getAttribute(FunctionAttributeId what) const override;

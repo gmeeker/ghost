@@ -208,26 +208,49 @@ class Function {
   /// @brief Get the backend implementation (mutable).
   std::shared_ptr<implementation::Function>& impl() { return _impl; }
 
-  /// @brief Dispatch the kernel on a stream with the given launch configuration
-  /// and arguments.
-  /// @tparam ARGS Variadic argument types, each convertible to Attribute.
-  /// @param s The stream to enqueue the kernel on.
+  /// @brief Bind launch configuration and encoder, returning a callable.
+  ///
+  /// The returned BoundFunction is called with kernel arguments to dispatch:
+  /// @code
+  /// fn(LaunchArgs().global_size(1024), stream)(buffer, 42.0f);
+  /// fn(LaunchArgs().global_size(1024), cmdBuf)(buffer, 42.0f);
+  /// @endcode
+  class BoundFunction {
+   public:
+    BoundFunction(std::shared_ptr<implementation::Function> impl,
+                  const LaunchArgs& launchArgs, const Encoder& encoder);
+
+    template <typename... ARGS>
+    void operator()(ARGS&&... args) {
+      std::vector<Attribute> attrArgs;
+      implementation::Function::addArgs(attrArgs, std::forward<ARGS>(args)...);
+      dispatch(attrArgs);
+    }
+
+   private:
+    void dispatch(const std::vector<Attribute>& args);
+
+    std::shared_ptr<implementation::Function> _impl;
+    LaunchArgs _launchArgs;
+    const Encoder& _encoder;
+  };
+
+  /// @brief Bind this kernel to a launch configuration and encoder.
   /// @param launchArgs Global and local work size configuration.
-  /// @param args Kernel arguments (buffers, images, scalars, local memory).
-  template <typename... ARGS>
-  void operator()(const Stream& s, const LaunchArgs& launchArgs,
-                  ARGS&&... args) {
-    (*_impl)(s, launchArgs, std::forward<ARGS>(args)...);
+  /// @param s The encoder (Stream or CommandBuffer) to target.
+  /// @return A BoundFunction that dispatches when called with kernel arguments.
+  BoundFunction operator()(const LaunchArgs& launchArgs, const Encoder& s) {
+    return BoundFunction(_impl, launchArgs, s);
   }
 
   /// @brief Dispatch the kernel with a pre-built argument vector.
   ///
   /// Use this overload when kernel arguments are assembled dynamically
   /// (e.g., from descriptor set bindings or push constants).
-  /// @param s The stream to enqueue the kernel on.
+  /// @param s The encoder to dispatch on.
   /// @param launchArgs Global and local work size configuration.
   /// @param args Kernel arguments as a vector of Attribute.
-  void execute(const Stream& s, const LaunchArgs& launchArgs,
+  void execute(const Encoder& s, const LaunchArgs& launchArgs,
                const std::vector<Attribute>& args);
 
   /// @brief Query a function attribute.

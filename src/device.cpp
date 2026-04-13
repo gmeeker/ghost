@@ -12,6 +12,7 @@
 // License for the specific language governing permissions and limitations under
 // the License.
 
+#include <ghost/command_buffer.h>
 #include <ghost/device.h>
 
 #include <cstring>
@@ -30,6 +31,8 @@ void Stream::waitForEvent(const std::shared_ptr<Event>&) {
   throw ghost::unsupported_error();
 }
 
+CommandBuffer* Encoder::asCommandBuffer() { return nullptr; }
+
 size_t Buffer::baseOffset() const { return 0; }
 
 std::shared_ptr<Buffer> Buffer::createSubBuffer(const std::shared_ptr<Buffer>&,
@@ -37,30 +40,30 @@ std::shared_ptr<Buffer> Buffer::createSubBuffer(const std::shared_ptr<Buffer>&,
   throw ghost::unsupported_error();
 }
 
-void* Buffer::map(const ghost::Stream&, Access, bool) {
+void* Buffer::map(const ghost::Encoder&, Access, bool) {
   throw ghost::unsupported_error();
 }
 
-void Buffer::unmap(const ghost::Stream&) { throw ghost::unsupported_error(); }
+void Buffer::unmap(const ghost::Encoder&) { throw ghost::unsupported_error(); }
 
-void Buffer::copy(const ghost::Stream&, const ghost::Buffer&, size_t, size_t,
+void Buffer::copy(const ghost::Encoder&, const ghost::Buffer&, size_t, size_t,
                   size_t) {
   throw ghost::unsupported_error();
 }
 
-void Buffer::copy(const ghost::Stream&, const void*, size_t, size_t) {
+void Buffer::copy(const ghost::Encoder&, const void*, size_t, size_t) {
   throw ghost::unsupported_error();
 }
 
-void Buffer::copyTo(const ghost::Stream&, void*, size_t, size_t) const {
+void Buffer::copyTo(const ghost::Encoder&, void*, size_t, size_t) const {
   throw ghost::unsupported_error();
 }
 
-void Buffer::fill(const ghost::Stream&, size_t, size_t, uint8_t) {
+void Buffer::fill(const ghost::Encoder&, size_t, size_t, uint8_t) {
   throw ghost::unsupported_error();
 }
 
-void Buffer::fill(const ghost::Stream&, size_t, size_t, const void*, size_t) {
+void Buffer::fill(const ghost::Encoder&, size_t, size_t, const void*, size_t) {
   throw ghost::unsupported_error();
 }
 
@@ -82,18 +85,18 @@ size_t Device::getMemoryPoolSize() const { return _poolSize; }
 
 void Device::setMemoryPoolSize(size_t bytes) { _poolSize = bytes; }
 
-void Image::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void Image::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                  const BufferLayout& layout, const Origin3& imageOrigin) {
   throw ghost::unsupported_error();
 }
 
-void Image::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+void Image::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                    const BufferLayout& layout,
                    const Origin3& imageOrigin) const {
   throw ghost::unsupported_error();
 }
 
-void Image::copy(const ghost::Stream& s, const ghost::Image& src,
+void Image::copy(const ghost::Encoder& s, const ghost::Image& src,
                  const Size3& region, const Origin3& srcOrigin,
                  const Origin3& dstOrigin) {
   throw ghost::unsupported_error();
@@ -112,56 +115,101 @@ double Event::elapsed(const Event& start, const Event& end) {
   return start._impl->elapsed(*end._impl);
 }
 
-Stream::Stream(std::shared_ptr<implementation::Stream> impl) : _impl(impl) {}
+Encoder::Encoder(std::shared_ptr<implementation::Encoder> impl) : _impl(impl) {}
 
-void Stream::sync() { impl()->sync(); }
+Stream::Stream(std::shared_ptr<implementation::Stream> impl) : Encoder(impl) {}
 
-Event Stream::record() { return Event(_impl->record()); }
+void Stream::sync() {
+  static_cast<implementation::Stream*>(_impl.get())->sync();
+}
 
-void Stream::waitForEvent(const Event& e) { _impl->waitForEvent(e.impl()); }
+Event Stream::record() {
+  return Event(static_cast<implementation::Stream*>(_impl.get())->record());
+}
+
+void Stream::waitForEvent(const Event& e) {
+  static_cast<implementation::Stream*>(_impl.get())->waitForEvent(e.impl());
+}
 
 Buffer::Buffer(std::shared_ptr<implementation::Buffer> impl) : _impl(impl) {}
 
 size_t Buffer::size() const { return _impl->size(); }
 
-void Buffer::copy(const Stream& s, const Buffer& src, size_t bytes) {
-  _impl->copy(s, src, bytes);
+void Buffer::copy(const Encoder& s, const Buffer& src, size_t bytes) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyBuffer(_impl, src._impl, 0, 0, bytes);
+  else
+    _impl->copy(s, src, bytes);
 }
 
-void Buffer::copy(const Stream& s, const void* src, size_t bytes) {
-  _impl->copy(s, src, bytes);
+void Buffer::copy(const Encoder& s, const void* src, size_t bytes) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyBufferRaw(_impl, src, 0, bytes);
+  else
+    _impl->copy(s, src, bytes);
 }
 
-void Buffer::copyTo(const Stream& s, void* dst, size_t bytes) const {
-  _impl->copyTo(s, dst, bytes);
+void Buffer::copyTo(const Encoder& s, void* dst, size_t bytes) const {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->readBuffer(_impl, dst, 0, bytes);
+  else
+    _impl->copyTo(s, dst, bytes);
 }
 
-void Buffer::copy(const Stream& s, const Buffer& src, size_t srcOffset,
+void Buffer::copy(const Encoder& s, const Buffer& src, size_t srcOffset,
                   size_t dstOffset, size_t bytes) {
-  _impl->copy(s, src, srcOffset, dstOffset, bytes);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyBuffer(_impl, src._impl, srcOffset, dstOffset, bytes);
+  else
+    _impl->copy(s, src, srcOffset, dstOffset, bytes);
 }
 
-void Buffer::copy(const Stream& s, const void* src, size_t dstOffset,
+void Buffer::copy(const Encoder& s, const void* src, size_t dstOffset,
                   size_t bytes) {
-  _impl->copy(s, src, dstOffset, bytes);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyBufferRaw(_impl, src, dstOffset, bytes);
+  else
+    _impl->copy(s, src, dstOffset, bytes);
 }
 
-void Buffer::copyTo(const Stream& s, void* dst, size_t srcOffset,
+void Buffer::copyTo(const Encoder& s, void* dst, size_t srcOffset,
                     size_t bytes) const {
-  _impl->copyTo(s, dst, srcOffset, bytes);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->readBuffer(_impl, dst, srcOffset, bytes);
+  else
+    _impl->copyTo(s, dst, srcOffset, bytes);
 }
 
-void Buffer::fill(const Stream& s, size_t offset, size_t size, uint8_t value) {
-  _impl->fill(s, offset, size, value);
+void Buffer::fill(const Encoder& s, size_t offset, size_t size, uint8_t value) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->fillBuffer(_impl, offset, size, value);
+  else
+    _impl->fill(s, offset, size, value);
 }
 
-void Buffer::fill(const Stream& s, size_t offset, size_t size, uint32_t value) {
-  _impl->fill(s, offset, size, &value, sizeof(value));
+void Buffer::fill(const Encoder& s, size_t offset, size_t size,
+                  uint32_t value) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->fillBufferPattern(_impl, offset, size, &value, sizeof(value));
+  else
+    _impl->fill(s, offset, size, &value, sizeof(value));
 }
 
-void Buffer::fill(const Stream& s, size_t offset, size_t size,
+void Buffer::fill(const Encoder& s, size_t offset, size_t size,
                   const void* pattern, size_t patternSize) {
-  _impl->fill(s, offset, size, pattern, patternSize);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->fillBufferPattern(_impl, offset, size, pattern, patternSize);
+  else
+    _impl->fill(s, offset, size, pattern, patternSize);
 }
 
 Buffer Buffer::createSubBuffer(size_t offset, size_t size) {
@@ -171,11 +219,11 @@ Buffer Buffer::createSubBuffer(size_t offset, size_t size) {
 MappedBuffer::MappedBuffer(std::shared_ptr<implementation::Buffer> impl)
     : Buffer(impl) {}
 
-void* MappedBuffer::map(const Stream& s, Access access, bool sync) {
+void* MappedBuffer::map(const Encoder& s, Access access, bool sync) {
   return impl()->map(s, access, sync);
 }
 
-void MappedBuffer::unmap(const Stream& s) { impl()->unmap(s); }
+void MappedBuffer::unmap(const Encoder& s) { impl()->unmap(s); }
 
 Image::Image(std::shared_ptr<implementation::Image> impl) : _impl(impl) {}
 
@@ -187,54 +235,97 @@ Attribute Image::sample() const {
   return Attribute(*const_cast<Image*>(this), SamplerDescription{});
 }
 
-void Image::copy(const Stream& s, const Image& src) { _impl->copy(s, src); }
-
-void Image::copy(const Stream& s, const Buffer& src) {
-  _impl->copy(s, src, BufferLayout(description().size));
+void Image::copy(const Encoder& s, const Image& src) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImage(_impl, src._impl);
+  else
+    _impl->copy(s, src);
 }
 
-void Image::copy(const Stream& s, const void* src) {
-  _impl->copy(s, src, BufferLayout(description().size));
+void Image::copy(const Encoder& s, const Buffer& src) {
+  auto layout = BufferLayout(description().size);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageFromBuffer(_impl, src.impl(), layout);
+  else
+    _impl->copy(s, src, layout);
 }
 
-void Image::copyTo(const Stream& s, Buffer& dst) const {
-  _impl->copyTo(s, dst, BufferLayout(description().size));
+void Image::copy(const Encoder& s, const void* src) {
+  auto layout = BufferLayout(description().size);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageFromHost(_impl, src, layout);
+  else
+    _impl->copy(s, src, layout);
 }
 
-void Image::copyTo(const Stream& s, void* dst) const {
-  _impl->copyTo(s, dst, BufferLayout(description().size));
+void Image::copyTo(const Encoder& s, Buffer& dst) const {
+  auto layout = BufferLayout(description().size);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageToBuffer(_impl, dst.impl(), layout);
+  else
+    _impl->copyTo(s, dst, layout);
 }
 
-void Image::copy(const Stream& s, const Buffer& src,
+void Image::copyTo(const Encoder& s, void* dst) const {
+  auto layout = BufferLayout(description().size);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageToHost(_impl, dst, layout);
+  else
+    _impl->copyTo(s, dst, layout);
+}
+
+void Image::copy(const Encoder& s, const Buffer& src,
                  const BufferLayout& layout) {
-  _impl->copy(s, src, layout);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageFromBuffer(_impl, src.impl(), layout);
+  else
+    _impl->copy(s, src, layout);
 }
 
-void Image::copy(const Stream& s, const void* src, const BufferLayout& layout) {
-  _impl->copy(s, src, layout);
+void Image::copy(const Encoder& s, const void* src,
+                 const BufferLayout& layout) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageFromHost(_impl, src, layout);
+  else
+    _impl->copy(s, src, layout);
 }
 
-void Image::copyTo(const Stream& s, Buffer& dst,
+void Image::copyTo(const Encoder& s, Buffer& dst,
                    const BufferLayout& layout) const {
-  _impl->copyTo(s, dst, layout);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageToBuffer(_impl, dst.impl(), layout);
+  else
+    _impl->copyTo(s, dst, layout);
 }
 
-void Image::copyTo(const Stream& s, void* dst,
+void Image::copyTo(const Encoder& s, void* dst,
                    const BufferLayout& layout) const {
-  _impl->copyTo(s, dst, layout);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageToHost(_impl, dst, layout);
+  else
+    _impl->copyTo(s, dst, layout);
 }
 
-void Image::copy(const Stream& s, const Buffer& src, const BufferLayout& layout,
-                 const Origin3& imageOrigin) {
+void Image::copy(const Encoder& s, const Buffer& src,
+                 const BufferLayout& layout, const Origin3& imageOrigin) {
   _impl->copy(s, src, layout, imageOrigin);
 }
 
-void Image::copyTo(const Stream& s, Buffer& dst, const BufferLayout& layout,
+void Image::copyTo(const Encoder& s, Buffer& dst, const BufferLayout& layout,
                    const Origin3& imageOrigin) const {
   _impl->copyTo(s, dst, layout, imageOrigin);
 }
 
-void Image::copy(const Stream& s, const Image& src, const Size3& region,
+void Image::copy(const Encoder& s, const Image& src, const Size3& region,
                  const Origin3& srcOrigin, const Origin3& dstOrigin) {
   _impl->copy(s, src, region, srcOrigin, dstOrigin);
 }

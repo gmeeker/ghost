@@ -290,7 +290,7 @@ void FunctionVulkan::createPipeline() {
   _pipelineCreated = true;
 }
 
-void FunctionVulkan::execute(const ghost::Stream& s,
+void FunctionVulkan::execute(const ghost::Encoder& s,
                              const LaunchArgs& launchArgs,
                              const std::vector<Attribute>& args) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());

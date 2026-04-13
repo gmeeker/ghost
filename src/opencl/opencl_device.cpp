@@ -296,7 +296,7 @@ BufferOpenCL::BufferOpenCL(const DeviceOpenCL& dev, size_t bytes,
 
 size_t BufferOpenCL::size() const { return _size; }
 
-void BufferOpenCL::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void BufferOpenCL::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                         size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferOpenCL*>(src.impl().get());
@@ -308,7 +308,8 @@ void BufferOpenCL::copy(const ghost::Stream& s, const ghost::Buffer& src,
   stream_impl->addEvent();
 }
 
-void BufferOpenCL::copy(const ghost::Stream& s, const void* src, size_t bytes) {
+void BufferOpenCL::copy(const ghost::Encoder& s, const void* src,
+                        size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
   err = clEnqueueWriteBuffer(stream_impl->queue, mem, false, 0, bytes, src,
@@ -318,7 +319,7 @@ void BufferOpenCL::copy(const ghost::Stream& s, const void* src, size_t bytes) {
   stream_impl->addEvent();
 }
 
-void BufferOpenCL::copyTo(const ghost::Stream& s, void* dst,
+void BufferOpenCL::copyTo(const ghost::Encoder& s, void* dst,
                           size_t bytes) const {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
@@ -329,7 +330,7 @@ void BufferOpenCL::copyTo(const ghost::Stream& s, void* dst,
   stream_impl->addEvent();
 }
 
-void BufferOpenCL::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void BufferOpenCL::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                         size_t srcOffset, size_t dstOffset, size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferOpenCL*>(src.impl().get());
@@ -341,7 +342,7 @@ void BufferOpenCL::copy(const ghost::Stream& s, const ghost::Buffer& src,
   stream_impl->addEvent();
 }
 
-void BufferOpenCL::copy(const ghost::Stream& s, const void* src,
+void BufferOpenCL::copy(const ghost::Encoder& s, const void* src,
                         size_t dstOffset, size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
@@ -352,7 +353,7 @@ void BufferOpenCL::copy(const ghost::Stream& s, const void* src,
   stream_impl->addEvent();
 }
 
-void BufferOpenCL::copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
+void BufferOpenCL::copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
                           size_t bytes) const {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
@@ -363,7 +364,7 @@ void BufferOpenCL::copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
   stream_impl->addEvent();
 }
 
-void BufferOpenCL::fill(const ghost::Stream& s, size_t offset, size_t size,
+void BufferOpenCL::fill(const ghost::Encoder& s, size_t offset, size_t size,
                         uint8_t value) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
@@ -374,7 +375,7 @@ void BufferOpenCL::fill(const ghost::Stream& s, size_t offset, size_t size,
   stream_impl->addEvent();
 }
 
-void BufferOpenCL::fill(const ghost::Stream& s, size_t offset, size_t size,
+void BufferOpenCL::fill(const ghost::Encoder& s, size_t offset, size_t size,
                         const void* pattern, size_t patternSize) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
@@ -431,7 +432,7 @@ MappedBufferOpenCL::MappedBufferOpenCL(const DeviceOpenCL& dev, size_t bytes,
   checkError(err);
 }
 
-void* MappedBufferOpenCL::map(const ghost::Stream& s, Access access,
+void* MappedBufferOpenCL::map(const ghost::Encoder& s, Access access,
                               bool sync) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
@@ -457,7 +458,7 @@ void* MappedBufferOpenCL::map(const ghost::Stream& s, Access access,
   return ptr;
 }
 
-void MappedBufferOpenCL::unmap(const ghost::Stream& s) {
+void MappedBufferOpenCL::unmap(const ghost::Encoder& s) {
   if (ptr) {
     auto stream_impl =
         static_cast<implementation::StreamOpenCL*>(s.impl().get());
@@ -534,7 +535,7 @@ ImageOpenCL::ImageOpenCL(const DeviceOpenCL& dev,
                          const ImageDescription& descr_, ImageOpenCL& image)
     : mem(image.mem), descr(descr_) {}
 
-void ImageOpenCL::copy(const ghost::Stream& s, const ghost::Image& src) {
+void ImageOpenCL::copy(const ghost::Encoder& s, const ghost::Image& src) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   auto src_impl = static_cast<implementation::ImageOpenCL*>(src.impl().get());
   cl_int err;
@@ -548,7 +549,7 @@ void ImageOpenCL::copy(const ghost::Stream& s, const ghost::Image& src) {
   stream_impl->addEvent();
 }
 
-void ImageOpenCL::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void ImageOpenCL::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                        const BufferLayout& layout) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferOpenCL*>(src.impl().get());
@@ -563,7 +564,7 @@ void ImageOpenCL::copy(const ghost::Stream& s, const ghost::Buffer& src,
   stream_impl->addEvent();
 }
 
-void ImageOpenCL::copy(const ghost::Stream& s, const void* src,
+void ImageOpenCL::copy(const ghost::Encoder& s, const void* src,
                        const BufferLayout& layout) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
@@ -577,7 +578,7 @@ void ImageOpenCL::copy(const ghost::Stream& s, const void* src,
   stream_impl->addEvent();
 }
 
-void ImageOpenCL::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+void ImageOpenCL::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                          const BufferLayout& layout) const {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   auto dst_impl = static_cast<implementation::BufferOpenCL*>(dst.impl().get());
@@ -592,7 +593,7 @@ void ImageOpenCL::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
   stream_impl->addEvent();
 }
 
-void ImageOpenCL::copyTo(const ghost::Stream& s, void* dst,
+void ImageOpenCL::copyTo(const ghost::Encoder& s, void* dst,
                          const BufferLayout& layout) const {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
@@ -606,7 +607,7 @@ void ImageOpenCL::copyTo(const ghost::Stream& s, void* dst,
   stream_impl->addEvent();
 }
 
-void ImageOpenCL::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void ImageOpenCL::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                        const BufferLayout& layout, const Origin3& imageOrigin) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferOpenCL*>(src.impl().get());
@@ -621,7 +622,7 @@ void ImageOpenCL::copy(const ghost::Stream& s, const ghost::Buffer& src,
   stream_impl->addEvent();
 }
 
-void ImageOpenCL::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+void ImageOpenCL::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                          const BufferLayout& layout,
                          const Origin3& imageOrigin) const {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
@@ -637,7 +638,7 @@ void ImageOpenCL::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
   stream_impl->addEvent();
 }
 
-void ImageOpenCL::copy(const ghost::Stream& s, const ghost::Image& src,
+void ImageOpenCL::copy(const ghost::Encoder& s, const ghost::Image& src,
                        const Size3& region, const Origin3& srcOrigin,
                        const Origin3& dstOrigin) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());

@@ -54,7 +54,8 @@ using namespace cu;
 FunctionCUDA::FunctionCUDA(const DeviceCUDA& dev, CUfunction k)
     : kernel(k), _dev(dev) {}
 
-void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
+void FunctionCUDA::execute(const ghost::Encoder& s,
+                           const LaunchArgs& launchArgs,
                            const std::vector<Attribute>& args) {
   CUresult err;
   size_t local_mem = 0;

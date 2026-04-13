@@ -69,23 +69,23 @@ class BufferMetal : public Buffer {
 
   virtual size_t size() const override;
 
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     size_t bytes) override;
-  virtual void copy(const ghost::Stream& s, const void* src,
+  virtual void copy(const ghost::Encoder& s, const void* src,
                     size_t bytes) override;
-  virtual void copyTo(const ghost::Stream& s, void* dst,
+  virtual void copyTo(const ghost::Encoder& s, void* dst,
                       size_t bytes) const override;
 
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     size_t srcOffset, size_t dstOffset, size_t bytes) override;
-  virtual void copy(const ghost::Stream& s, const void* src, size_t dstOffset,
+  virtual void copy(const ghost::Encoder& s, const void* src, size_t dstOffset,
                     size_t bytes) override;
-  virtual void copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
+  virtual void copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
                       size_t bytes) const override;
 
-  virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
+  virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
                     uint8_t value) override;
-  virtual void fill(const ghost::Stream& s, size_t offset, size_t size,
+  virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
                     const void* pattern, size_t patternSize) override;
 
   virtual std::shared_ptr<Buffer> createSubBuffer(
@@ -102,11 +102,11 @@ class SubBufferMetal : public BufferMetal {
 
   virtual size_t baseOffset() const override;
 
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     size_t bytes) override;
-  virtual void copy(const ghost::Stream& s, const void* src,
+  virtual void copy(const ghost::Encoder& s, const void* src,
                     size_t bytes) override;
-  virtual void copyTo(const ghost::Stream& s, void* dst,
+  virtual void copyTo(const ghost::Encoder& s, void* dst,
                       size_t bytes) const override;
 };
 
@@ -118,9 +118,9 @@ class MappedBufferMetal : public BufferMetal {
   MappedBufferMetal(const DeviceMetal& dev, size_t bytes,
                     const BufferOptions& opts = {});
 
-  virtual void* map(const ghost::Stream& s, Access access,
+  virtual void* map(const ghost::Encoder& s, Access access,
                     bool sync = true) override;
-  virtual void unmap(const ghost::Stream& s) override;
+  virtual void unmap(const ghost::Encoder& s) override;
 };
 
 class ImageMetal : public Image {
@@ -137,22 +137,22 @@ class ImageMetal : public Image {
 
   virtual const ImageDescription& description() const override { return descr; }
 
-  virtual void copy(const ghost::Stream& s, const ghost::Image& src) override;
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+  virtual void copy(const ghost::Encoder& s, const ghost::Image& src) override;
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     const BufferLayout& layout) override;
-  virtual void copy(const ghost::Stream& s, const void* src,
+  virtual void copy(const ghost::Encoder& s, const void* src,
                     const BufferLayout& layout) override;
-  virtual void copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+  virtual void copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                       const BufferLayout& layout) const override;
-  virtual void copyTo(const ghost::Stream& s, void* dst,
+  virtual void copyTo(const ghost::Encoder& s, void* dst,
                       const BufferLayout& layout) const override;
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     const BufferLayout& layout,
                     const Origin3& imageOrigin) override;
-  virtual void copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+  virtual void copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                       const BufferLayout& layout,
                       const Origin3& imageOrigin) const override;
-  virtual void copy(const ghost::Stream& s, const ghost::Image& src,
+  virtual void copy(const ghost::Encoder& s, const ghost::Image& src,
                     const Size3& region, const Origin3& srcOrigin,
                     const Origin3& dstOrigin) override;
 };

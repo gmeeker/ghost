@@ -263,21 +263,21 @@ BufferMetal::BufferMetal(const DeviceMetal &dev, size_t bytes,
 
 size_t BufferMetal::size() const { return _size; }
 
-void BufferMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
+void BufferMetal::copy(const ghost::Encoder &s, const ghost::Buffer &src,
                        size_t bytes) {
   copy(s, src, 0, 0, bytes);
 }
 
-void BufferMetal::copy(const ghost::Stream &s, const void *src, size_t bytes) {
+void BufferMetal::copy(const ghost::Encoder &s, const void *src, size_t bytes) {
   copy(s, src, 0, bytes);
 }
 
-void BufferMetal::copyTo(const ghost::Stream &s, void *dst,
+void BufferMetal::copyTo(const ghost::Encoder &s, void *dst,
                          size_t bytes) const {
   copyTo(s, dst, 0, bytes);
 }
 
-void BufferMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
+void BufferMetal::copy(const ghost::Encoder &s, const ghost::Buffer &src,
                        size_t srcOffset, size_t dstOffset, size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
@@ -327,7 +327,7 @@ void BufferMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
   }
 }
 
-void BufferMetal::copy(const ghost::Stream &s, const void *src,
+void BufferMetal::copy(const ghost::Encoder &s, const void *src,
                        size_t dstOffset, size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   size_t effectiveDstOff = baseOffset() + dstOffset;
@@ -357,7 +357,7 @@ void BufferMetal::copy(const ghost::Stream &s, const void *src,
   }
 }
 
-void BufferMetal::copyTo(const ghost::Stream &s, void *dst, size_t srcOffset,
+void BufferMetal::copyTo(const ghost::Encoder &s, void *dst, size_t srcOffset,
                          size_t bytes) const {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   size_t effectiveSrcOff = baseOffset() + srcOffset;
@@ -400,7 +400,7 @@ void BufferMetal::copyTo(const ghost::Stream &s, void *dst, size_t srcOffset,
   }
 }
 
-void BufferMetal::fill(const ghost::Stream &s, size_t offset, size_t size,
+void BufferMetal::fill(const ghost::Encoder &s, size_t offset, size_t size,
                        uint8_t value) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   size_t effectiveOff = baseOffset() + offset;
@@ -427,22 +427,22 @@ SubBufferMetal::SubBufferMetal(std::shared_ptr<Buffer> parent,
 
 size_t SubBufferMetal::baseOffset() const { return _offset; }
 
-void SubBufferMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
+void SubBufferMetal::copy(const ghost::Encoder &s, const ghost::Buffer &src,
                           size_t bytes) {
   BufferMetal::copy(s, src, 0, 0, bytes);
 }
 
-void SubBufferMetal::copy(const ghost::Stream &s, const void *src,
+void SubBufferMetal::copy(const ghost::Encoder &s, const void *src,
                           size_t bytes) {
   BufferMetal::copy(s, src, 0, bytes);
 }
 
-void SubBufferMetal::copyTo(const ghost::Stream &s, void *dst,
+void SubBufferMetal::copyTo(const ghost::Encoder &s, void *dst,
                             size_t bytes) const {
   BufferMetal::copyTo(s, dst, 0, bytes);
 }
 
-void BufferMetal::fill(const ghost::Stream &s, size_t offset, size_t size,
+void BufferMetal::fill(const ghost::Encoder &s, size_t offset, size_t size,
                        const void *pattern, size_t patternSize) {
   // Metal only supports single-byte fill natively.
   // For multi-byte patterns, fill on CPU side if accessible, otherwise use
@@ -494,7 +494,8 @@ MappedBufferMetal::MappedBufferMetal(const DeviceMetal &dev, size_t bytes,
   checkExists(mem);
 }
 
-void *MappedBufferMetal::map(const ghost::Stream &s, Access access, bool sync) {
+void *MappedBufferMetal::map(const ghost::Encoder &s, Access access,
+                             bool sync) {
   if (sync) {
     auto stream_impl =
         static_cast<implementation::StreamMetal *>(s.impl().get());
@@ -503,7 +504,7 @@ void *MappedBufferMetal::map(const ghost::Stream &s, Access access, bool sync) {
   return [mem contents];
 }
 
-void MappedBufferMetal::unmap(const ghost::Stream &s) {
+void MappedBufferMetal::unmap(const ghost::Encoder &s) {
   [mem didModifyRange:NSMakeRange(0, length)];
 }
 
@@ -534,7 +535,7 @@ ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_,
   mem = [image.mem.get() newTextureViewWithPixelFormat:getFormat(descr)];
 }
 
-void ImageMetal::copy(const ghost::Stream &s, const ghost::Image &src) {
+void ImageMetal::copy(const ghost::Encoder &s, const ghost::Image &src) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto src_impl = static_cast<implementation::ImageMetal *>(src.impl().get());
   id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
@@ -556,7 +557,7 @@ void ImageMetal::copy(const ghost::Stream &s, const ghost::Image &src) {
   stream_impl->commitAndTrack(commandBuffer);
 }
 
-void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
+void ImageMetal::copy(const ghost::Encoder &s, const ghost::Buffer &src,
                       const BufferLayout &layout) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
@@ -579,7 +580,7 @@ void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
   stream_impl->commitAndTrack(commandBuffer);
 }
 
-void ImageMetal::copy(const ghost::Stream &s, const void *src,
+void ImageMetal::copy(const ghost::Encoder &s, const void *src,
                       const BufferLayout &layout) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   if (!IsPrivate(mem.get())) {
@@ -616,7 +617,7 @@ void ImageMetal::copy(const ghost::Stream &s, const void *src,
   stream_impl->commitAndTrack(commandBuffer);
 }
 
-void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
+void ImageMetal::copyTo(const ghost::Encoder &s, ghost::Buffer &dst,
                         const BufferLayout &layout) const {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto dst_impl = static_cast<implementation::BufferMetal *>(dst.impl().get());
@@ -639,7 +640,7 @@ void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
   stream_impl->commitAndTrack(commandBuffer);
 }
 
-void ImageMetal::copyTo(const ghost::Stream &s, void *dst,
+void ImageMetal::copyTo(const ghost::Encoder &s, void *dst,
                         const BufferLayout &layout) const {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   // For non-private textures accessed from CPU, we need to sync pending GPU
@@ -680,7 +681,7 @@ void ImageMetal::copyTo(const ghost::Stream &s, void *dst,
   memcpy(dst, [staging contents], dataSize);
 }
 
-void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
+void ImageMetal::copy(const ghost::Encoder &s, const ghost::Buffer &src,
                       const BufferLayout &layout, const Origin3 &imageOrigin) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
@@ -703,7 +704,7 @@ void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
   stream_impl->commitAndTrack(commandBuffer);
 }
 
-void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
+void ImageMetal::copyTo(const ghost::Encoder &s, ghost::Buffer &dst,
                         const BufferLayout &layout,
                         const Origin3 &imageOrigin) const {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
@@ -727,7 +728,7 @@ void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
   stream_impl->commitAndTrack(commandBuffer);
 }
 
-void ImageMetal::copy(const ghost::Stream &s, const ghost::Image &src,
+void ImageMetal::copy(const ghost::Encoder &s, const ghost::Image &src,
                       const Size3 &region, const Origin3 &srcOrigin,
                       const Origin3 &dstOrigin) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());

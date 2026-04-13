@@ -83,6 +83,7 @@ class CompilerOptions {
   std::vector<std::pair<std::string, std::string>> headers;
 };
 
+class Encoder;
 class Function;
 class Library;
 class Stream;
@@ -113,7 +114,7 @@ class Function {
   /// @param s The stream to enqueue the kernel on.
   /// @param launchArgs Global and local work size configuration.
   /// @param args Kernel arguments as a vector of Attribute.
-  virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
+  virtual void execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) = 0;
 
   /// @brief Execute the kernel with workgroup counts read from a GPU buffer.
@@ -126,7 +127,7 @@ class Function {
   /// @param indirectBuffer Buffer containing 3x uint32_t workgroup counts.
   /// @param indirectOffset Byte offset into the indirect buffer.
   /// @param args Kernel arguments.
-  virtual void executeIndirect(const ghost::Stream& s,
+  virtual void executeIndirect(const ghost::Encoder& s,
                                const std::shared_ptr<Buffer>& indirectBuffer,
                                size_t indirectOffset,
                                const std::vector<Attribute>& args);
@@ -175,7 +176,7 @@ class Function {
   /// @brief Dispatch the kernel, converting variadic arguments to Attribute
   /// vector.
   template <typename... ARGS>
-  void operator()(const ghost::Stream& s, const LaunchArgs& launchArgs,
+  void operator()(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                   ARGS&&... tail) {
     std::vector<Attribute> args;
     addArgs(args, std::forward<ARGS>(tail)...);

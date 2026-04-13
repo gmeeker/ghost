@@ -224,42 +224,42 @@ BufferCPU::BufferCPU(const DeviceCPU& dev, size_t bytes) : _size(bytes) {
 
 size_t BufferCPU::size() const { return _size; }
 
-void BufferCPU::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void BufferCPU::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                      size_t bytes) {
   memcpy(ptr, static_cast<const BufferCPU*>(src.impl().get())->ptr, bytes);
 }
 
-void BufferCPU::copy(const ghost::Stream& s, const void* src, size_t bytes) {
+void BufferCPU::copy(const ghost::Encoder& s, const void* src, size_t bytes) {
   memcpy(ptr, src, bytes);
 }
 
-void BufferCPU::copyTo(const ghost::Stream& s, void* dst, size_t bytes) const {
+void BufferCPU::copyTo(const ghost::Encoder& s, void* dst, size_t bytes) const {
   memcpy(dst, ptr, bytes);
 }
 
-void BufferCPU::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void BufferCPU::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                      size_t srcOffset, size_t dstOffset, size_t bytes) {
   auto srcPtr = static_cast<const BufferCPU*>(src.impl().get())->ptr;
   memcpy(static_cast<uint8_t*>(ptr) + dstOffset,
          static_cast<const uint8_t*>(srcPtr) + srcOffset, bytes);
 }
 
-void BufferCPU::copy(const ghost::Stream& s, const void* src, size_t dstOffset,
+void BufferCPU::copy(const ghost::Encoder& s, const void* src, size_t dstOffset,
                      size_t bytes) {
   memcpy(static_cast<uint8_t*>(ptr) + dstOffset, src, bytes);
 }
 
-void BufferCPU::copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
+void BufferCPU::copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
                        size_t bytes) const {
   memcpy(dst, static_cast<const uint8_t*>(ptr) + srcOffset, bytes);
 }
 
-void BufferCPU::fill(const ghost::Stream& s, size_t offset, size_t size,
+void BufferCPU::fill(const ghost::Encoder& s, size_t offset, size_t size,
                      uint8_t value) {
   memset(static_cast<uint8_t*>(ptr) + offset, value, size);
 }
 
-void BufferCPU::fill(const ghost::Stream& s, size_t offset, size_t size,
+void BufferCPU::fill(const ghost::Encoder& s, size_t offset, size_t size,
                      const void* pattern, size_t patternSize) {
   uint8_t* dst = static_cast<uint8_t*>(ptr) + offset;
   if (patternSize == 1) {
@@ -281,14 +281,15 @@ std::shared_ptr<Buffer> BufferCPU::createSubBuffer(
 MappedBufferCPU::MappedBufferCPU(const DeviceCPU& dev, size_t bytes)
     : BufferCPU(dev, bytes) {}
 
-void* MappedBufferCPU::map(const ghost::Stream& s, Access, bool sync) {
+void* MappedBufferCPU::map(const ghost::Encoder& s, Access, bool sync) {
   if (sync) {
-    s.impl()->sync();
+    auto* stream = dynamic_cast<implementation::Stream*>(s.impl().get());
+    if (stream) stream->sync();
   }
   return ptr;
 }
 
-void MappedBufferCPU::unmap(const ghost::Stream&) {}
+void MappedBufferCPU::unmap(const ghost::Encoder&) {}
 
 SubBufferCPU::SubBufferCPU(std::shared_ptr<Buffer> parent, void* ptr_,
                            size_t bytes)
@@ -362,13 +363,13 @@ ImageCPU::ImageCPU(const DeviceCPU& dev, const ImageDescription& descr_,
       rowBytes(image.rowBytes),
       depthBytes(image.depthBytes) {}
 
-void ImageCPU::copy(const ghost::Stream& s, const ghost::Image& src) {
+void ImageCPU::copy(const ghost::Encoder& s, const ghost::Image& src) {
   auto srcImg = static_cast<const ImageCPU*>(src.impl().get());
   copyImageData(data, rowBytes, depthBytes, srcImg->data, srcImg->rowBytes,
                 srcImg->depthBytes, descr.size);
 }
 
-void ImageCPU::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void ImageCPU::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     const BufferLayout& layout) {
   auto srcBuf = static_cast<const BufferCPU*>(src.impl().get());
   size_t sRow = layoutRowBytes(layout, descr.pixelSize());
@@ -377,14 +378,14 @@ void ImageCPU::copy(const ghost::Stream& s, const ghost::Buffer& src,
                 descr.size);
 }
 
-void ImageCPU::copy(const ghost::Stream& s, const void* src,
+void ImageCPU::copy(const ghost::Encoder& s, const void* src,
                     const BufferLayout& layout) {
   size_t sRow = layoutRowBytes(layout, descr.pixelSize());
   size_t sDepth = layoutDepthBytes(layout, sRow);
   copyImageData(data, rowBytes, depthBytes, src, sRow, sDepth, descr.size);
 }
 
-void ImageCPU::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+void ImageCPU::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                       const BufferLayout& layout) const {
   auto dstBuf = static_cast<BufferCPU*>(dst.impl().get());
   size_t dRow = layoutRowBytes(layout, descr.pixelSize());
@@ -393,14 +394,14 @@ void ImageCPU::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
                 descr.size);
 }
 
-void ImageCPU::copyTo(const ghost::Stream& s, void* dst,
+void ImageCPU::copyTo(const ghost::Encoder& s, void* dst,
                       const BufferLayout& layout) const {
   size_t dRow = layoutRowBytes(layout, descr.pixelSize());
   size_t dDepth = layoutDepthBytes(layout, dRow);
   copyImageData(dst, dRow, dDepth, data, rowBytes, depthBytes, descr.size);
 }
 
-void ImageCPU::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void ImageCPU::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     const BufferLayout& layout, const Origin3& imageOrigin) {
   auto srcBuf = static_cast<const BufferCPU*>(src.impl().get());
   size_t sRow = layoutRowBytes(layout, descr.pixelSize());
@@ -412,7 +413,7 @@ void ImageCPU::copy(const ghost::Stream& s, const ghost::Buffer& src,
                 layout.size);
 }
 
-void ImageCPU::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+void ImageCPU::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                       const BufferLayout& layout,
                       const Origin3& imageOrigin) const {
   auto dstBuf = static_cast<BufferCPU*>(dst.impl().get());
@@ -425,7 +426,7 @@ void ImageCPU::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
                 layout.size);
 }
 
-void ImageCPU::copy(const ghost::Stream& s, const ghost::Image& src,
+void ImageCPU::copy(const ghost::Encoder& s, const ghost::Image& src,
                     const Size3& region, const Origin3& srcOrigin,
                     const Origin3& dstOrigin) {
   auto srcImg = static_cast<const ImageCPU*>(src.impl().get());

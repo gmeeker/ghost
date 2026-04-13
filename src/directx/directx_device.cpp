@@ -332,22 +332,22 @@ void BufferDirectX::transitionTo(ID3D12GraphicsCommandList* cmdList,
   currentState = newState;
 }
 
-void BufferDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void BufferDirectX::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                          size_t bytes) {
   copy(s, src, 0, 0, bytes);
 }
 
-void BufferDirectX::copy(const ghost::Stream& s, const void* src,
+void BufferDirectX::copy(const ghost::Encoder& s, const void* src,
                          size_t bytes) {
   copy(s, src, 0, bytes);
 }
 
-void BufferDirectX::copyTo(const ghost::Stream& s, void* dst,
+void BufferDirectX::copyTo(const ghost::Encoder& s, void* dst,
                            size_t bytes) const {
   copyTo(s, dst, 0, bytes);
 }
 
-void BufferDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void BufferDirectX::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                          size_t srcOffset, size_t dstOffset, size_t bytes) {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
   auto* srcBuf = static_cast<BufferDirectX*>(src.impl().get());
@@ -366,7 +366,7 @@ void BufferDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
   srcBuf->transitionTo(cmdList, D3D12_RESOURCE_STATE_COMMON);
 }
 
-void BufferDirectX::copy(const ghost::Stream& s, const void* src,
+void BufferDirectX::copy(const ghost::Encoder& s, const void* src,
                          size_t dstOffset, size_t bytes) {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
 
@@ -395,7 +395,7 @@ void BufferDirectX::copy(const ghost::Stream& s, const void* src,
   stream.pendingStaging.push_back({uploadBuf});
 }
 
-void BufferDirectX::copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
+void BufferDirectX::copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
                            size_t bytes) const {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
 
@@ -425,14 +425,14 @@ void BufferDirectX::copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
   stream.deferredReads.push_back(dr);
 }
 
-void BufferDirectX::fill(const ghost::Stream& s, size_t offset, size_t sz,
+void BufferDirectX::fill(const ghost::Encoder& s, size_t offset, size_t sz,
                          uint8_t value) {
   // D3D12 doesn't have a direct fill command. Use a CPU-side buffer.
   std::vector<uint8_t> data(sz, value);
   copy(s, data.data(), offset, sz);
 }
 
-void BufferDirectX::fill(const ghost::Stream& s, size_t offset, size_t sz,
+void BufferDirectX::fill(const ghost::Encoder& s, size_t offset, size_t sz,
                          const void* pattern, size_t patternSize) {
   std::vector<uint8_t> data(sz);
   for (size_t i = 0; i < sz; i += patternSize) {
@@ -492,7 +492,7 @@ MappedBufferDirectX::~MappedBufferDirectX() {
   }
 }
 
-void* MappedBufferDirectX::map(const ghost::Stream& s, Access access,
+void* MappedBufferDirectX::map(const ghost::Encoder& s, Access access,
                                bool doSync) {
   if (doSync) {
     auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
@@ -501,7 +501,7 @@ void* MappedBufferDirectX::map(const ghost::Stream& s, Access access,
   return mappedPtr;
 }
 
-void MappedBufferDirectX::unmap(const ghost::Stream& s) {
+void MappedBufferDirectX::unmap(const ghost::Encoder& s) {
   // Persistently mapped - no-op
 }
 
@@ -582,7 +582,7 @@ void ImageDirectX::transitionTo(ID3D12GraphicsCommandList* cmdList,
   currentState = newState;
 }
 
-void ImageDirectX::copy(const ghost::Stream& s, const ghost::Image& src) {
+void ImageDirectX::copy(const ghost::Encoder& s, const ghost::Image& src) {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
   auto* srcImg = static_cast<ImageDirectX*>(src.impl().get());
 
@@ -598,7 +598,7 @@ void ImageDirectX::copy(const ghost::Stream& s, const ghost::Image& src) {
   srcImg->transitionTo(cmdList, D3D12_RESOURCE_STATE_COMMON);
 }
 
-void ImageDirectX::copy(const ghost::Stream& s, const ghost::Image& src,
+void ImageDirectX::copy(const ghost::Encoder& s, const ghost::Image& src,
                         const Size3& region, const Origin3& srcOrigin,
                         const Origin3& dstOrigin) {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
@@ -635,7 +635,7 @@ void ImageDirectX::copy(const ghost::Stream& s, const ghost::Image& src,
   srcImg->transitionTo(cmdList, D3D12_RESOURCE_STATE_COMMON);
 }
 
-void ImageDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void ImageDirectX::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                         const BufferLayout& layout) {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
   auto* srcBuf = static_cast<BufferDirectX*>(src.impl().get());
@@ -674,7 +674,7 @@ void ImageDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
   srcBuf->transitionTo(cmdList, D3D12_RESOURCE_STATE_COMMON);
 }
 
-void ImageDirectX::copy(const ghost::Stream& s, const void* src,
+void ImageDirectX::copy(const ghost::Encoder& s, const void* src,
                         const BufferLayout& layout) {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
 
@@ -735,7 +735,7 @@ void ImageDirectX::copy(const ghost::Stream& s, const void* src,
   stream.pendingStaging.push_back({uploadBuf});
 }
 
-void ImageDirectX::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+void ImageDirectX::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                           const BufferLayout& layout) const {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
   auto* dstBuf = static_cast<BufferDirectX*>(dst.impl().get());
@@ -774,7 +774,7 @@ void ImageDirectX::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
   dstBuf->transitionTo(cmdList, D3D12_RESOURCE_STATE_COMMON);
 }
 
-void ImageDirectX::copyTo(const ghost::Stream& s, void* dst,
+void ImageDirectX::copyTo(const ghost::Encoder& s, void* dst,
                           const BufferLayout& layout) const {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
 
@@ -829,7 +829,7 @@ void ImageDirectX::copyTo(const ghost::Stream& s, void* dst,
   stream.deferredReads.push_back(dr);
 }
 
-void ImageDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void ImageDirectX::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                         const BufferLayout& layout,
                         const Origin3& imageOrigin) {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
@@ -869,7 +869,7 @@ void ImageDirectX::copy(const ghost::Stream& s, const ghost::Buffer& src,
   srcBuf->transitionTo(cmdList, D3D12_RESOURCE_STATE_COMMON);
 }
 
-void ImageDirectX::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+void ImageDirectX::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                           const BufferLayout& layout,
                           const Origin3& imageOrigin) const {
   auto& stream = *static_cast<StreamDirectX*>(s.impl().get());

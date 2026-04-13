@@ -15,6 +15,7 @@
 #ifndef GHOST_DEVICE_H
 #define GHOST_DEVICE_H
 
+#include <ghost/encoder.h>
 #include <ghost/event.h>
 #include <ghost/function.h>
 #include <ghost/image.h>
@@ -36,7 +37,7 @@ namespace ghost {
 /// Streams represent an ordered sequence of operations on a device. Multiple
 /// streams allow concurrent execution of independent work. Obtain streams via
 /// Device::createStream() or Device::defaultStream().
-class Stream {
+class Stream : public Encoder {
  public:
   /// @brief Default-construct a null stream.
   Stream() = default;
@@ -44,15 +45,6 @@ class Stream {
   /// @brief Construct from a backend implementation.
   /// @param impl Shared pointer to the backend-specific stream implementation.
   Stream(std::shared_ptr<implementation::Stream> impl);
-
-  /// @brief Check whether this stream holds a valid implementation.
-  explicit operator bool() const { return _impl != nullptr; }
-
-  /// @brief Get the backend implementation (const).
-  std::shared_ptr<implementation::Stream> impl() const { return _impl; }
-
-  /// @brief Get the backend implementation (mutable).
-  std::shared_ptr<implementation::Stream>& impl() { return _impl; }
 
   /// @brief Block until all operations enqueued on this stream have completed.
   void sync();
@@ -70,9 +62,6 @@ class Stream {
   /// completed. This does not block the CPU.
   /// @param e The event to wait for (typically recorded on a different stream).
   void waitForEvent(const Event& e);
-
- private:
-  std::shared_ptr<implementation::Stream> _impl;
 };
 
 /// @brief A GPU memory buffer for storing data accessible by kernels.
@@ -104,38 +93,39 @@ class Buffer {
   /// @param s The stream to enqueue the copy on.
   /// @param src Source buffer to copy from.
   /// @param bytes Number of bytes to copy.
-  void copy(const Stream& s, const Buffer& src, size_t bytes);
+  void copy(const Encoder& s, const Buffer& src, size_t bytes);
 
   /// @brief Copy data from host memory into this buffer.
   /// @param s The stream to enqueue the copy on.
   /// @param src Pointer to host source data.
   /// @param bytes Number of bytes to copy.
-  void copy(const Stream& s, const void* src, size_t bytes);
+  void copy(const Encoder& s, const void* src, size_t bytes);
 
   /// @brief Copy data from this buffer to host memory.
   /// @param s The stream to enqueue the copy on.
   /// @param[out] dst Pointer to host destination buffer.
   /// @param bytes Number of bytes to copy.
-  void copyTo(const Stream& s, void* dst, size_t bytes) const;
+  void copyTo(const Encoder& s, void* dst, size_t bytes) const;
 
   /// @brief Copy data from another device buffer with offsets.
-  void copy(const Stream& s, const Buffer& src, size_t srcOffset,
+  void copy(const Encoder& s, const Buffer& src, size_t srcOffset,
             size_t dstOffset, size_t bytes);
 
   /// @brief Copy data from host memory into this buffer at an offset.
-  void copy(const Stream& s, const void* src, size_t dstOffset, size_t bytes);
+  void copy(const Encoder& s, const void* src, size_t dstOffset, size_t bytes);
 
   /// @brief Copy data from this buffer at an offset to host memory.
-  void copyTo(const Stream& s, void* dst, size_t srcOffset, size_t bytes) const;
+  void copyTo(const Encoder& s, void* dst, size_t srcOffset,
+              size_t bytes) const;
 
   /// @brief Fill a region of this buffer with a byte value.
-  void fill(const Stream& s, size_t offset, size_t size, uint8_t value);
+  void fill(const Encoder& s, size_t offset, size_t size, uint8_t value);
 
   /// @brief Fill a region of this buffer with a 32-bit value.
-  void fill(const Stream& s, size_t offset, size_t size, uint32_t value);
+  void fill(const Encoder& s, size_t offset, size_t size, uint32_t value);
 
   /// @brief Fill a region of this buffer with a pattern.
-  void fill(const Stream& s, size_t offset, size_t size, const void* pattern,
+  void fill(const Encoder& s, size_t offset, size_t size, const void* pattern,
             size_t patternSize);
 
   /// @brief Create a sub-buffer view into this buffer.
@@ -171,11 +161,11 @@ class MappedBuffer : public Buffer {
   /// @param sync If @c true, block until previous GPU operations on this buffer
   /// complete.
   /// @return Pointer to the mapped host memory.
-  void* map(const Stream& s, Access access, bool sync = true);
+  void* map(const Encoder& s, Access access, bool sync = true);
 
   /// @brief Unmap the buffer, making it available to GPU kernels again.
   /// @param s The stream to synchronize with.
-  void unmap(const Stream& s);
+  void unmap(const Encoder& s);
 };
 
 /// @brief A GPU image (texture) supporting 1D, 2D, and 3D formats.
@@ -210,19 +200,19 @@ class Image {
   /// @{
 
   /// @brief Copy data from another image into this image.
-  void copy(const Stream& s, const Image& src);
+  void copy(const Encoder& s, const Image& src);
 
   /// @brief Copy data from a buffer into this image (tight packing assumed).
-  void copy(const Stream& s, const Buffer& src);
+  void copy(const Encoder& s, const Buffer& src);
 
   /// @brief Copy data from host memory into this image (tight packing assumed).
-  void copy(const Stream& s, const void* src);
+  void copy(const Encoder& s, const void* src);
 
   /// @brief Copy image data into a buffer (tight packing assumed).
-  void copyTo(const Stream& s, Buffer& dst) const;
+  void copyTo(const Encoder& s, Buffer& dst) const;
 
   /// @brief Copy image data to host memory (tight packing assumed).
-  void copyTo(const Stream& s, void* dst) const;
+  void copyTo(const Encoder& s, void* dst) const;
 
   /// @}
   /// @name Full-image copies with explicit buffer layout
@@ -230,19 +220,19 @@ class Image {
 
   /// @brief Copy data from a buffer into this image.
   /// @param layout Buffer memory layout (dimensions and strides).
-  void copy(const Stream& s, const Buffer& src, const BufferLayout& layout);
+  void copy(const Encoder& s, const Buffer& src, const BufferLayout& layout);
 
   /// @brief Copy data from host memory into this image.
   /// @param layout Buffer memory layout (dimensions and strides).
-  void copy(const Stream& s, const void* src, const BufferLayout& layout);
+  void copy(const Encoder& s, const void* src, const BufferLayout& layout);
 
   /// @brief Copy image data into a buffer.
   /// @param layout Buffer memory layout (dimensions and strides).
-  void copyTo(const Stream& s, Buffer& dst, const BufferLayout& layout) const;
+  void copyTo(const Encoder& s, Buffer& dst, const BufferLayout& layout) const;
 
   /// @brief Copy image data to host memory.
   /// @param layout Buffer memory layout (dimensions and strides).
-  void copyTo(const Stream& s, void* dst, const BufferLayout& layout) const;
+  void copyTo(const Encoder& s, void* dst, const BufferLayout& layout) const;
 
   /// @}
   /// @name Subrect copies (buffer <-> image region)
@@ -251,13 +241,13 @@ class Image {
   /// @brief Copy a region from a buffer into this image at the given origin.
   /// @param layout Buffer memory layout (region dimensions and strides).
   /// @param imageOrigin Destination origin within this image.
-  void copy(const Stream& s, const Buffer& src, const BufferLayout& layout,
+  void copy(const Encoder& s, const Buffer& src, const BufferLayout& layout,
             const Origin3& imageOrigin);
 
   /// @brief Copy a region from this image at the given origin into a buffer.
   /// @param layout Buffer memory layout (region dimensions and strides).
   /// @param imageOrigin Source origin within this image.
-  void copyTo(const Stream& s, Buffer& dst, const BufferLayout& layout,
+  void copyTo(const Encoder& s, Buffer& dst, const BufferLayout& layout,
               const Origin3& imageOrigin) const;
 
   /// @}
@@ -270,7 +260,7 @@ class Image {
   /// @param region Size of the region to copy.
   /// @param srcOrigin Origin within the source image.
   /// @param dstOrigin Origin within this (destination) image.
-  void copy(const Stream& s, const Image& src, const Size3& region,
+  void copy(const Encoder& s, const Image& src, const Size3& region,
             const Origin3& srcOrigin, const Origin3& dstOrigin);
 
   /// @}

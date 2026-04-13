@@ -39,10 +39,10 @@ class FunctionMetal : public Function {
                 id<MTLBinaryArchive> archive, bool& dirty);
 #endif
 
-  virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
+  virtual void execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
 
-  virtual void executeIndirect(const ghost::Stream& s,
+  virtual void executeIndirect(const ghost::Encoder& s,
                                const std::shared_ptr<Buffer>& indirectBuffer,
                                size_t indirectOffset,
                                const std::vector<Attribute>& args) override;

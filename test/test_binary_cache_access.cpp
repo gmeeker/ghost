@@ -52,7 +52,7 @@ TEST_P(BinaryCacheAccessTest, ReloadFromBinary) {
 
     LaunchArgs la;
     la.global_size(static_cast<uint32_t>(N)).local_size(1);
-    fn(stream(), la, outBuf, inBuf, 2.0f);
+    fn(la, stream())(outBuf, inBuf, 2.0f);
     outBuf.copyTo(stream(), output.data(), N * sizeof(float));
     stream().sync();
 

@@ -211,7 +211,7 @@ FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name,
 }
 #endif
 
-void FunctionMetal::execute(const ghost::Stream &s,
+void FunctionMetal::execute(const ghost::Encoder &s,
                             const LaunchArgs &launchArgs,
                             const std::vector<Attribute> &args) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
@@ -326,7 +326,7 @@ void FunctionMetal::execute(const ghost::Stream &s,
 }
 
 void FunctionMetal::executeIndirect(
-    const ghost::Stream &s, const std::shared_ptr<Buffer> &indirectBuffer,
+    const ghost::Encoder &s, const std::shared_ptr<Buffer> &indirectBuffer,
     size_t indirectOffset, const std::vector<Attribute> &args) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];

@@ -78,7 +78,7 @@ class ArgumentBuffer {
   /// first call (or if the data has grown), then copies the host data.
   /// @param device The device to allocate the buffer on.
   /// @param stream The stream to enqueue the copy on.
-  void upload(const Device& device, const Stream& stream);
+  void upload(const Device& device, const Encoder& stream);
 
   /// @brief Check whether this argument buffer should be passed as a struct.
   ///

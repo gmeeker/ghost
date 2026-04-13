@@ -12,6 +12,7 @@
 // License for the specific language governing permissions and limitations under
 // the License.
 
+#include <ghost/command_buffer.h>
 #include <ghost/device.h>
 #include <ghost/exception.h>
 #include <ghost/function.h>
@@ -33,15 +34,16 @@ void Library::setGlobals(
 
 std::vector<uint8_t> Library::getBinary() const { return {}; }
 
-void Function::executeIndirect(const ghost::Stream& s,
+void Function::executeIndirect(const ghost::Encoder& s,
                                const std::shared_ptr<Buffer>& indirectBuffer,
                                size_t indirectOffset,
                                const std::vector<Attribute>& args) {
   // Default fallback: sync, read workgroup counts, dispatch
-  s.impl()->sync();
+  auto* stream = static_cast<implementation::Stream*>(s.impl().get());
+  stream->sync();
   uint32_t counts[3];
   indirectBuffer->copyTo(s, counts, indirectOffset, sizeof(counts));
-  s.impl()->sync();
+  stream->sync();
   LaunchArgs la;
   la.global_size(counts[0], counts[1], counts[2]);
   execute(s, la, args);
@@ -55,9 +57,26 @@ uint32_t Function::preferredSubgroupSize() const {
 Function::Function(std::shared_ptr<implementation::Function> impl)
     : _impl(impl) {}
 
-void Function::execute(const Stream& s, const LaunchArgs& launchArgs,
+Function::BoundFunction::BoundFunction(
+    std::shared_ptr<implementation::Function> impl,
+    const LaunchArgs& launchArgs, const Encoder& encoder)
+    : _impl(impl), _launchArgs(launchArgs), _encoder(encoder) {}
+
+void Function::BoundFunction::dispatch(const std::vector<Attribute>& args) {
+  auto* cb = _encoder.impl()->asCommandBuffer();
+  if (cb)
+    cb->dispatch(_impl, _launchArgs, args);
+  else
+    _impl->execute(_encoder, _launchArgs, args);
+}
+
+void Function::execute(const Encoder& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) {
-  _impl->execute(s, launchArgs, args);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->dispatch(_impl, launchArgs, args);
+  else
+    _impl->execute(s, launchArgs, args);
 }
 
 Attribute Function::getAttribute(FunctionAttributeId what) const {

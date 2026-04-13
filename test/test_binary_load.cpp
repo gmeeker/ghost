@@ -36,7 +36,7 @@ TEST_P(BinaryLoadTest, CudaPtxLoad) {
 
   LaunchArgs la;
   la.global_size(static_cast<uint32_t>(N)).local_size(1);
-  fn(stream(), la, outBuf, inBuf, 1.5f);
+  fn(la, stream())(outBuf, inBuf, 1.5f);
   outBuf.copyTo(stream(), output.data(), N * sizeof(float));
   stream().sync();
 
@@ -73,7 +73,7 @@ TEST_P(BinaryLoadTest, MetalMetallibLoad) {
 
   LaunchArgs la;
   la.global_size(static_cast<uint32_t>(N)).local_size(1);
-  fn(stream(), la, outBuf, inBuf, 1.5f);
+  fn(la, stream())(outBuf, inBuf, 1.5f);
   outBuf.copyTo(stream(), output.data(), N * sizeof(float));
   stream().sync();
 
@@ -130,7 +130,7 @@ TEST_P(BinaryLoadTest, VulkanSpirvDispatch) {
 
   LaunchArgs la;
   la.global_size(static_cast<uint32_t>(N)).local_size(64);
-  fn(stream(), la, outBuf, inBuf, 1.5f);
+  fn(la, stream())(outBuf, inBuf, 1.5f);
   outBuf.copyTo(stream(), output.data(), N * sizeof(float));
   stream().sync();
 
@@ -172,7 +172,7 @@ TEST_P(BinaryLoadTest, VulkanHlslDispatch) {
 
   LaunchArgs la;
   la.global_size(static_cast<uint32_t>(N)).local_size(64);
-  fn(stream(), la, outBuf, inBuf, 1.5f);
+  fn(la, stream())(outBuf, inBuf, 1.5f);
   outBuf.copyTo(stream(), output.data(), N * sizeof(float));
   stream().sync();
 
@@ -229,7 +229,7 @@ TEST_P(BinaryLoadTest, DirectXDxilDispatch) {
 
   LaunchArgs la;
   la.global_size(static_cast<uint32_t>(N)).local_size(64);
-  fn(stream(), la, outBuf, inBuf, 1.5f);
+  fn(la, stream())(outBuf, inBuf, 1.5f);
   outBuf.copyTo(stream(), output.data(), N * sizeof(float));
   stream().sync();
 

@@ -132,7 +132,7 @@ TEST(ThreadPoolTest, CpuDeviceCustomPoolReceivesDispatch) {
   Function fn = lib.lookupFunction("k");
   LaunchArgs la;
   la.global_size(64u).local_size(1u);
-  fn(dev.defaultStream(), la);
+  fn(la, dev.defaultStream())();
   dev.defaultStream().sync();
 
   EXPECT_GE(custom->calls.load(), 1u);

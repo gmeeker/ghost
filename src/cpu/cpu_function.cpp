@@ -42,7 +42,7 @@ namespace implementation {
 FunctionCPU::FunctionCPU(const DeviceCPU& dev, Type f)
     : function(f), _dev(dev) {}
 
-void FunctionCPU::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
+void FunctionCPU::execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                           const std::vector<Attribute>& args) {
   if (launchArgs.requiredSubgroupSize() != 0 &&
       launchArgs.requiredSubgroupSize() != 1) {

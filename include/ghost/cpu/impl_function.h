@@ -32,7 +32,7 @@ class FunctionCPU : public Function {
 
   FunctionCPU(const DeviceCPU& dev, Type f);
 
-  virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
+  virtual void execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
 
   virtual Attribute getAttribute(FunctionAttributeId what) const override;

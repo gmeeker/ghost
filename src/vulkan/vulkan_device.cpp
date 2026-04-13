@@ -263,21 +263,22 @@ BufferVulkan::BufferVulkan(VkDevice device, VkBuffer buf, VkDeviceMemory mem,
 
 size_t BufferVulkan::size() const { return _size; }
 
-void BufferVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void BufferVulkan::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                         size_t bytes) {
   copy(s, src, 0, 0, bytes);
 }
 
-void BufferVulkan::copy(const ghost::Stream& s, const void* src, size_t bytes) {
+void BufferVulkan::copy(const ghost::Encoder& s, const void* src,
+                        size_t bytes) {
   copy(s, src, 0, bytes);
 }
 
-void BufferVulkan::copyTo(const ghost::Stream& s, void* dst,
+void BufferVulkan::copyTo(const ghost::Encoder& s, void* dst,
                           size_t bytes) const {
   copyTo(s, dst, 0, bytes);
 }
 
-void BufferVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void BufferVulkan::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                         size_t srcOffset, size_t dstOffset, size_t bytes) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
   auto* srcBuf = static_cast<BufferVulkan*>(src.impl().get());
@@ -302,7 +303,7 @@ void BufferVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
       1, &barrier, 0, nullptr, 0, nullptr);
 }
 
-void BufferVulkan::copy(const ghost::Stream& s, const void* src,
+void BufferVulkan::copy(const ghost::Encoder& s, const void* src,
                         size_t dstOffset, size_t bytes) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
 
@@ -343,7 +344,7 @@ void BufferVulkan::copy(const ghost::Stream& s, const void* src,
   stream.addStagingResource(std::move(staging), std::move(stagingMem));
 }
 
-void BufferVulkan::copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
+void BufferVulkan::copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
                           size_t bytes) const {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
 
@@ -383,7 +384,7 @@ void BufferVulkan::copyTo(const ghost::Stream& s, void* dst, size_t srcOffset,
   stream.deferredReads.push_back(std::move(dr));
 }
 
-void BufferVulkan::fill(const ghost::Stream& s, size_t offset, size_t sz,
+void BufferVulkan::fill(const ghost::Encoder& s, size_t offset, size_t sz,
                         uint8_t value) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
   stream.begin();
@@ -410,7 +411,7 @@ void BufferVulkan::fill(const ghost::Stream& s, size_t offset, size_t sz,
       1, &barrier, 0, nullptr, 0, nullptr);
 }
 
-void BufferVulkan::fill(const ghost::Stream& s, size_t offset, size_t sz,
+void BufferVulkan::fill(const ghost::Encoder& s, size_t offset, size_t sz,
                         const void* pattern, size_t patternSize) {
   if (patternSize == 1) {
     fill(s, offset, sz, *static_cast<const uint8_t*>(pattern));
@@ -445,17 +446,17 @@ SubBufferVulkan::SubBufferVulkan(std::shared_ptr<Buffer> parent,
 
 size_t SubBufferVulkan::baseOffset() const { return _offset; }
 
-void SubBufferVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void SubBufferVulkan::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                            size_t bytes) {
   BufferVulkan::copy(s, src, 0, 0, bytes);
 }
 
-void SubBufferVulkan::copy(const ghost::Stream& s, const void* src,
+void SubBufferVulkan::copy(const ghost::Encoder& s, const void* src,
                            size_t bytes) {
   BufferVulkan::copy(s, src, 0, bytes);
 }
 
-void SubBufferVulkan::copyTo(const ghost::Stream& s, void* dst,
+void SubBufferVulkan::copyTo(const ghost::Encoder& s, void* dst,
                              size_t bytes) const {
   BufferVulkan::copyTo(s, dst, 0, bytes);
 }
@@ -485,7 +486,7 @@ MappedBufferVulkan::MappedBufferVulkan(const DeviceVulkan& dev, size_t bytes,
   checkError(vkMapMemory(dev.device, memory, 0, bytes, 0, &mappedPtr));
 }
 
-void* MappedBufferVulkan::map(const ghost::Stream& s, Access access,
+void* MappedBufferVulkan::map(const ghost::Encoder& s, Access access,
                               bool doSync) {
   if (doSync) {
     auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
@@ -494,7 +495,7 @@ void* MappedBufferVulkan::map(const ghost::Stream& s, Access access,
   return mappedPtr;
 }
 
-void MappedBufferVulkan::unmap(const ghost::Stream& s) {
+void MappedBufferVulkan::unmap(const ghost::Encoder& s) {
   // Persistently mapped - no-op
 }
 
@@ -636,7 +637,7 @@ ImageVulkan::ImageVulkan(const DeviceVulkan& dev, const ImageDescription& d,
 // ~ImageVulkan: implicit. Each vk::ptr member knows whether it owns its
 // handle and destroys appropriately.
 
-void ImageVulkan::copy(const ghost::Stream& s, const ghost::Image& src) {
+void ImageVulkan::copy(const ghost::Encoder& s, const ghost::Image& src) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
   auto* srcImg = static_cast<ImageVulkan*>(src.impl().get());
 
@@ -710,7 +711,7 @@ void ImageVulkan::copy(const ghost::Stream& s, const ghost::Image& src) {
                        nullptr, 2, postBarriers);
 }
 
-void ImageVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void ImageVulkan::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                        const BufferLayout& layout) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
   auto* srcBuf = static_cast<BufferVulkan*>(src.impl().get());
@@ -756,7 +757,7 @@ void ImageVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
                        nullptr, 1, &barrier);
 }
 
-void ImageVulkan::copy(const ghost::Stream& s, const void* src,
+void ImageVulkan::copy(const ghost::Encoder& s, const void* src,
                        const BufferLayout& layout) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
 
@@ -820,7 +821,7 @@ void ImageVulkan::copy(const ghost::Stream& s, const void* src,
   stream.addStagingResource(std::move(staging), std::move(stagingMem));
 }
 
-void ImageVulkan::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+void ImageVulkan::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                          const BufferLayout& layout) const {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
   auto* dstBuf = static_cast<BufferVulkan*>(dst.impl().get());
@@ -867,7 +868,7 @@ void ImageVulkan::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
                        nullptr, 1, &barrier);
 }
 
-void ImageVulkan::copyTo(const ghost::Stream& s, void* dst,
+void ImageVulkan::copyTo(const ghost::Encoder& s, void* dst,
                          const BufferLayout& layout) const {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
 
@@ -941,7 +942,7 @@ void ImageVulkan::copyTo(const ghost::Stream& s, void* dst,
   stream.deferredReads.push_back(std::move(dr));
 }
 
-void ImageVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
+void ImageVulkan::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                        const BufferLayout& layout, const Origin3& imageOrigin) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
   auto* srcBuf = static_cast<BufferVulkan*>(src.impl().get());
@@ -990,7 +991,7 @@ void ImageVulkan::copy(const ghost::Stream& s, const ghost::Buffer& src,
                        nullptr, 1, &barrier);
 }
 
-void ImageVulkan::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
+void ImageVulkan::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                          const BufferLayout& layout,
                          const Origin3& imageOrigin) const {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
@@ -1041,7 +1042,7 @@ void ImageVulkan::copyTo(const ghost::Stream& s, ghost::Buffer& dst,
                        nullptr, 1, &barrier);
 }
 
-void ImageVulkan::copy(const ghost::Stream& s, const ghost::Image& src,
+void ImageVulkan::copy(const ghost::Encoder& s, const ghost::Image& src,
                        const Size3& region, const Origin3& srcOrigin,
                        const Origin3& dstOrigin) {
   auto& stream = *static_cast<StreamVulkan*>(s.impl().get());

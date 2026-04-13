@@ -35,7 +35,7 @@ TEST_P(CommandBufferTest, CopyBuffer) {
   stream().sync();
 
   CommandBuffer cb(device());
-  cb.copyBuffer(dst, src, N * sizeof(float));
+  dst.copy(cb, src, N * sizeof(float));
   cb.submit(stream());
 
   dst.copyTo(stream(), output.data(), N * sizeof(float));
@@ -60,8 +60,7 @@ TEST_P(CommandBufferTest, CopyBufferWithOffsets) {
 
   CommandBuffer cb(device());
   // Copy src[4..8) -> dst[8..12).
-  cb.copyBuffer(dst, 8 * sizeof(float), src, 4 * sizeof(float),
-                4 * sizeof(float));
+  dst.copy(cb, src, 4 * sizeof(float), 8 * sizeof(float), 4 * sizeof(float));
   cb.submit(stream());
 
   dst.copyTo(stream(), output.data(), N * sizeof(float));
@@ -81,7 +80,7 @@ TEST_P(CommandBufferTest, FillBuffer) {
   auto buf = device().allocateBuffer(N);
 
   CommandBuffer cb(device());
-  cb.fillBuffer(buf, 0, N, 0xCC);
+  buf.fill(cb, 0, N, static_cast<uint8_t>(0xCC));
   cb.submit(stream());
 
   std::vector<uint8_t> output(N, 0);
@@ -123,7 +122,7 @@ TEST_P(CommandBufferTest, DispatchKernel) {
   la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
 
   CommandBuffer cb(device());
-  cb.dispatch(fn, la, outBuf, inBuf, 1.5f);
+  fn(la, cb)(outBuf, inBuf, 1.5f);
   cb.submit(stream());
 
   outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
@@ -172,9 +171,9 @@ TEST_P(CommandBufferTest, BarrierOrdering) {
   la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
 
   CommandBuffer cb(device());
-  cb.dispatch(fn, la, buf2, buf1, 2.0f);
+  fn(la, cb)(buf2, buf1, 2.0f);
   cb.barrier();
-  cb.dispatch(fn, la, buf3, buf2, 3.0f);
+  fn(la, cb)(buf3, buf2, 3.0f);
   cb.submit(stream());
 
   buf3.copyTo(stream(), output.data(), safeN * sizeof(float));
@@ -207,7 +206,7 @@ TEST_P(CommandBufferTest, ResetAndReuse) {
   auto src1 = device().allocateBuffer(N * sizeof(float));
   src1.copy(stream(), data1.data(), N * sizeof(float));
   stream().sync();
-  cb.copyBuffer(buf, src1, N * sizeof(float));
+  buf.copy(cb, src1, N * sizeof(float));
   cb.submit(stream());
   buf.copyTo(stream(), output.data(), N * sizeof(float));
   stream().sync();
@@ -218,7 +217,7 @@ TEST_P(CommandBufferTest, ResetAndReuse) {
   auto src2 = device().allocateBuffer(N * sizeof(float));
   src2.copy(stream(), data2.data(), N * sizeof(float));
   stream().sync();
-  cb.copyBuffer(buf, src2, N * sizeof(float));
+  buf.copy(cb, src2, N * sizeof(float));
   cb.submit(stream());
   buf.copyTo(stream(), output.data(), N * sizeof(float));
   stream().sync();
@@ -240,7 +239,7 @@ TEST_P(CommandBufferTest, SubmitWithEvent) {
   stream().sync();
 
   CommandBuffer cb(device());
-  cb.copyBuffer(dst, src, N * sizeof(float));
+  dst.copy(cb, src, N * sizeof(float));
 
   Event event(nullptr);
   try {
@@ -278,7 +277,7 @@ TEST_P(CommandBufferTest, ManyOperations) {
   CommandBuffer cb(device());
   // Record 100 fill operations.
   for (int i = 0; i < 100; i++) {
-    cb.fillBuffer(buf, 0, N, static_cast<uint8_t>(i));
+    buf.fill(cb, 0, N, static_cast<uint8_t>(i));
   }
   cb.submit(stream());
 
@@ -403,7 +402,7 @@ TEST_P(CommandBufferTest, BufferWrappersOutOfScope) {
 
     LaunchArgs la;
     la.global_size(N).local_size(1);
-    cb.dispatch(fn, la, outBuf, inBuf, static_cast<float>(iter + 1));
+    fn(la, cb)(outBuf, inBuf, static_cast<float>(iter + 1));
     // inBuf wrapper destroyed at end of this iteration.
   }
 
@@ -446,7 +445,7 @@ TEST_P(CommandBufferTest, BufferWrappersInReallocatingVector) {
 
     LaunchArgs la;
     la.global_size(N).local_size(1);
-    cb.dispatch(fn, la, outBuf, wrappers.back(), 2.0f);
+    fn(la, cb)(outBuf, wrappers.back(), 2.0f);
   }
 
   cb.submit(stream());

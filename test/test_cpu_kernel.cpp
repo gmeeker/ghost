@@ -63,7 +63,7 @@ TEST_P(CPUInlineKernelTest, InlineMultConst) {
 
   LaunchArgs la;
   la.global_size(static_cast<uint32_t>(N)).local_size(1);
-  fn(stream(), la, outBuf, inBuf, 1.5f);
+  fn(la, stream())(outBuf, inBuf, 1.5f);
   // CPU kernel dispatch is async (GCD); must sync before reading back.
   stream().sync();
   outBuf.copyTo(stream(), output.data(), N * sizeof(float));
@@ -93,7 +93,7 @@ TEST_P(CPUInlineKernelTest, InlineAddBuffers) {
 
   LaunchArgs la;
   la.global_size(static_cast<uint32_t>(N)).local_size(1);
-  fn(stream(), la, bufOut, bufA, bufB);
+  fn(la, stream())(bufOut, bufA, bufB);
   stream().sync();
   bufOut.copyTo(stream(), output.data(), N * sizeof(float));
 
@@ -128,9 +128,9 @@ TEST_P(CPUInlineKernelTest, InlineMultipleDispatches) {
   // Chain: buf1 * 2.0 -> buf2, then buf2 * 3.0 -> buf3.
   // Must sync between dispatches since CPU kernel is async but buffer
   // reads in the next kernel are immediate.
-  fn(stream(), la, buf2, buf1, 2.0f);
+  fn(la, stream())(buf2, buf1, 2.0f);
   stream().sync();
-  fn(stream(), la, buf3, buf2, 3.0f);
+  fn(la, stream())(buf3, buf2, 3.0f);
   stream().sync();
   buf3.copyTo(stream(), output.data(), N * sizeof(float));
 
@@ -172,7 +172,7 @@ TEST_P(CPUSharedLibraryTest, SharedLibraryMultConst) {
 
   LaunchArgs la;
   la.global_size(static_cast<uint32_t>(N)).local_size(1);
-  fn(stream(), la, outBuf, inBuf, 2.0f);
+  fn(la, stream())(outBuf, inBuf, 2.0f);
   stream().sync();
   outBuf.copyTo(stream(), output.data(), N * sizeof(float));
 
@@ -200,7 +200,7 @@ TEST_P(CPUSharedLibraryTest, SharedLibraryAddBuffers) {
 
   LaunchArgs la;
   la.global_size(static_cast<uint32_t>(N)).local_size(1);
-  fn(stream(), la, bufOut, bufA, bufB);
+  fn(la, stream())(bufOut, bufA, bufB);
   stream().sync();
   bufOut.copyTo(stream(), output.data(), N * sizeof(float));
 
