@@ -1603,6 +1603,10 @@ Attribute DeviceVulkan::getAttribute(DeviceAttributeId what) const {
     case kDeviceSupportsProfilingTimer:
       return Attribute(properties.limits.timestampComputeAndGraphics !=
                        VK_FALSE);
+    case kDeviceSupportsCooperativeMatrix:
+      // Would require checking for VK_KHR_cooperative_matrix extension.
+      // Not currently tracked during device creation.
+      return Attribute(false);
     default:
       return Attribute();
   }

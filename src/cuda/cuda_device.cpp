@@ -1027,6 +1027,9 @@ Attribute DeviceCUDA::getAttribute(DeviceAttributeId what) const {
       return 1000.0f;
     case kDeviceSupportsProfilingTimer:
       return true;
+    case kDeviceSupportsCooperativeMatrix:
+      // WMMA requires compute capability >= 7.0 (Volta+)
+      return computeCapability.major >= 7;
     default:
       return Attribute();
   }

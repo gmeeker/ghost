@@ -1155,6 +1155,8 @@ Attribute DeviceOpenCL::getAttribute(DeviceAttributeId what) const {
     }
     case kDeviceSupportsProfilingTimer:
       return true;
+    case kDeviceSupportsCooperativeMatrix:
+      return false;
     default:
       return Attribute();
   }

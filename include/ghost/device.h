@@ -23,6 +23,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -453,6 +454,25 @@ std::unique_ptr<Device> createDevice(Backend backend);
 /// @param allowCPU If true, falls back to CPU when no GPU backend succeeds.
 /// @return A Device instance, or nullptr if no suitable backend is found.
 std::unique_ptr<Device> createDevice(bool allowCPU = false);
+
+/// @brief Enumerate all available GPU devices across all compiled backends.
+/// @return Vector of GpuInfo descriptors (may be empty).
+std::vector<GpuInfo> enumerateDevices();
+
+/// @brief Pick the best available GPU using a default heuristic.
+///
+/// Prefers discrete GPUs over integrated, then selects by highest VRAM.
+/// @param backend If set, only consider devices from this backend.
+/// @return The best device descriptor, or std::nullopt if none available.
+std::optional<GpuInfo> preferredDevice(
+    std::optional<Backend> backend = std::nullopt);
+
+/// @brief Pick the best GPU from a pre-enumerated list.
+///
+/// Prefers discrete GPUs over integrated, then selects by highest VRAM.
+/// @param devices The list to choose from.
+/// @return The best device descriptor, or std::nullopt if the list is empty.
+std::optional<GpuInfo> preferredDevice(const std::vector<GpuInfo>& devices);
 
 }  // namespace ghost
 

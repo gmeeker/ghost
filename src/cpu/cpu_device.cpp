@@ -588,6 +588,8 @@ Attribute DeviceCPU::getAttribute(DeviceAttributeId what) const {
       return 1.0f;
     case kDeviceSupportsProfilingTimer:
       return false;
+    case kDeviceSupportsCooperativeMatrix:
+      return false;
     default:
       return Attribute();
   }

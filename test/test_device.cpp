@@ -148,6 +148,22 @@ TEST_P(DeviceTest, SupportsProfilingTimer) {
   EXPECT_EQ(attr.type(), Attribute::Type_Bool);
 }
 
+TEST_P(DeviceTest, SupportsCooperativeMatrix) {
+  auto attr = device().getAttribute(kDeviceSupportsCooperativeMatrix);
+  EXPECT_TRUE(attr.valid());
+  EXPECT_EQ(attr.type(), Attribute::Type_Bool);
+}
+
+TEST_P(DeviceTest, DeviceFamily) {
+  auto attr = device().getAttribute(kDeviceFamily);
+  // All backends except OpenCL/CPU should return a non-empty family string.
+  if (backend() != Backend::CPU && backend() != Backend::OpenCL) {
+    EXPECT_TRUE(attr.valid());
+    EXPECT_EQ(attr.type(), Attribute::Type_String);
+    EXPECT_FALSE(attr.asString().empty());
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Buffer alignment with sub-buffers
 // ---------------------------------------------------------------------------
@@ -289,3 +305,69 @@ TEST_P(GpuInfoTest, CreateDeviceFromInfo) {
 INSTANTIATE_TEST_SUITE_P(AllBackends, GpuInfoTest,
                          testing::ValuesIn(availableBackends()),
                          BackendNameGenerator());
+
+// ---------------------------------------------------------------------------
+// Cross-backend enumeration and preferred device selection
+// ---------------------------------------------------------------------------
+
+TEST(PreferredDeviceTest, EnumerateAll) {
+  auto devices = ghost::enumerateDevices();
+  // Should find at least one device (CPU is always available via backends).
+  // But enumerateDevices() only includes compiled GPU backends, so it may be
+  // empty if only CPU is compiled.  Just verify it doesn't throw.
+  for (const auto& info : devices) {
+    EXPECT_FALSE(info.name.empty());
+    EXPECT_FALSE(info.implementation.empty());
+  }
+}
+
+TEST(PreferredDeviceTest, PreferredReturnsDevice) {
+  auto devices = ghost::enumerateDevices();
+  if (devices.empty()) {
+    GTEST_SKIP() << "No GPU devices available";
+  }
+
+  auto best = ghost::preferredDevice();
+  ASSERT_TRUE(best.has_value());
+  EXPECT_FALSE(best->name.empty());
+  EXPECT_GT(best->memory, 0u);
+}
+
+TEST(PreferredDeviceTest, PreferredFromList) {
+  // Discrete should beat integrated, higher VRAM should beat lower.
+  GpuInfo integrated;
+  integrated.name = "Integrated";
+  integrated.implementation = "Metal";
+  integrated.memory = 1024;
+  integrated.unifiedMemory = true;
+
+  GpuInfo discrete;
+  discrete.name = "Discrete";
+  discrete.implementation = "Metal";
+  discrete.memory = 4096;
+  discrete.unifiedMemory = false;
+
+  GpuInfo discreteSmall;
+  discreteSmall.name = "DiscreteSmall";
+  discreteSmall.implementation = "Metal";
+  discreteSmall.memory = 2048;
+  discreteSmall.unifiedMemory = false;
+
+  std::vector<GpuInfo> devices = {integrated, discreteSmall, discrete};
+  auto best = ghost::preferredDevice(devices);
+  ASSERT_TRUE(best.has_value());
+  EXPECT_EQ(best->name, "Discrete");
+}
+
+TEST(PreferredDeviceTest, PreferredFromEmptyList) {
+  std::vector<GpuInfo> empty;
+  auto best = ghost::preferredDevice(empty);
+  EXPECT_FALSE(best.has_value());
+}
+
+TEST(PreferredDeviceTest, PreferredWithBackendFilter) {
+  // Just verify it doesn't crash; may return nullopt if no Metal/CUDA devices.
+  auto best = ghost::preferredDevice(Backend::Metal);
+  // No assertion on value — hardware-dependent.
+  (void)best;
+}

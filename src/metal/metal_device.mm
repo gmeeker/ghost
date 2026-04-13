@@ -28,11 +28,6 @@ namespace ghost {
 namespace implementation {
 using namespace metal;
 
-#if !defined(MAC_OS_VERSION_26_0)
-// SDK is too old for MTLGPUFamilyApple10
-#define MTLGPUFamilyApple10 (MTLGPUFamily)1010
-#endif
-
 namespace {
 MTLPixelFormat getFormat(const ImageDescription &descr) {
   switch (descr.channels) {
@@ -994,6 +989,38 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
     return "Apple";
   case kDeviceDriverVersion:
     return getMetalVersion();
+  case kDeviceFamily:
+    if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *)) {
+#if defined(__IPHONE_18_0) || defined(__MAC_15_0) || defined(__TVOS_18_0)
+      if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, *)) {
+        if ([dev.get() supportsFamily:MTLGPUFamilyApple10])
+          return "Apple10";
+      }
+#endif
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple9])
+        return "Apple9";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple8])
+        return "Apple8";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple7])
+        return "Apple7";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple6])
+        return "Apple6";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple5])
+        return "Apple5";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple4])
+        return "Apple4";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple3])
+        return "Apple3";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple2])
+        return "Apple2";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple1])
+        return "Apple1";
+      if ([dev.get() supportsFamily:MTLGPUFamilyMac2])
+        return "Mac2";
+      if ([dev.get() supportsFamily:MTLGPUFamilyMac1])
+        return "Mac1";
+    }
+    return "Unknown";
   case kDeviceCount:
     return 1;
   case kDeviceProcessorCount:
@@ -1019,9 +1046,14 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
   case kDeviceMaxImageSize2: {
     int32_t v = 16384;
     if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *)) {
-      if ([dev.get() supportsFamily:MTLGPUFamilyApple10]) {
-        v = 32786;
-      } else if (![dev.get() supportsFamily:MTLGPUFamilyApple3]) {
+#if defined(__IPHONE_18_0) || defined(__MAC_15_0) || defined(__TVOS_18_0)
+      if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, *)) {
+        if ([dev.get() supportsFamily:MTLGPUFamilyApple10]) {
+          v = 32786;
+        }
+      } else
+#endif
+          if (![dev.get() supportsFamily:MTLGPUFamilyApple3]) {
         v = 8192;
       }
     } else {
@@ -1082,6 +1114,11 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
   case kDeviceTimestampPeriod:
     return 0.0f;
   case kDeviceSupportsProfilingTimer:
+    return false;
+  case kDeviceSupportsCooperativeMatrix:
+    if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *)) {
+      return (bool)[dev.get() supportsFamily:MTLGPUFamilyApple7];
+    }
     return false;
   default:
     return Attribute();

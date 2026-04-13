@@ -15,6 +15,9 @@
 #include <ghost/cpu/device.h>
 #include <ghost/device.h>
 
+#include <algorithm>
+#include <optional>
+
 #if WITH_METAL
 #include <ghost/metal/device.h>
 #endif
@@ -139,6 +142,79 @@ std::unique_ptr<Device> createDevice(bool allowCPU) {
   if (allowCPU) return createDevice(Backend::CPU);
 
   return nullptr;
+}
+
+std::vector<GpuInfo> enumerateDevices() {
+  std::vector<GpuInfo> result;
+  auto append = [&](std::vector<GpuInfo>&& devs) {
+    result.insert(result.end(), std::make_move_iterator(devs.begin()),
+                  std::make_move_iterator(devs.end()));
+  };
+
+#if WITH_METAL
+  try {
+    append(DeviceMetal::enumerateDevices());
+  } catch (...) {
+  }
+#endif
+#if WITH_CUDA
+  try {
+    append(DeviceCUDA::enumerateDevices());
+  } catch (...) {
+  }
+#endif
+#if WITH_OPENCL
+  try {
+    append(DeviceOpenCL::enumerateDevices());
+  } catch (...) {
+  }
+#endif
+#if WITH_VULKAN
+  try {
+    append(DeviceVulkan::enumerateDevices());
+  } catch (...) {
+  }
+#endif
+#if WITH_DIRECTX
+  try {
+    append(DeviceDirectX::enumerateDevices());
+  } catch (...) {
+  }
+#endif
+
+  return result;
+}
+
+std::optional<GpuInfo> preferredDevice(const std::vector<GpuInfo>& devices) {
+  if (devices.empty()) return std::nullopt;
+
+  // Filter out CPU devices.
+  std::vector<const GpuInfo*> gpus;
+  for (auto& d : devices) {
+    if (d.implementation != "CPU") gpus.push_back(&d);
+  }
+  if (gpus.empty()) return std::nullopt;
+
+  // Sort: discrete before integrated, then by VRAM descending.
+  std::sort(gpus.begin(), gpus.end(), [](const GpuInfo* a, const GpuInfo* b) {
+    if (a->unifiedMemory != b->unifiedMemory)
+      return !a->unifiedMemory;  // discrete (non-unified) first
+    return a->memory > b->memory;
+  });
+
+  return *gpus[0];
+}
+
+std::optional<GpuInfo> preferredDevice(std::optional<Backend> backend) {
+  auto all = enumerateDevices();
+  if (!backend) return preferredDevice(all);
+
+  std::string name = backendName(*backend);
+  std::vector<GpuInfo> filtered;
+  for (auto& d : all) {
+    if (d.implementation == name) filtered.push_back(std::move(d));
+  }
+  return preferredDevice(filtered);
 }
 
 }  // namespace ghost

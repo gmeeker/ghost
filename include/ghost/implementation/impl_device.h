@@ -97,6 +97,15 @@ enum DeviceAttributeId {
   kDeviceTimestampPeriod,
   /// @brief Whether profiling timers are supported (bool).
   kDeviceSupportsProfilingTimer,
+  /// @brief Whether hardware cooperative/SIMD-group matrix operations are
+  /// supported (bool).
+  ///
+  /// True when the device can execute cooperative matrix instructions:
+  /// - Metal: Apple GPU family 7+ (A14/M1 and later, simdgroup matrix ops)
+  /// - CUDA: compute capability >= 7.0 (Volta+, WMMA)
+  /// - Vulkan: VK_KHR_cooperative_matrix extension present
+  /// - OpenCL/DirectX/CPU: false
+  kDeviceSupportsCooperativeMatrix,
 };
 
 /// @brief Opaque container for backend-specific context handles, used to share

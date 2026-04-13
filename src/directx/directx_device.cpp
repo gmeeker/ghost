@@ -1157,6 +1157,8 @@ Attribute DeviceDirectX::getAttribute(DeviceAttributeId what) const {
       return Attribute(1.0f);
     case kDeviceSupportsProfilingTimer:
       return Attribute(true);
+    case kDeviceSupportsCooperativeMatrix:
+      return Attribute(false);
     default:
       return Attribute();
   }
