@@ -1,3 +1,5 @@
+#include <ghost/profiling.h>
+
 #include "ghost_test.h"
 
 using namespace ghost;
@@ -213,6 +215,54 @@ TEST_P(EventTest, ProfilingTimestamp) {
 }
 
 GHOST_INSTANTIATE_BACKEND_TESTS(EventTest);
+
+// ---------------------------------------------------------------------------
+// ghost::timed() profiling helper
+// ---------------------------------------------------------------------------
+
+class TimedTest : public GhostKernelTest {};
+
+TEST_P(TimedTest, TimedDispatch) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  StreamOptions opts;
+  opts.profiling = true;
+  Stream s;
+  try {
+    s = device().createStream(opts);
+  } catch (...) {
+    GTEST_SKIP() << "Profiling streams not supported";
+  }
+
+  const size_t N = 1024;
+  const uint32_t localSize = 64;
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  auto inBuf = device().allocateBuffer(N * sizeof(float));
+  auto outBuf = device().allocateBuffer(N * sizeof(float));
+  std::vector<float> input(N, 1.0f);
+  inBuf.copy(s, input.data(), N * sizeof(float));
+  s.sync();
+
+  LaunchArgs la;
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
+
+  double elapsed = ghost::timed(s, fn, la, outBuf, inBuf, 2.0f);
+  EXPECT_GE(elapsed, 0.0);
+
+  // Verify the kernel actually ran.
+  std::vector<float> output(N, 0.0f);
+  outBuf.copyTo(s, output.data(), N * sizeof(float));
+  s.sync();
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], 2.0f) << "index " << i;
+  }
+}
+
+GHOST_INSTANTIATE_BACKEND_TESTS(TimedTest);
 
 // ---------------------------------------------------------------------------
 // Forced event chain tests (exercise event chaining on in-order queues)
