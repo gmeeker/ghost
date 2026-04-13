@@ -18,6 +18,7 @@
 #include <ghost/device.h>
 #include <ghost/vulkan/ptr.h>
 
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -237,9 +238,18 @@ class DeviceVulkan : public Device {
                     vk::ptr<VkDeviceMemory>& mem) const;
   VkFormat getImageFormat(const ImageDescription& descr) const;
 
+  /// @brief Get or create a cached @c VkSampler matching @p desc.
+  ///
+  /// Samplers are cheap, device-wide, and fully described by @c filter,
+  /// @c address and @c normalizedCoords. Caching avoids recreating one per
+  /// dispatch when the same description is reused. Lives for the lifetime
+  /// of the device.
+  VkSampler getOrCreateSampler(const SamplerDescription& desc) const;
+
  private:
   bool _ownsInstance;
   VkPhysicalDeviceMemoryProperties _memProperties;
+  mutable std::map<SamplerDescription, vk::ptr<VkSampler>> _samplerCache;
 };
 }  // namespace implementation
 }  // namespace ghost

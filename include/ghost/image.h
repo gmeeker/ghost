@@ -130,6 +130,19 @@ struct SamplerDescription {
   AddressMode address = AddressMode::Clamp;
   /// @brief Whether coordinates are normalized to [0, 1] (default: false).
   bool normalizedCoords = false;
+
+  bool operator==(const SamplerDescription& o) const {
+    return filter == o.filter && address == o.address &&
+           normalizedCoords == o.normalizedCoords;
+  }
+
+  bool operator!=(const SamplerDescription& o) const { return !(*this == o); }
+
+  bool operator<(const SamplerDescription& o) const {
+    if (filter != o.filter) return filter < o.filter;
+    if (address != o.address) return address < o.address;
+    return normalizedCoords < o.normalizedCoords;
+  }
 };
 
 /// @brief Buffer and image access modes.

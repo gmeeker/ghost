@@ -321,3 +321,29 @@ TEST(AttributeTest, SamplerFluentOnNonImageIsNoop) {
   EXPECT_EQ(a.type(), Attribute::Type_Float);
   EXPECT_FALSE(a.sampler().has_value());
 }
+
+TEST(AttributeTest, StandaloneSamplerHelper) {
+  Attribute a = sampler();
+  EXPECT_EQ(a.type(), Attribute::Type_Sampler);
+  ASSERT_TRUE(a.sampler().has_value());
+  EXPECT_EQ(a.sampler()->filter, FilterMode::Nearest);
+  EXPECT_EQ(a.sampler()->address, AddressMode::Clamp);
+  EXPECT_FALSE(a.sampler()->normalizedCoords);
+}
+
+TEST(AttributeTest, StandaloneSamplerFluent) {
+  Attribute a = sampler().linear().wrap().normalized();
+  EXPECT_EQ(a.type(), Attribute::Type_Sampler);
+  ASSERT_TRUE(a.sampler().has_value());
+  EXPECT_EQ(a.sampler()->filter, FilterMode::Linear);
+  EXPECT_EQ(a.sampler()->address, AddressMode::Wrap);
+  EXPECT_TRUE(a.sampler()->normalizedCoords);
+}
+
+TEST(AttributeTest, SamplerDescriptionEquality) {
+  SamplerDescription a;
+  SamplerDescription b;
+  EXPECT_EQ(a, b);
+  b.filter = FilterMode::Linear;
+  EXPECT_NE(a, b);
+}

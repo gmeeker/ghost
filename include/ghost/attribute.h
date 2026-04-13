@@ -74,7 +74,11 @@ class Attribute {
     /// @brief Local (shared) memory allocation size in bytes.
     Type_LocalMem,
     /// @brief Snapshot of an ArgumentBuffer (host data + GPU buffer ref).
-    Type_ArgumentBuffer
+    Type_ArgumentBuffer,
+    /// @brief Standalone sampler description, used to bind an HLSL @c
+    /// SamplerState / Vulkan @c VK_DESCRIPTOR_TYPE_SAMPLER slot that is
+    /// independent of any image.
+    Type_Sampler
   };
 
  private:
@@ -155,6 +159,14 @@ class Attribute {
   ///
   /// Used by @c Image::sample() to create a sampled image attribute.
   Attribute(Image& i, const SamplerDescription& sampler);
+  /// @brief Construct a standalone sampler attribute.
+  ///
+  /// Used to bind HLSL @c SamplerState / Vulkan standalone sampler slots
+  /// that are independent of any image. For the common case of a single
+  /// image paired with a single sampler, prefer @c Image::sample() ΓÇö that
+  /// path is portable across all backends, whereas standalone samplers
+  /// only map cleanly to Vulkan and DirectX.
+  Attribute(const SamplerDescription& sampler);
   Attribute(ArgumentBuffer* ab);
   Attribute(ArgumentBuffer& ab);
 
@@ -372,6 +384,19 @@ class Attribute {
 
   /// @}
 };
+
+/// @brief Construct a standalone sampler argument with default settings.
+///
+/// Chain fluent modifiers to configure it, e.g.
+/// @code
+/// fn(stream, launch, tex, ghost::sampler().linear().wrap(),
+///                          ghost::sampler().nearest().clamp());
+/// @endcode
+/// Portable across Vulkan and DirectX (standalone sampler bindings). For
+/// OpenCL and Metal, samplers are declared kernel-side and this argument
+/// is ignored. For kernels with a 1:1 image/sampler pairing, prefer
+/// @c Image::sample() which is portable to all backends including CUDA.
+Attribute sampler();
 
 }  // namespace ghost
 

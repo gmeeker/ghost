@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <stdexcept>
 
 namespace ghost {
 namespace implementation {
@@ -280,6 +281,74 @@ void StreamDirectX::waitForEvent(const std::shared_ptr<Event>& e) {
 void StreamDirectX::cleanupStaging() {
   pendingStaging.clear();
   // DeferredRead cleanup handled separately after reads complete
+  // The descriptor heaps are kept around, but their bump pointers are
+  // reset since every descriptor referenced by the previous command list
+  // is now retired (caller only invokes this after fence wait).
+  srvNextSlot = 0;
+  samplerNextSlot = 0;
+}
+
+namespace {
+
+void ensureHeap(ID3D12Device* device, ComPtr<ID3D12DescriptorHeap>& heap,
+                UINT& handleSize, UINT& capacity,
+                D3D12_DESCRIPTOR_HEAP_TYPE type, UINT size) {
+  if (heap) return;
+  D3D12_DESCRIPTOR_HEAP_DESC desc = {};
+  desc.Type = type;
+  desc.NumDescriptors = size;
+  desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+  checkHR(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&heap)));
+  handleSize = device->GetDescriptorHandleIncrementSize(type);
+  capacity = size;
+}
+
+}  // namespace
+
+void StreamDirectX::allocSrvSlots(UINT count,
+                                  D3D12_CPU_DESCRIPTOR_HANDLE& cpuOut,
+                                  D3D12_GPU_DESCRIPTOR_HANDLE& gpuOut) {
+  ensureHeap(dev.device.Get(), srvHeap, srvHandleSize, srvHeapCapacity,
+             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4096);
+  if (srvNextSlot + count > srvHeapCapacity) {
+    throw std::runtime_error(
+        "DirectX: SRV/UAV descriptor heap full for this command list");
+  }
+  auto cpu = srvHeap->GetCPUDescriptorHandleForHeapStart();
+  auto gpu = srvHeap->GetGPUDescriptorHandleForHeapStart();
+  cpu.ptr += (size_t)srvNextSlot * srvHandleSize;
+  gpu.ptr += (UINT64)srvNextSlot * srvHandleSize;
+  cpuOut = cpu;
+  gpuOut = gpu;
+  srvNextSlot += count;
+}
+
+void StreamDirectX::allocSamplerSlots(UINT count,
+                                      D3D12_CPU_DESCRIPTOR_HANDLE& cpuOut,
+                                      D3D12_GPU_DESCRIPTOR_HANDLE& gpuOut) {
+  ensureHeap(dev.device.Get(), samplerHeap, samplerHandleSize,
+             samplerHeapCapacity, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 512);
+  if (samplerNextSlot + count > samplerHeapCapacity) {
+    throw std::runtime_error(
+        "DirectX: sampler descriptor heap full for this command list");
+  }
+  auto cpu = samplerHeap->GetCPUDescriptorHandleForHeapStart();
+  auto gpu = samplerHeap->GetGPUDescriptorHandleForHeapStart();
+  cpu.ptr += (size_t)samplerNextSlot * samplerHandleSize;
+  gpu.ptr += (UINT64)samplerNextSlot * samplerHandleSize;
+  cpuOut = cpu;
+  gpuOut = gpu;
+  samplerNextSlot += count;
+}
+
+void StreamDirectX::bindDescriptorHeaps() {
+  // Bind whichever heaps exist. D3D12 allows at most one of each type
+  // bound simultaneously; unused heaps stay null-pointered.
+  ID3D12DescriptorHeap* heaps[2];
+  UINT count = 0;
+  if (srvHeap) heaps[count++] = srvHeap.Get();
+  if (samplerHeap) heaps[count++] = samplerHeap.Get();
+  if (count) commandList->SetDescriptorHeaps(count, heaps);
 }
 
 // ---------------------------------------------------------------------------

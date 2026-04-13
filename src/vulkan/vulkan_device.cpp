@@ -1220,14 +1220,18 @@ DeviceVulkan::DeviceVulkan(const SharedContext& share)
   // Create descriptor pool
   VkDescriptorPoolSize poolSizes[] = {
       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1024},
       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1024},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 1024},
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024},
   };
 
   VkDescriptorPoolCreateInfo poolInfo = {};
   poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
   poolInfo.maxSets = 4096;
-  poolInfo.poolSizeCount = 2;
+  poolInfo.poolSizeCount = sizeof(poolSizes) / sizeof(poolSizes[0]);
   poolInfo.pPoolSizes = poolSizes;
 
   descriptorPool.setDevice(device);
@@ -1314,14 +1318,18 @@ DeviceVulkan::DeviceVulkan(const GpuInfo& info)
   // Create descriptor pool
   VkDescriptorPoolSize poolSizes[] = {
       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1024},
       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1024},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 1024},
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024},
   };
 
   VkDescriptorPoolCreateInfo poolInfo = {};
   poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
   poolInfo.maxSets = 4096;
-  poolInfo.poolSizeCount = 2;
+  poolInfo.poolSizeCount = sizeof(poolSizes) / sizeof(poolSizes[0]);
   poolInfo.pPoolSizes = poolSizes;
 
   descriptorPool.setDevice(device);
@@ -1336,10 +1344,66 @@ DeviceVulkan::~DeviceVulkan() {
     // destroyed BEFORE vkDestroyDevice, since member destructors run
     // after the destructor body. Reset descriptorPool explicitly here.
     descriptorPool.reset();
+    _samplerCache.clear();
     if (_ownsInstance) vkDestroyDevice(device, nullptr);
   }
   if (_ownsInstance && instance != VK_NULL_HANDLE)
     vkDestroyInstance(instance, nullptr);
+}
+
+VkSampler DeviceVulkan::getOrCreateSampler(
+    const SamplerDescription& desc) const {
+  auto it = _samplerCache.find(desc);
+  if (it != _samplerCache.end()) return it->second;
+
+  auto toFilter = [](FilterMode f) {
+    return f == FilterMode::Linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+  };
+  auto toAddress = [](AddressMode a) {
+    switch (a) {
+      case AddressMode::Clamp:
+        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+      case AddressMode::Wrap:
+        return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+      case AddressMode::Mirror:
+        return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    }
+    return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  };
+
+  VkSamplerCreateInfo info = {};
+  info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  info.magFilter = toFilter(desc.filter);
+  info.minFilter = toFilter(desc.filter);
+  // Unnormalized samplers have strict Vulkan rules: mipmapMode must be
+  // NEAREST and addressModes must be CLAMP_TO_{EDGE,BORDER}. Silently
+  // enforce both so that unnormalizedCoords=true doesn't fail validation
+  // when the user pairs it with Wrap/Mirror ΓÇö matches what the OpenCL
+  // default-sampler behavior would do.
+  bool unnormalized = !desc.normalizedCoords;
+  info.mipmapMode = (desc.filter == FilterMode::Linear && !unnormalized)
+                        ? VK_SAMPLER_MIPMAP_MODE_LINEAR
+                        : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  VkSamplerAddressMode addr = unnormalized
+                                  ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
+                                  : toAddress(desc.address);
+  info.addressModeU = addr;
+  info.addressModeV = addr;
+  info.addressModeW = addr;
+  info.unnormalizedCoordinates = unnormalized ? VK_TRUE : VK_FALSE;
+  info.minLod = 0.0f;
+  info.maxLod = unnormalized ? 0.0f : VK_LOD_CLAMP_NONE;
+  info.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+  info.compareEnable = VK_FALSE;
+  info.compareOp = VK_COMPARE_OP_NEVER;
+  info.anisotropyEnable = VK_FALSE;
+  info.maxAnisotropy = 1.0f;
+
+  vk::ptr<VkSampler> sampler(device);
+  checkError(vkCreateSampler(device, &info, nullptr, &sampler));
+  VkSampler handle = sampler;
+  _samplerCache.emplace(desc, std::move(sampler));
+  return handle;
 }
 
 uint32_t DeviceVulkan::findMemoryType(uint32_t typeFilter,

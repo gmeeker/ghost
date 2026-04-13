@@ -118,6 +118,14 @@ class detail<VkFence> {
   }
 };
 
+template <>
+class detail<VkSampler> {
+ public:
+  static void release(VkDevice dev, VkSampler v) {
+    vkDestroySampler(dev, v, nullptr);
+  }
+};
+
 /// @brief Smart pointer for Vulkan handles whose destruction requires a parent
 /// VkDevice.
 ///

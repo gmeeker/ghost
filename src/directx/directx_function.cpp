@@ -22,6 +22,8 @@
 #include <ghost/exception.h>
 
 #include <cstring>
+#include <memory>
+#include <optional>
 #include <stdexcept>
 
 namespace ghost {
@@ -98,32 +100,170 @@ void FunctionDirectX::execute(const ghost::Encoder& s,
   stream.begin();
   auto* cmdList = stream.commandList.Get();
 
+  stream.bindDescriptorHeaps();
   cmdList->SetPipelineState(_pso.Get());
   cmdList->SetComputeRootSignature(_rootSignature.Get());
 
   // Walk slots and args together. Slots are in declaration order
-  // (UAV → SRV → CBV) so the user passes outputs first, then inputs,
-  // then constants, matching how the same kernels are called on
-  // CUDA/OpenCL/Metal/Vulkan.
+  // (UAV → SRV → CBV → Sampler) so the user passes outputs first, then
+  // inputs, then constants, then samplers — matching typical HLSL
+  // declaration order.
   size_t argIdx = 0;
-  auto nextArg = [&]() -> const Attribute* {
+  auto skipIgnorable = [&]() {
     while (argIdx < args.size()) {
-      const Attribute& a = args[argIdx++];
-      if (a.type() == Attribute::Type_LocalMem) continue;
-      if (a.type() == Attribute::Type_Unknown) continue;
-      return &a;
+      const Attribute& a = args[argIdx];
+      if (a.type() == Attribute::Type_LocalMem ||
+          a.type() == Attribute::Type_Unknown) {
+        argIdx++;
+        continue;
+      }
+      break;
     }
+  };
+  auto peekArg = [&]() -> const Attribute* {
+    skipIgnorable();
+    if (argIdx < args.size()) return &args[argIdx];
     return nullptr;
   };
+  auto nextArg = [&]() -> const Attribute* {
+    const Attribute* a = peekArg();
+    if (a) argIdx++;
+    return a;
+  };
+
+  // Carries an image.sample() description forward so a following Sampler
+  // slot can be auto-filled without an explicit argument.
+  std::optional<SamplerDescription> carriedSampler;
 
   for (auto& slot : _slots) {
+    // TableSampler consumes an explicit sampler arg if present, else
+    // inherits from the most recent image.sample() — doesn't require an
+    // arg, so handle it before the nextArg() check.
+    if (slot.kind == RootSlot::TableSampler) {
+      SamplerDescription sd;
+      bool have = false;
+      if (const Attribute* peek = peekArg()) {
+        if (peek->type() == Attribute::Type_Sampler && peek->sampler()) {
+          sd = *peek->sampler();
+          argIdx++;
+          have = true;
+        }
+      }
+      if (!have && carriedSampler) {
+        sd = *carriedSampler;
+        have = true;
+      }
+      if (!have) {
+        throw std::invalid_argument(
+            "FunctionDirectX: sampler binding has no matching sampler "
+            "argument (pass ghost::sampler() or Image::sample())");
+      }
+
+      auto toFilter = [](FilterMode f) {
+        return f == FilterMode::Linear ? D3D12_FILTER_MIN_MAG_MIP_LINEAR
+                                       : D3D12_FILTER_MIN_MAG_MIP_POINT;
+      };
+      auto toAddress = [](AddressMode a) {
+        switch (a) {
+          case AddressMode::Clamp:
+            return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+          case AddressMode::Wrap:
+            return D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+          case AddressMode::Mirror:
+            return D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+        }
+        return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+      };
+      D3D12_SAMPLER_DESC sDesc = {};
+      sDesc.Filter = toFilter(sd.filter);
+      sDesc.AddressU = toAddress(sd.address);
+      sDesc.AddressV = toAddress(sd.address);
+      sDesc.AddressW = toAddress(sd.address);
+      sDesc.MinLOD = 0.0f;
+      sDesc.MaxLOD = D3D12_FLOAT32_MAX;
+      sDesc.MaxAnisotropy = 1;
+      sDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+
+      D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+      D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+      stream.allocSamplerSlots(1, cpu, gpu);
+      _dev.device->CreateSampler(&sDesc, cpu);
+      cmdList->SetComputeRootDescriptorTable(slot.rootParamIndex, gpu);
+      carriedSampler.reset();
+      continue;
+    }
+
     const Attribute* arg = nextArg();
     if (!arg) {
       throw std::invalid_argument(
           "FunctionDirectX: not enough arguments for shader bindings");
     }
 
+    // Any non-texture-SRV slot invalidates the carried sampler.
+    if (slot.kind != RootSlot::TableSRVTex) {
+      carriedSampler.reset();
+    }
+
     switch (slot.kind) {
+      case RootSlot::TableSampler:
+        // handled above
+        break;
+      case RootSlot::TableSRVTex:
+      case RootSlot::TableUAVTex: {
+        if (arg->type() != Attribute::Type_Image) {
+          throw std::invalid_argument(
+              "FunctionDirectX: texture binding requires an Image argument");
+        }
+        auto* dxImg = static_cast<ImageDirectX*>(arg->imageImpl().get());
+        bool isUAV = slot.kind == RootSlot::TableUAVTex;
+        dxImg->transitionTo(
+            cmdList, isUAV ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                           : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+        D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+        D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+        stream.allocSrvSlots(1, cpu, gpu);
+
+        const auto& d = dxImg->description();
+        DXGI_FORMAT format = _dev.getImageFormat(d);
+        if (isUAV) {
+          D3D12_UNORDERED_ACCESS_VIEW_DESC v = {};
+          v.Format = format;
+          if (d.size.z > 1) {
+            v.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+            v.Texture3D.WSize = (UINT)d.size.z;
+          } else if (d.size.y > 1) {
+            v.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+          } else {
+            v.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1D;
+          }
+          _dev.device->CreateUnorderedAccessView(dxImg->resource.Get(), nullptr,
+                                                 &v, cpu);
+        } else {
+          D3D12_SHADER_RESOURCE_VIEW_DESC v = {};
+          v.Format = format;
+          v.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+          if (d.size.z > 1) {
+            v.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+            v.Texture3D.MipLevels = 1;
+          } else if (d.size.y > 1) {
+            v.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            v.Texture2D.MipLevels = 1;
+          } else {
+            v.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
+            v.Texture1D.MipLevels = 1;
+          }
+          _dev.device->CreateShaderResourceView(dxImg->resource.Get(), &v, cpu);
+        }
+        cmdList->SetComputeRootDescriptorTable(slot.rootParamIndex, gpu);
+
+        // For SRV textures created via image.sample(), carry the sampler
+        // forward so a following TableSampler slot can inherit it.
+        if (!isUAV && arg->sampler()) {
+          carriedSampler = *arg->sampler();
+        }
+        break;
+      }
       case RootSlot::RootSRV:
       case RootSlot::RootUAV: {
         std::shared_ptr<implementation::Buffer> bufImpl;
@@ -292,12 +432,35 @@ void LibraryDirectX::loadFromData(const void* data, size_t len,
 ghost::Function LibraryDirectX::lookupFunction(const std::string& name) const {
   // Build a root signature whose parameters are derived from the reflected
   // resource list. The slot ordering used here mirrors what
-  // FunctionDirectX::execute consumes positionally: UAV buffers, then SRV
-  // buffers, then CBVs.
+  // FunctionDirectX::execute consumes positionally: UAV first, then SRV,
+  // then CBV, then Sampler — matching how HLSL compute kernels typically
+  // declare "outputs, inputs, params, samplers".
+  //
+  // Buffers use root SRV/UAV/CBV descriptors. Textures and samplers need
+  // descriptor tables because D3D12 can't bind them directly as root
+  // descriptors. Each texture/sampler gets its own 1-entry table so the
+  // positional argument matcher can walk slots one-by-one regardless of
+  // how HLSL numbered the registers.
   std::vector<D3D12_ROOT_PARAMETER> rootParams;
   std::vector<FunctionDirectX::RootSlot> slots;
+  // Ranges must outlive rootParams, since D3D12_ROOT_DESCRIPTOR_TABLE stores
+  // a raw pointer into this vector.
+  std::vector<std::unique_ptr<D3D12_DESCRIPTOR_RANGE>> ranges;
   rootParams.reserve(_reflection.resources.size());
   slots.reserve(_reflection.resources.size());
+  ranges.reserve(_reflection.resources.size());
+
+  auto makeTableRange = [&](D3D12_DESCRIPTOR_RANGE_TYPE type, uint32_t reg,
+                            uint32_t space, uint32_t count) {
+    auto r = std::make_unique<D3D12_DESCRIPTOR_RANGE>();
+    r->RangeType = type;
+    r->NumDescriptors = count;
+    r->BaseShaderRegister = reg;
+    r->RegisterSpace = space;
+    r->OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    ranges.push_back(std::move(r));
+    return ranges.back().get();
+  };
 
   for (auto& r : _reflection.resources) {
     D3D12_ROOT_PARAMETER p = {};
@@ -306,26 +469,39 @@ ghost::Function LibraryDirectX::lookupFunction(const std::string& name) const {
     FunctionDirectX::RootSlot slot;
     slot.rootParamIndex = (uint32_t)rootParams.size();
 
+    const uint32_t rangeCount = r.upperBound - r.lowerBound + 1;
+
     switch (r.regClass) {
       case ghost::dx::RegisterClass::UAV:
-        if (r.shape != ghost::dx::ResourceShape::StructuredOrRawBuffer) {
-          // Typed UAVs (e.g., RWBuffer<float4>) need a descriptor table —
-          // not supported in phase 1.
-          throw ghost::unsupported_error();
+        if (r.shape == ghost::dx::ResourceShape::StructuredOrRawBuffer) {
+          p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+          p.Descriptor.ShaderRegister = r.lowerBound;
+          p.Descriptor.RegisterSpace = r.space;
+          slot.kind = FunctionDirectX::RootSlot::RootUAV;
+        } else {
+          // Typed UAV → treated as a texture/RWBuffer — descriptor table.
+          p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+          p.DescriptorTable.NumDescriptorRanges = 1;
+          p.DescriptorTable.pDescriptorRanges =
+              makeTableRange(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, r.lowerBound,
+                             r.space, rangeCount);
+          slot.kind = FunctionDirectX::RootSlot::TableUAVTex;
         }
-        p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-        p.Descriptor.ShaderRegister = r.lowerBound;
-        p.Descriptor.RegisterSpace = r.space;
-        slot.kind = FunctionDirectX::RootSlot::RootUAV;
         break;
       case ghost::dx::RegisterClass::SRV:
-        if (r.shape != ghost::dx::ResourceShape::StructuredOrRawBuffer) {
-          throw ghost::unsupported_error();
+        if (r.shape == ghost::dx::ResourceShape::StructuredOrRawBuffer) {
+          p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+          p.Descriptor.ShaderRegister = r.lowerBound;
+          p.Descriptor.RegisterSpace = r.space;
+          slot.kind = FunctionDirectX::RootSlot::RootSRV;
+        } else {
+          p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+          p.DescriptorTable.NumDescriptorRanges = 1;
+          p.DescriptorTable.pDescriptorRanges =
+              makeTableRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, r.lowerBound,
+                             r.space, rangeCount);
+          slot.kind = FunctionDirectX::RootSlot::TableSRVTex;
         }
-        p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-        p.Descriptor.ShaderRegister = r.lowerBound;
-        p.Descriptor.RegisterSpace = r.space;
-        slot.kind = FunctionDirectX::RootSlot::RootSRV;
         break;
       case ghost::dx::RegisterClass::CBV:
         p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -334,9 +510,13 @@ ghost::Function LibraryDirectX::lookupFunction(const std::string& name) const {
         slot.kind = FunctionDirectX::RootSlot::RootCBV;
         break;
       case ghost::dx::RegisterClass::Sampler:
-        // Samplers need a static sampler or descriptor table, not supported
-        // in phase 1.
-        throw ghost::unsupported_error();
+        p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        p.DescriptorTable.NumDescriptorRanges = 1;
+        p.DescriptorTable.pDescriptorRanges =
+            makeTableRange(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, r.lowerBound,
+                           r.space, rangeCount);
+        slot.kind = FunctionDirectX::RootSlot::TableSampler;
+        break;
     }
 
     rootParams.push_back(p);

@@ -73,6 +73,31 @@ class StreamDirectX : public Stream {
   std::vector<StagingResource> pendingStaging;
   std::vector<DeferredRead> deferredReads;
 
+  // Shader-visible descriptor heaps for compute dispatches that need
+  // descriptor tables (textures, samplers). Created lazily on first use.
+  // Each dispatch bump-allocates slots; offsets are reset when the fence
+  // for the previous submission has signaled (see @c begin).
+  ComPtr<ID3D12DescriptorHeap> srvHeap;
+  ComPtr<ID3D12DescriptorHeap> samplerHeap;
+  UINT srvHandleSize = 0;
+  UINT samplerHandleSize = 0;
+  UINT srvNextSlot = 0;
+  UINT samplerNextSlot = 0;
+  UINT srvHeapCapacity = 0;
+  UINT samplerHeapCapacity = 0;
+
+  /// @brief Allocate @p count consecutive CBV/SRV/UAV heap slots and return
+  /// the CPU and GPU handles of the first slot. Creates the heap on first
+  /// use. Throws if the bump allocator would overflow the heap.
+  void allocSrvSlots(UINT count, D3D12_CPU_DESCRIPTOR_HANDLE& cpuOut,
+                     D3D12_GPU_DESCRIPTOR_HANDLE& gpuOut);
+  void allocSamplerSlots(UINT count, D3D12_CPU_DESCRIPTOR_HANDLE& cpuOut,
+                         D3D12_GPU_DESCRIPTOR_HANDLE& gpuOut);
+  /// @brief Bind the descriptor heaps on the command list. Called once per
+  /// command-list recording; safe to call multiple times (no-op if both are
+  /// already the active heaps).
+  void bindDescriptorHeaps();
+
   StreamDirectX(const DeviceDirectX& dev_);
   ~StreamDirectX();
 

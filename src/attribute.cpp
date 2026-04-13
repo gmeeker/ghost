@@ -68,4 +68,9 @@ Attribute::Attribute(ArgumentBuffer& ab)
       _count(1),
       _argBuffer(std::make_shared<ArgumentBuffer>(ab)) {}
 
+Attribute::Attribute(const SamplerDescription& sampler)
+    : _type(Type_Sampler), _count(1), _sampler(sampler) {}
+
+Attribute sampler() { return Attribute(SamplerDescription{}); }
+
 }  // namespace ghost

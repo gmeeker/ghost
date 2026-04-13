@@ -35,9 +35,13 @@ class FunctionDirectX : public Function {
   /// @brief How a single root parameter slot is bound to a user argument.
   struct RootSlot {
     enum Kind {
-      RootCBV,  ///< root descriptor: CBV (uses a transient upload buffer)
-      RootSRV,  ///< root descriptor: SRV (binds the user's BufferDirectX)
-      RootUAV,  ///< root descriptor: UAV (binds the user's BufferDirectX)
+      RootCBV,      ///< root descriptor: CBV (uses a transient upload buffer)
+      RootSRV,      ///< root descriptor: SRV (binds the user's BufferDirectX)
+      RootUAV,      ///< root descriptor: UAV (binds the user's BufferDirectX)
+      TableSRVTex,  ///< descriptor table: 1-slot SRV texture (Image arg)
+      TableUAVTex,  ///< descriptor table: 1-slot UAV texture (Image arg)
+      TableSampler  ///< descriptor table: 1-slot sampler (Sampler arg /
+                    ///< inherited from image.sample())
     };
 
     Kind kind;

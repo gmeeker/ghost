@@ -330,16 +330,35 @@ void FunctionVulkan::execute(const ghost::Encoder& s,
   std::vector<uint8_t> pushBytes;
 
   size_t argIdx = 0;
-  auto nextArg = [&]() -> const Attribute* {
+  auto skipIgnorable = [&]() {
     while (argIdx < args.size()) {
-      const Attribute& a = args[argIdx++];
-      // Skip Type_LocalMem and Type_Unknown — they don't bind to a slot.
-      if (a.type() == Attribute::Type_LocalMem) continue;
-      if (a.type() == Attribute::Type_Unknown) continue;
-      return &a;
+      const Attribute& a = args[argIdx];
+      if (a.type() == Attribute::Type_LocalMem) {
+        argIdx++;
+        continue;
+      }
+      if (a.type() == Attribute::Type_Unknown) {
+        argIdx++;
+        continue;
+      }
+      break;
     }
+  };
+  auto peekArg = [&]() -> const Attribute* {
+    skipIgnorable();
+    if (argIdx < args.size()) return &args[argIdx];
     return nullptr;
   };
+  auto nextArg = [&]() -> const Attribute* {
+    const Attribute* a = peekArg();
+    if (a) argIdx++;
+    return a;
+  };
+
+  // Last image attribute's embedded sampler, if any — used to auto-fill a
+  // following Sampler binding when the user called image.sample() and the
+  // shader is authored HLSL-style with a Texture+SamplerState pair.
+  std::optional<SamplerDescription> carriedSampler;
 
   // Match bindings.
   for (size_t bIdx = 0; bIdx < _reflection.bindings.size(); bIdx++) {
@@ -356,10 +375,56 @@ void FunctionVulkan::execute(const ghost::Encoder& s,
     if (setSlot == SIZE_MAX)
       continue;  // shouldn't happen if reflection is correct
 
+    // Sampler binding: prefer an explicit Type_Sampler arg; otherwise
+    // inherit from a preceding image.sample() call. Only consumes an arg
+    // in the explicit case.
+    if (b.kind == ghost::vk::ResourceKind::Sampler) {
+      SamplerDescription sd;
+      bool have = false;
+      if (const Attribute* peek = peekArg()) {
+        if (peek->type() == Attribute::Type_Sampler && peek->sampler()) {
+          sd = *peek->sampler();
+          argIdx++;
+          have = true;
+        }
+      }
+      if (!have && carriedSampler) {
+        sd = *carriedSampler;
+        have = true;
+      }
+      if (!have) {
+        throw std::invalid_argument(
+            "FunctionVulkan: sampler binding has no matching sampler "
+            "argument (pass ghost::sampler() or Image::sample())");
+      }
+      VkSampler s = _dev.getOrCreateSampler(sd);
+      VkDescriptorImageInfo info = {};
+      info.sampler = s;
+      imageInfos.push_back(info);
+
+      VkWriteDescriptorSet w = {};
+      w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      w.dstSet = sets[setSlot];
+      w.dstBinding = b.binding;
+      w.descriptorCount = 1;
+      w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+      w.pImageInfo = &imageInfos.back();
+      writes.push_back(w);
+      carriedSampler.reset();
+      continue;
+    }
+
     const Attribute* arg = nextArg();
     if (!arg) {
       throw std::invalid_argument(
           "FunctionVulkan: not enough arguments for shader bindings");
+    }
+
+    // Any non-sampler binding clears the carried sampler — it only lives
+    // across an immediately-following Sampler binding.
+    if (b.kind != ghost::vk::ResourceKind::SampledImage &&
+        b.kind != ghost::vk::ResourceKind::CombinedImageSampler) {
+      carriedSampler.reset();
     }
 
     if (isBufferKind(b.kind)) {
@@ -445,7 +510,17 @@ void FunctionVulkan::execute(const ghost::Encoder& s,
 
       VkDescriptorImageInfo info = {};
       info.imageView = vkImg->imageView;
+      // Images are kept in VK_IMAGE_LAYOUT_GENERAL by all Ghost paths
+      // (allocation, copy, readback). GENERAL is valid for storage, sampled
+      // and combined use alike; not optimal for pure sampled reads but
+      // avoids tracking per-image state across dispatches.
       info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+      if (b.kind == ghost::vk::ResourceKind::CombinedImageSampler) {
+        SamplerDescription sd =
+            arg->sampler() ? *arg->sampler() : SamplerDescription{};
+        info.sampler = _dev.getOrCreateSampler(sd);
+      }
       imageInfos.push_back(info);
 
       VkWriteDescriptorSet w = {};
@@ -456,6 +531,14 @@ void FunctionVulkan::execute(const ghost::Encoder& s,
       w.descriptorType = vulkanDescriptorType(b.kind);
       w.pImageInfo = &imageInfos.back();
       writes.push_back(w);
+
+      // Remember image.sample() so a following standalone Sampler binding
+      // can auto-fill from it. CombinedImageSampler already consumed it.
+      if (b.kind == ghost::vk::ResourceKind::SampledImage && arg->sampler()) {
+        carriedSampler = *arg->sampler();
+      } else {
+        carriedSampler.reset();
+      }
     } else {
       throw ghost::unsupported_error();
     }
