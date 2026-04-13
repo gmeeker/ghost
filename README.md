@@ -14,6 +14,7 @@ Ghost abstracts the host-side API -- device management, memory allocation, kerne
 - **Binary caching** -- Compiled kernels are automatically cached to disk, eliminating redundant compilation across runs
 - **Buffer & image management** -- Allocate, copy, fill, and map GPU memory with a consistent interface
 - **Streams & events** -- Asynchronous execution with cross-stream synchronization
+- **Command buffers** -- Record and batch GPU operations for deferred execution
 - **Device queries** -- Discover available GPUs and query capabilities through a type-safe attribute system
 - **Modern C++** -- RAII resource management with `std::shared_ptr`, C++17 throughout
 
@@ -47,7 +48,7 @@ inBuf.copy(stream, host_data.data(), N * sizeof(float));
 // Dispatch
 LaunchArgs args;
 args.global_size(N).local_size(256);
-kernel(stream, args, outBuf, inBuf, 2.0f);
+kernel(args, stream)(outBuf, inBuf, 2.0f);
 
 // Read back results
 outBuf.copyTo(stream, result.data(), N * sizeof(float));
@@ -166,7 +167,7 @@ auto roundUp = [&](size_t n) { return (n + align - 1) & ~(align - 1); };
 auto arena = device.allocateBuffer(totalSize);
 auto a = arena.createSubBuffer(0, roundUp(sizeA));
 auto b = arena.createSubBuffer(roundUp(sizeA), roundUp(sizeB));
-kernel(stream, launch, a, b, ...);
+kernel(launch, stream)(a, b, ...);
 ```
 
 Notes:
@@ -195,8 +196,8 @@ auto s1 = device.createStream();
 auto s2 = device.createStream();
 
 // Enqueue work on parallel streams
-kernel(s1, args, buf1);
-kernel(s2, args, buf2);
+kernel(args, s1)(buf1);
+kernel(args, s2)(buf2);
 
 // Cross-stream dependency
 Event event = s1.record();
@@ -204,7 +205,7 @@ s2.waitForEvent(event);
 
 // Timing
 Event start = stream.record();
-kernel(stream, args, buf);
+kernel(args, stream)(buf);
 Event end = stream.record();
 stream.sync();
 double ms = Event::elapsed(start, end);
@@ -212,23 +213,39 @@ double ms = Event::elapsed(start, end);
 
 ### Kernel Dispatch
 
-Kernels are dispatched with a function-call syntax. Arguments are passed directly -- buffers, images, and scalar values.
+Kernels use a two-step call syntax: bind launch configuration and encoder, then pass arguments. Both `Stream` and `CommandBuffer` inherit from `Encoder`, so the same kernel works with either.
 
 ```cpp
 LaunchArgs args;
 args.global_size(512, 512).local_size(16, 16);  // 2D dispatch
 
 auto fn = library.lookupFunction("my_kernel");
-fn(stream, args, outputBuf, inputBuf, inputImage, 3.14f);
+fn(args, stream)(outputBuf, inputBuf, inputImage, 3.14f);
+```
+
+### Command Buffers
+
+Command buffers record GPU operations for deferred, batched execution. They accept the same operations as streams (kernel dispatch, buffer/image copies, fills) through the shared `Encoder` interface.
+
+Unlike streams, command buffers provide no implicit ordering between operations. Use `barrier()` for explicit synchronization within a batch.
+
+```cpp
+ghost::CommandBuffer cb(device);
+buf.copy(cb, hostData, bytes);
+fn(args, cb)(outputBuf, inputBuf, 3.14f);
+cb.barrier();
+result.copy(cb, outputBuf, bytes);
+cb.submit(stream);
 ```
 
 ## Architecture
 
-Ghost uses a bridge/pimpl pattern. Public API classes (`Device`, `Function`, `Library`, `Stream`, `Buffer`, `Image`) are thin wrappers that delegate to virtual implementation interfaces. Each backend provides concrete implementations of these interfaces.
+Ghost uses a bridge/pimpl pattern. Public API classes (`Device`, `Function`, `Library`, `Stream`, `CommandBuffer`, `Buffer`, `Image`) are thin wrappers that delegate to virtual implementation interfaces. `Stream` and `CommandBuffer` both inherit from `Encoder`, so GPU operations (kernel dispatch, buffer/image copies) accept either through a single interface. Each backend provides concrete implementations of these interfaces.
 
 ```
 include/ghost/
-    device.h, function.h, image.h, ...          # Public API
+    device.h, function.h, encoder.h,            # Public API
+    command_buffer.h, image.h, ...
     implementation/
         impl_device.h, impl_function.h          # Virtual interfaces
     cuda/   metal/   opencl/   vulkan/   ...    # Backend headers
