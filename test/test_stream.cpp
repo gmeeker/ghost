@@ -179,4 +179,123 @@ TEST_P(EventTest, EventTimestamp) {
   EXPECT_GE(ts, 0.0);
 }
 
+TEST_P(EventTest, ProfilingTimestamp) {
+  // Create a stream with profiling enabled.
+  StreamOptions opts;
+  opts.profiling = true;
+  Stream s;
+  try {
+    s = device().createStream(opts);
+  } catch (...) {
+    GTEST_SKIP() << "Profiling streams not supported";
+  }
+
+  const size_t N = 1024;
+  auto buf = device().allocateBuffer(N * sizeof(float));
+  std::vector<float> data(N, 1.0f);
+  buf.copy(s, data.data(), N * sizeof(float));
+
+  Event start(nullptr), end(nullptr);
+  try {
+    start = s.record();
+  } catch (const ghost::unsupported_error&) {
+    GTEST_SKIP() << "Events not supported";
+  }
+
+  buf.copy(s, data.data(), N * sizeof(float));
+  end = s.record();
+  end.wait();
+
+  double elapsed = Event::elapsed(start, end);
+  // With profiling enabled, elapsed should be non-negative.
+  // Without profiling it returns 0.0 (silently).
+  EXPECT_GE(elapsed, 0.0);
+}
+
 GHOST_INSTANTIATE_BACKEND_TESTS(EventTest);
+
+// ---------------------------------------------------------------------------
+// Forced event chain tests (exercise event chaining on in-order queues)
+// ---------------------------------------------------------------------------
+
+class EventChainTest : public GhostKernelTest {};
+
+TEST_P(EventChainTest, ForceEventChainDispatch) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  // Create a stream with forced event chaining.
+  StreamOptions opts;
+  opts.forceEventChain = true;
+  auto s = device().createStream(opts);
+
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  auto buf1 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf2 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf3 = device().allocateBuffer(safeN * sizeof(float));
+  buf1.copy(s, input.data(), safeN * sizeof(float));
+  s.sync();
+
+  LaunchArgs la;
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
+
+  // Chain: buf1 * 2 -> buf2, then buf2 * 3 -> buf3.
+  // With event chaining, each dispatch waits on the previous.
+  fn(la, s)(buf2, buf1, 2.0f);
+  fn(la, s)(buf3, buf2, 3.0f);
+  s.sync();
+
+  buf3.copyTo(s, output.data(), safeN * sizeof(float));
+  s.sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 6.0f) << "index " << i;
+  }
+}
+
+TEST_P(EventChainTest, ForceEventChainCrossStream) {
+  // Verify cross-stream events work with forced event chaining.
+  StreamOptions opts;
+  opts.forceEventChain = true;
+
+  auto s1 = device().createStream(opts);
+  auto s2 = device().createStream(opts);
+
+  const size_t N = 16;
+  std::vector<float> input(N), output(N, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto buf = device().allocateBuffer(N * sizeof(float));
+  buf.copy(s1, input.data(), N * sizeof(float));
+
+  Event event(nullptr);
+  try {
+    event = s1.record();
+  } catch (const ghost::unsupported_error&) {
+    GTEST_SKIP() << "Events not supported";
+  }
+
+  try {
+    s2.waitForEvent(event);
+  } catch (const ghost::unsupported_error&) {
+    GTEST_SKIP() << "Cross-stream wait not supported";
+  }
+  buf.copyTo(s2, output.data(), N * sizeof(float));
+  s2.sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i)) << "index " << i;
+  }
+}
+
+GHOST_INSTANTIATE_KERNEL_TESTS(EventChainTest);

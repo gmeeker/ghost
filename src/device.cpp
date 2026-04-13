@@ -362,7 +362,9 @@ Library Device::loadLibraryFromData(const void* data, size_t len,
 
 SharedContext Device::shareContext() const { return _impl->shareContext(); }
 
-Stream Device::createStream() const { return _impl->createStream(); }
+Stream Device::createStream(const StreamOptions& options) const {
+  return _impl->createStream(options);
+}
 
 Stream Device::defaultStream() const { return _stream; }
 

@@ -479,7 +479,7 @@ SharedContext DeviceCPU::shareContext() const {
   return c;
 }
 
-ghost::Stream DeviceCPU::createStream() const {
+ghost::Stream DeviceCPU::createStream(const StreamOptions& options) const {
   auto ptr = std::make_shared<implementation::StreamCPU>(pool);
   return ghost::Stream(ptr);
 }

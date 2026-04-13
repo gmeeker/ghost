@@ -838,7 +838,7 @@ SharedContext DeviceMetal::shareContext() const {
   return c;
 }
 
-ghost::Stream DeviceMetal::createStream() const {
+ghost::Stream DeviceMetal::createStream(const StreamOptions &options) const {
   auto ptr = std::make_shared<implementation::StreamMetal>(dev.get());
   return ghost::Stream(ptr);
 }

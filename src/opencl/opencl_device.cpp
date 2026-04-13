@@ -201,19 +201,22 @@ double EventOpenCL::elapsed(const Event& other) const {
 StreamOpenCL::StreamOpenCL(opencl::ptr<cl_command_queue> queue_)
     : queue(queue_), outOfOrder(true) {}
 
-StreamOpenCL::StreamOpenCL(const DeviceOpenCL& dev) : outOfOrder(true) {
+StreamOpenCL::StreamOpenCL(const DeviceOpenCL& dev,
+                           const StreamOptions& options)
+    : outOfOrder(true) {
   cl_int err;
-  bool profiling = false;
   cl_command_queue_properties queueProperties = 0;
   cl_command_queue_properties devQueueProperties = 0;
   auto devices = dev.getDevices();
   if (outOfOrder) queueProperties |= CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE;
-  if (profiling) queueProperties |= CL_QUEUE_PROFILING_ENABLE;
+  if (options.profiling) queueProperties |= CL_QUEUE_PROFILING_ENABLE;
   err = clGetDeviceInfo(devices[0], CL_DEVICE_QUEUE_PROPERTIES,
                         sizeof(devQueueProperties), &devQueueProperties, NULL);
   checkError(err);
   queueProperties &= devQueueProperties;
   outOfOrder = (queueProperties & CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE) != 0;
+  // forceEventChain: use event chaining even on in-order queues
+  if (options.forceEventChain && !outOfOrder) outOfOrder = true;
   if (queue.get() == nullptr && dev.context.get() != nullptr) {
     if (dev.checkVersion("2.0")) {
 #ifdef CL_VERSION_2_0
@@ -958,8 +961,8 @@ SharedContext DeviceOpenCL::shareContext() const {
   return c;
 }
 
-ghost::Stream DeviceOpenCL::createStream() const {
-  auto ptr = std::make_shared<implementation::StreamOpenCL>(*this);
+ghost::Stream DeviceOpenCL::createStream(const StreamOptions& options) const {
+  auto ptr = std::make_shared<implementation::StreamOpenCL>(*this, options);
   return ghost::Stream(ptr);
 }
 

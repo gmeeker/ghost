@@ -1468,7 +1468,7 @@ SharedContext DeviceVulkan::shareContext() const {
   return SharedContext(instance, computeQueue, device, physicalDevice);
 }
 
-ghost::Stream DeviceVulkan::createStream() const {
+ghost::Stream DeviceVulkan::createStream(const StreamOptions& options) const {
   return ghost::Stream(std::make_shared<StreamVulkan>(*this));
 }
 

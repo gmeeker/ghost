@@ -344,8 +344,9 @@ class Device {
       bool retainBinary = false) const;
 
   /// @brief Create a new stream for enqueuing operations.
+  /// @param options Optional stream creation flags (profiling, event chaining).
   /// @return A new Stream.
-  Stream createStream() const;
+  Stream createStream(const StreamOptions& options = {}) const;
 
   /// @brief Get the default stream for this device.
   /// @return The default Stream.

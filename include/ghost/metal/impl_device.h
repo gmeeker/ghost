@@ -178,7 +178,8 @@ class DeviceMetal : public Device {
 
   virtual SharedContext shareContext() const override;
 
-  virtual ghost::Stream createStream() const override;
+  virtual ghost::Stream createStream(
+      const StreamOptions& options = {}) const override;
 
   virtual size_t getMemoryPoolSize() const override;
   virtual void setMemoryPoolSize(size_t bytes) override;

@@ -791,7 +791,7 @@ SharedContext DeviceCUDA::shareContext() const {
   return c;
 }
 
-ghost::Stream DeviceCUDA::createStream() const {
+ghost::Stream DeviceCUDA::createStream(const StreamOptions& options) const {
   auto ptr = std::make_shared<implementation::StreamCUDA>(context.get());
   return ghost::Stream(ptr);
 }

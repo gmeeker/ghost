@@ -1046,7 +1046,7 @@ SharedContext DeviceDirectX::shareContext() const {
                        _factory.Get());
 }
 
-ghost::Stream DeviceDirectX::createStream() const {
+ghost::Stream DeviceDirectX::createStream(const StreamOptions& options) const {
   return ghost::Stream(std::make_shared<StreamDirectX>(*this));
 }
 

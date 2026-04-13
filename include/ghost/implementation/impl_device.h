@@ -140,6 +140,12 @@ class Library;
 class Encoder;
 class Stream;
 class Buffer;
+
+/// @brief Options for stream creation.
+struct StreamOptions {
+  bool profiling = false;
+  bool forceEventChain = false;
+};
 class MappedBuffer;
 class Image;
 
@@ -373,7 +379,8 @@ class Device {
   virtual ghost::Library loadLibraryFromFile(const std::string& filename) const;
 
   virtual SharedContext shareContext() const = 0;
-  virtual ghost::Stream createStream() const = 0;
+  virtual ghost::Stream createStream(
+      const StreamOptions& options = {}) const = 0;
 
   /// @brief Get the current memory pool size. Default returns the stored pool
   /// size.

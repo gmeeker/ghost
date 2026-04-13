@@ -214,7 +214,8 @@ class DeviceVulkan : public Device {
 
   virtual SharedContext shareContext() const override;
 
-  virtual ghost::Stream createStream() const override;
+  virtual ghost::Stream createStream(
+      const StreamOptions& options = {}) const override;
 
   virtual ghost::Buffer allocateBuffer(
       size_t bytes, const BufferOptions& opts = {}) const override;
