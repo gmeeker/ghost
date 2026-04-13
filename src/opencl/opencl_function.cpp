@@ -126,8 +126,6 @@ void FunctionOpenCL::execute(const ghost::Stream& s,
           ")");
     }
   }
-  opencl::ptr<cl_event> outEvent;
-  std::vector<cl_event> waitEvents;
   size_t global_size[3];
   size_t local_size[3];
   for (size_t i = 0; i < 3; i++) {
@@ -136,9 +134,10 @@ void FunctionOpenCL::execute(const ghost::Stream& s,
   }
   err = clEnqueueNDRangeKernel(
       stream_impl->queue, kernel, (cl_uint)launchArgs.dims(), NULL, global_size,
-      launchArgs.is_local_defined() ? local_size : nullptr, waitEvents.size(),
-      waitEvents.empty() ? nullptr : &waitEvents[0], &outEvent);
+      launchArgs.is_local_defined() ? local_size : nullptr,
+      stream_impl->events.size(), stream_impl->events, stream_impl->event());
   checkError(err);
+  stream_impl->addEvent();
 }
 
 Attribute FunctionOpenCL::getAttribute(FunctionAttributeId what) const {

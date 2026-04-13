@@ -213,6 +213,7 @@ StreamOpenCL::StreamOpenCL(const DeviceOpenCL& dev) : outOfOrder(true) {
                         sizeof(devQueueProperties), &devQueueProperties, NULL);
   checkError(err);
   queueProperties &= devQueueProperties;
+  outOfOrder = (queueProperties & CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE) != 0;
   if (queue.get() == nullptr && dev.context.get() != nullptr) {
     if (dev.checkVersion("2.0")) {
 #ifdef CL_VERSION_2_0
