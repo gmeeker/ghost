@@ -28,6 +28,11 @@ namespace ghost {
 namespace implementation {
 using namespace metal;
 
+#if !defined(MAC_OS_VERSION_26_0)
+// SDK is too old for MTLGPUFamilyApple10
+#define MTLGPUFamilyApple10 (MTLGPUFamily)1010
+#endif
+
 namespace {
 MTLPixelFormat getFormat(const ImageDescription &descr) {
   switch (descr.channels) {
@@ -992,12 +997,10 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
     return getMetalVersion();
   case kDeviceFamily:
     if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *)) {
-#if defined(__IPHONE_18_0) || defined(__MAC_15_0) || defined(__TVOS_18_0)
       if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, *)) {
         if ([dev.get() supportsFamily:MTLGPUFamilyApple10])
           return "Apple10";
       }
-#endif
       if ([dev.get() supportsFamily:MTLGPUFamilyApple9])
         return "Apple9";
       if ([dev.get() supportsFamily:MTLGPUFamilyApple8])
@@ -1047,14 +1050,11 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
   case kDeviceMaxImageSize2: {
     int32_t v = 16384;
     if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *)) {
-#if defined(__IPHONE_18_0) || defined(__MAC_15_0) || defined(__TVOS_18_0)
       if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, *)) {
         if ([dev.get() supportsFamily:MTLGPUFamilyApple10]) {
           v = 32786;
         }
-      } else
-#endif
-          if (![dev.get() supportsFamily:MTLGPUFamilyApple3]) {
+      } else if (![dev.get() supportsFamily:MTLGPUFamilyApple3]) {
         v = 8192;
       }
     } else {
