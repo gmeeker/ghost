@@ -275,6 +275,16 @@ class Image {
 
   /// @}
 
+  /// @brief Create a sampled-image attribute with default sampler settings.
+  ///
+  /// Returns an Attribute (Type_Image) carrying a SamplerDescription with
+  /// defaults (FilterMode::Nearest, AddressMode::Clamp, unnormalized coords).
+  /// Use fluent modifiers to customize:
+  /// @code
+  /// fn(stream, launch, image.sample().linear().wrap());
+  /// @endcode
+  Attribute sample() const;
+
  private:
   std::shared_ptr<implementation::Image> _impl;
 };

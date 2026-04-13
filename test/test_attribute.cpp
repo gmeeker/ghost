@@ -1,4 +1,5 @@
 #include <ghost/attribute.h>
+#include <ghost/device.h>
 #include <ghost/function.h>
 #include <gtest/gtest.h>
 
@@ -242,4 +243,81 @@ TEST(LaunchArgsTest, RequiredSubgroupSizeDefault) {
   EXPECT_EQ(la.requiredSubgroupSize(), 32u);
   la.requireSubgroupSize(0);
   EXPECT_EQ(la.requiredSubgroupSize(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// Sampler fluent API
+// ---------------------------------------------------------------------------
+
+TEST(AttributeTest, PlainImageHasNoSampler) {
+  Image* ip = nullptr;
+  Attribute a(ip);
+  EXPECT_EQ(a.type(), Attribute::Type_Image);
+  EXPECT_FALSE(a.sampler().has_value());
+}
+
+TEST(AttributeTest, SampledImageHasDefaultSampler) {
+  // Image::sample() requires a valid impl, so test via the
+  // Attribute(Image&, SamplerDescription) constructor directly.
+  Image img;
+  Attribute a(img, SamplerDescription{});
+  EXPECT_EQ(a.type(), Attribute::Type_Image);
+  ASSERT_TRUE(a.sampler().has_value());
+  EXPECT_EQ(a.sampler()->filter, FilterMode::Nearest);
+  EXPECT_EQ(a.sampler()->address, AddressMode::Clamp);
+  EXPECT_FALSE(a.sampler()->normalizedCoords);
+}
+
+TEST(AttributeTest, SamplerLinear) {
+  Image img;
+  Attribute a = Attribute(img, SamplerDescription{}).linear();
+  ASSERT_TRUE(a.sampler().has_value());
+  EXPECT_EQ(a.sampler()->filter, FilterMode::Linear);
+  EXPECT_EQ(a.sampler()->address, AddressMode::Clamp);
+}
+
+TEST(AttributeTest, SamplerWrap) {
+  Image img;
+  Attribute a = Attribute(img, SamplerDescription{}).wrap();
+  ASSERT_TRUE(a.sampler().has_value());
+  EXPECT_EQ(a.sampler()->filter, FilterMode::Nearest);
+  EXPECT_EQ(a.sampler()->address, AddressMode::Wrap);
+}
+
+TEST(AttributeTest, SamplerMirror) {
+  Image img;
+  Attribute a = Attribute(img, SamplerDescription{}).mirror();
+  ASSERT_TRUE(a.sampler().has_value());
+  EXPECT_EQ(a.sampler()->address, AddressMode::Mirror);
+}
+
+TEST(AttributeTest, SamplerNormalized) {
+  Image img;
+  Attribute a = Attribute(img, SamplerDescription{}).normalized();
+  ASSERT_TRUE(a.sampler().has_value());
+  EXPECT_TRUE(a.sampler()->normalizedCoords);
+}
+
+TEST(AttributeTest, SamplerFluentChaining) {
+  Image img;
+  Attribute a =
+      Attribute(img, SamplerDescription{}).linear().wrap().normalized();
+  ASSERT_TRUE(a.sampler().has_value());
+  EXPECT_EQ(a.sampler()->filter, FilterMode::Linear);
+  EXPECT_EQ(a.sampler()->address, AddressMode::Wrap);
+  EXPECT_TRUE(a.sampler()->normalizedCoords);
+}
+
+TEST(AttributeTest, SamplerOverride) {
+  Image img;
+  Attribute a = Attribute(img, SamplerDescription{}).linear().nearest();
+  ASSERT_TRUE(a.sampler().has_value());
+  EXPECT_EQ(a.sampler()->filter, FilterMode::Nearest);
+}
+
+TEST(AttributeTest, SamplerFluentOnNonImageIsNoop) {
+  Attribute a(42.0f);
+  a.linear().clamp().normalized();
+  EXPECT_EQ(a.type(), Attribute::Type_Float);
+  EXPECT_FALSE(a.sampler().has_value());
 }

@@ -93,8 +93,30 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
         auto cuda =
             static_cast<implementation::ImageCUDA*>(i->imageImpl().get());
         CUaddress_mode addressMode = CU_TR_ADDRESS_MODE_CLAMP;
-        CUfilter_mode filterMode = CU_TR_FILTER_MODE_LINEAR;
+        CUfilter_mode filterMode = CU_TR_FILTER_MODE_POINT;
         bool normalizedCoords = false;
+        if (auto& s = i->sampler()) {
+          switch (s->filter) {
+            case FilterMode::Nearest:
+              filterMode = CU_TR_FILTER_MODE_POINT;
+              break;
+            case FilterMode::Linear:
+              filterMode = CU_TR_FILTER_MODE_LINEAR;
+              break;
+          }
+          switch (s->address) {
+            case AddressMode::Clamp:
+              addressMode = CU_TR_ADDRESS_MODE_CLAMP;
+              break;
+            case AddressMode::Wrap:
+              addressMode = CU_TR_ADDRESS_MODE_WRAP;
+              break;
+            case AddressMode::Mirror:
+              addressMode = CU_TR_ADDRESS_MODE_MIRROR;
+              break;
+          }
+          normalizedCoords = s->normalizedCoords;
+        }
         CUDA_RESOURCE_DESC resDesc;
         CUDA_TEXTURE_DESC texDesc;
 

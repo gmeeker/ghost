@@ -89,6 +89,49 @@ enum {
 
 /// @}
 
+/// @brief Texture filter mode for image sampling.
+///
+/// Controls how texels are read when sampling coordinates fall between texel
+/// centers. On CUDA this maps to @c CUfilter_mode when creating texture
+/// objects. On OpenCL and Metal, samplers are declared kernel-side so this
+/// is informational. On Vulkan and DirectX it will map to the corresponding
+/// sampler descriptor fields.
+enum class FilterMode {
+  /// @brief Return the nearest texel (point sampling).
+  Nearest,
+  /// @brief Linearly interpolate between neighboring texels.
+  Linear
+};
+
+/// @brief Texture address mode for out-of-range coordinates.
+///
+/// Controls what happens when sampling coordinates fall outside [0, 1]
+/// (normalized) or [0, dim) (unnormalized).
+enum class AddressMode {
+  /// @brief Clamp coordinates to the valid range.
+  Clamp,
+  /// @brief Wrap (repeat) coordinates.
+  Wrap,
+  /// @brief Mirror coordinates at boundaries.
+  Mirror
+};
+
+/// @brief Describes how an image should be sampled when bound as a kernel
+/// argument.
+///
+/// Carries filter mode, address mode, and coordinate normalization. This is
+/// attached to an Attribute via @c Image::sample() and its fluent modifiers
+/// rather than to the ImageDescription, because the same image may be sampled
+/// differently in different kernel invocations.
+struct SamplerDescription {
+  /// @brief Texel filter mode (default: nearest / point sampling).
+  FilterMode filter = FilterMode::Nearest;
+  /// @brief Address mode for out-of-range coordinates (default: clamp).
+  AddressMode address = AddressMode::Clamp;
+  /// @brief Whether coordinates are normalized to [0, 1] (default: false).
+  bool normalizedCoords = false;
+};
+
 /// @brief Buffer and image access modes.
 enum class Access {
   /// @brief Read-only access.

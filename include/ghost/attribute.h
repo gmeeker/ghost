@@ -15,9 +15,11 @@
 #ifndef GHOST_ATTRIBUTE_H
 #define GHOST_ATTRIBUTE_H
 
+#include <ghost/image.h>
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace ghost {
@@ -102,6 +104,7 @@ class Attribute {
   std::shared_ptr<implementation::Buffer> _bufferImpl;
   std::shared_ptr<implementation::Image> _imageImpl;
   std::shared_ptr<ArgumentBuffer> _argBuffer;
+  std::optional<SamplerDescription> _sampler;
 
   template <typename S, typename T>
   void setT(const S* v, S v0, S* s, T* t, size_t num) {
@@ -148,6 +151,10 @@ class Attribute {
   Attribute(Buffer& b);
   Attribute(Image* i);
   Attribute(Image& i);
+  /// @brief Construct an image attribute with an explicit sampler description.
+  ///
+  /// Used by @c Image::sample() to create a sampled image attribute.
+  Attribute(Image& i, const SamplerDescription& sampler);
   Attribute(ArgumentBuffer* ab);
   Attribute(ArgumentBuffer& ab);
 
@@ -307,6 +314,61 @@ class Attribute {
   /// ArgumentBuffer. The host-side data is snapshotted; the GPU buffer
   /// (if any) shares its impl with the original via shared_ptr.
   ArgumentBuffer* argumentBuffer() const { return _argBuffer.get(); }
+
+  /// @brief Sampler description attached to an image attribute.
+  ///
+  /// Present only when the attribute was created via @c Image::sample().
+  /// Backends that create host-side sampler/texture objects (CUDA, Vulkan,
+  /// DirectX) use this to configure filtering and addressing. Backends
+  /// where samplers are declared kernel-side (OpenCL, Metal) may ignore it.
+  const std::optional<SamplerDescription>& sampler() const { return _sampler; }
+
+  /// @}
+
+  /// @name Sampler fluent modifiers
+  ///
+  /// These methods modify the sampler description on an image attribute
+  /// created via @c Image::sample(). They return @c *this for chaining:
+  /// @code
+  /// fn(stream, launch, image.sample().linear().clamp());
+  /// @endcode
+  /// @{
+
+  /// @brief Set the filter mode to linear interpolation.
+  Attribute& linear() {
+    if (_sampler) _sampler->filter = FilterMode::Linear;
+    return *this;
+  }
+
+  /// @brief Set the filter mode to nearest (point) sampling.
+  Attribute& nearest() {
+    if (_sampler) _sampler->filter = FilterMode::Nearest;
+    return *this;
+  }
+
+  /// @brief Set the address mode to clamp.
+  Attribute& clamp() {
+    if (_sampler) _sampler->address = AddressMode::Clamp;
+    return *this;
+  }
+
+  /// @brief Set the address mode to wrap (repeat).
+  Attribute& wrap() {
+    if (_sampler) _sampler->address = AddressMode::Wrap;
+    return *this;
+  }
+
+  /// @brief Set the address mode to mirror.
+  Attribute& mirror() {
+    if (_sampler) _sampler->address = AddressMode::Mirror;
+    return *this;
+  }
+
+  /// @brief Enable or disable normalized coordinates.
+  Attribute& normalized(bool enable = true) {
+    if (_sampler) _sampler->normalizedCoords = enable;
+    return *this;
+  }
 
   /// @}
 };

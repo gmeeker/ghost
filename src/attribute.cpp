@@ -55,6 +55,9 @@ Attribute::Attribute(Image* i) : _type(Type_Image), _count(1) {
 Attribute::Attribute(Image& i)
     : _type(Type_Image), _count(1), _imageImpl(i.impl()) {}
 
+Attribute::Attribute(Image& i, const SamplerDescription& sampler)
+    : _type(Type_Image), _count(1), _imageImpl(i.impl()), _sampler(sampler) {}
+
 Attribute::Attribute(ArgumentBuffer* ab)
     : _type(Type_ArgumentBuffer), _count(1) {
   if (ab) _argBuffer = std::make_shared<ArgumentBuffer>(*ab);

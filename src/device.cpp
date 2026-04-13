@@ -183,6 +183,10 @@ const ImageDescription& Image::description() const {
   return _impl->description();
 }
 
+Attribute Image::sample() const {
+  return Attribute(*const_cast<Image*>(this), SamplerDescription{});
+}
+
 void Image::copy(const Stream& s, const Image& src) { _impl->copy(s, src); }
 
 void Image::copy(const Stream& s, const Buffer& src) {
