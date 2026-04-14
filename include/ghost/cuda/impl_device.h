@@ -134,6 +134,23 @@ class ImageCUDA : public Image {
                     const Origin3& dstOrigin) override;
 };
 
+// Class to track thread's current context, even if other libraries change it.
+// Use one cuCtxPushContext and wait to pop until exiting from the thread (or
+// destroying a context).
+class CU_CurrentContext {
+ protected:
+  static thread_local size_t _pushCount;
+
+ public:
+  // get context (cuCtxGetCurrent).
+  static CUcontext get();
+  // set context, pushing on stack if necessary.
+  static CUresult set(CUcontext c);
+  // cuCtxPushContext (or cuCtxContextCreate) was just called.
+  static void pushed();
+  static void pop();
+};
+
 class DeviceCUDA : public Device {
  public:
   cu::ptr<CUcontext> context;
@@ -150,6 +167,10 @@ class DeviceCUDA : public Device {
   DeviceCUDA(const SharedContext& share);
   DeviceCUDA(const GpuInfo& info);
   DeviceCUDA(int deviceOrdinal);
+  ~DeviceCUDA() override;
+
+  void activate(void** prevOut = nullptr) override;
+  void deactivate(void* prev = nullptr) override;
 
   virtual ghost::Library loadLibraryFromText(
       const std::string& text,

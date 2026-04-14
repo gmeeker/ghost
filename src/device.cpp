@@ -14,6 +14,7 @@
 
 #include <ghost/command_buffer.h>
 #include <ghost/device.h>
+#include <ghost/exception.h>
 
 #include <cstring>
 #include <memory>
@@ -120,6 +121,7 @@ Encoder::Encoder(std::shared_ptr<implementation::Encoder> impl) : _impl(impl) {}
 Stream::Stream(std::shared_ptr<implementation::Stream> impl) : Encoder(impl) {}
 
 void Stream::sync() {
+  detail::EntryGuard _g;
   static_cast<implementation::Stream*>(_impl.get())->sync();
 }
 
@@ -359,6 +361,13 @@ Library Device::loadLibraryFromData(const void* data, size_t len,
                                     bool retainBinary) const {
   return _impl->loadLibraryFromData(data, len, options, retainBinary);
 }
+
+void Device::activate(void** prevOut) {
+  detail::EntryGuard _g;
+  _impl->activate(prevOut);
+}
+
+void Device::deactivate(void* prev) { _impl->deactivate(prev); }
 
 SharedContext Device::shareContext() const { return _impl->shareContext(); }
 

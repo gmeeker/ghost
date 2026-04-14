@@ -117,6 +117,31 @@ auto name = device.getAttribute(kDeviceName);
 auto mem  = device.getAttribute(kDeviceMemory);
 ```
 
+### Using Ghost inside a library
+
+When Ghost is used inside a library (as opposed to an application that owns the
+thread), the CUDA backend needs to manage the thread's current context so that
+calls into other CUDA libraries — or callers that have their own context —
+don't see it corrupted. Wrap each public entry point in a `Device::Active`
+scope:
+
+```cpp
+void mylib_process(ghost::Device& dev, ...) {
+    ghost::Device::Active scope(dev);
+    // ... allocate buffers, launch kernels, sync streams ...
+}
+```
+
+On construction, `Active` saves the thread's current CUDA context and makes
+`dev`'s context current. On destruction, it synchronizes and restores the
+previous context. On non-CUDA backends `Active` is a no-op, so library code
+does not need backend-specific branches.
+
+Errors surfaced from prior asynchronous work (e.g. a kernel that failed after
+its dispatch returned) are deferred to the next user-visible Ghost call on the
+same thread rather than thrown from destructors or silently dropped by
+resource-release paths.
+
 ### Loading Kernels
 
 Ghost supports multiple ways to load GPU programs:

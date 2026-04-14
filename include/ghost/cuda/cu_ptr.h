@@ -16,6 +16,8 @@
 #define GHOST_CU_PTR_H
 
 #include <cuda.h>
+#include <ghost/cuda/exception.h>
+#include <ghost/exception.h>
 
 namespace ghost {
 namespace cu {
@@ -25,56 +27,56 @@ class detail {};
 template <>
 class detail<void*> {
  public:
-  static void release(void* v) { cuMemFreeHost(v); }
+  static CUresult release(void* v) { return cuMemFreeHost(v); }
 };
 
 template <>
 class detail<CUdeviceptr> {
  public:
-  static void release(CUdeviceptr v) { cuMemFree(v); }
+  static CUresult release(CUdeviceptr v) { return cuMemFree(v); }
 };
 
 template <>
 class detail<CUarray> {
  public:
-  static void release(CUarray v) { cuArrayDestroy(v); }
+  static CUresult release(CUarray v) { return cuArrayDestroy(v); }
 };
 
 template <>
 class detail<CUevent> {
  public:
-  static void release(CUevent v) { cuEventDestroy(v); }
+  static CUresult release(CUevent v) { return cuEventDestroy(v); }
 };
 
 template <>
 class detail<CUcontext> {
  public:
-  static void release(CUcontext v) { cuCtxDestroy(v); }
+  static CUresult release(CUcontext v) { return cuCtxDestroy(v); }
 };
 
 template <>
 class detail<CUstream> {
  public:
-  static void release(CUstream v) { cuStreamDestroy(v); }
+  static CUresult release(CUstream v) { return cuStreamDestroy(v); }
 };
 
 template <>
 class detail<CUmodule> {
  public:
-  static void release(CUmodule v) { cuModuleUnload(v); }
+  static CUresult release(CUmodule v) { return cuModuleUnload(v); }
 };
 
 template <>
 class detail<CUlinkState> {
  public:
-  static void release(CUlinkState v) { cuLinkDestroy(v); }
+  static CUresult release(CUlinkState v) { return cuLinkDestroy(v); }
 };
 
 #if CUDA_VERSION >= 11020
 template <>
 class detail<CUmemoryPool> {
  public:
-  static void release(CUmemoryPool v) { cuMemPoolDestroy(v); }
+  static CUresult release(CUmemoryPool v) { return cuMemPoolDestroy(v); }
 };
 #endif
 
@@ -97,8 +99,15 @@ class ptr {
 
   void destroy() {
     if (_owned) {
-      DETAIL::release(value);
+      CUresult err = DETAIL::release(value);
       _owned = false;
+      if (err != CUDA_SUCCESS) {
+        try {
+          throw cu::runtime_error(err);
+        } catch (...) {
+          ghost::detail::stashError(std::current_exception());
+        }
+      }
     }
     value = (TYPE)0;
   }

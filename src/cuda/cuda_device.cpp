@@ -714,6 +714,58 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src,
   }
 }
 
+thread_local size_t CU_CurrentContext::_pushCount;
+
+CUcontext CU_CurrentContext::get() {
+  CUcontext ctx;
+  if (cuCtxGetCurrent(&ctx) == CUDA_SUCCESS) return ctx;
+  return nullptr;
+}
+
+CUresult CU_CurrentContext::set(CUcontext c) {
+  CUresult err;
+  CUcontext ctx;
+  err = cuCtxGetCurrent(&ctx);
+  if (err != CUDA_SUCCESS) {
+    return err;
+  }
+  if (c == ctx) {
+    return err;
+  }
+  if (ctx != nullptr) {
+    (void)cuCtxSynchronize();
+  }
+  size_t count = _pushCount;
+  if (count > 0) {
+    err = cuCtxSetCurrent(c);
+  } else {
+    err = cuCtxPushCurrent(c);
+    if (err == CUDA_SUCCESS) {
+      count++;
+      _pushCount = count;
+    }
+  }
+  return err;
+}
+
+void CU_CurrentContext::pushed() { _pushCount++; }
+
+void CU_CurrentContext::pop() {
+  CUresult err;
+  CUcontext ctx;
+  size_t count = _pushCount;
+  if (count > 0) _pushCount = 0;
+  while (count > 0) {
+    err = cuCtxGetCurrent(&ctx);
+    if (err == CUDA_SUCCESS && ctx != nullptr) {
+      (void)cuCtxSynchronize();
+    }
+    cuCtxSynchronize();
+    cuCtxPopCurrent(&ctx);
+    count--;
+  }
+}
+
 DeviceCUDA::DeviceCUDA(const SharedContext& share) {
   CUresult err = cuInit(0);
   checkError(err);
@@ -721,6 +773,7 @@ DeviceCUDA::DeviceCUDA(const SharedContext& share) {
       cu::ptr<CUcontext>(reinterpret_cast<CUcontext>(share.device), false);
   queue = cu::ptr<CUstream>(reinterpret_cast<CUstream>(share.queue), false);
   if (!context) {
+    CU_CurrentContext::pop();  // clear current stack
     device = (CUdevice)0;
 #if CUDA_VERSION >= 13000
     CUctxCreateParams ctxCreateParams = {};
@@ -729,6 +782,7 @@ DeviceCUDA::DeviceCUDA(const SharedContext& share) {
     err = cuCtxCreate(&context, 0, device);
 #endif
     checkError(err);
+    CU_CurrentContext::pushed();
   } else {
     err = cuCtxGetDevice(&device);
     checkError(err);
@@ -753,6 +807,7 @@ DeviceCUDA::DeviceCUDA(int deviceOrdinal) {
   checkError(err);
   err = cuDeviceGet(&device, deviceOrdinal);
   checkError(err);
+  CU_CurrentContext::pop();  // clear current stack
 #if CUDA_VERSION >= 13000
   CUctxCreateParams ctxCreateParams = {};
   err = cuCtxCreate(&context, &ctxCreateParams, 0, device);
@@ -760,6 +815,7 @@ DeviceCUDA::DeviceCUDA(int deviceOrdinal) {
   err = cuCtxCreate(&context, 0, device);
 #endif
   checkError(err);
+  CU_CurrentContext::pushed();
   err = cuStreamCreate(&queue, CU_STREAM_NON_BLOCKING);
   checkError(err);
   checkError(cuDeviceGetAttribute(&computeCapability.major,
@@ -768,6 +824,31 @@ DeviceCUDA::DeviceCUDA(int deviceOrdinal) {
   checkError(cuDeviceGetAttribute(&computeCapability.minor,
                                   CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
                                   device));
+}
+
+DeviceCUDA::~DeviceCUDA() {
+  try {
+    // Need to clear context before we can destroy it.
+    if (context.get() && CU_CurrentContext::get() == context.get())
+      CU_CurrentContext::pop();
+  } catch (...) {
+  }
+}
+
+void DeviceCUDA::activate(void** prevOut) {
+  CUcontext prev = CU_CurrentContext::get();
+  if (prevOut) *prevOut = reinterpret_cast<void*>(prev);
+  checkError(CU_CurrentContext::set(context.get()));
+}
+
+void DeviceCUDA::deactivate(void* prev) {
+  // Surface any prior async error to the caller instead of losing it.
+  CUresult syncErr = cuCtxSynchronize();
+  CUcontext prevCtx = reinterpret_cast<CUcontext>(prev);
+  if (prevCtx != nullptr && prevCtx != context.get()) {
+    (void)CU_CurrentContext::set(prevCtx);
+  }
+  if (syncErr != CUDA_SUCCESS) checkError(syncErr);
 }
 
 ghost::Library DeviceCUDA::loadLibraryFromText(const std::string& text,

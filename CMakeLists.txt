@@ -151,6 +151,7 @@ set(GHOST_SOURCES
     src/create_device.cpp
     src/device.cpp
     src/digest.cpp
+    src/exception.cpp
     src/function.cpp
     src/image.cpp
     src/sha256.c

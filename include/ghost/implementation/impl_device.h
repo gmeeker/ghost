@@ -378,6 +378,12 @@ class Device {
   /// loadLibraryFromData().
   virtual ghost::Library loadLibraryFromFile(const std::string& filename) const;
 
+  virtual void activate(void** prevOut = nullptr) {
+    if (prevOut) *prevOut = nullptr;
+  }
+
+  virtual void deactivate(void* prev = nullptr) { (void)prev; }
+
   virtual SharedContext shareContext() const = 0;
   virtual ghost::Stream createStream(
       const StreamOptions& options = {}) const = 0;

@@ -304,9 +304,39 @@ class Device {
   void setDefaultStream(std::shared_ptr<implementation::Stream> stream);
 
  public:
+  /// @brief Some devices may have a concept of being "current" (CUDA). Active
+  /// may be useful when interfacing with other libraries or using multiple
+  /// devices. Wrap each public entry point of a library that uses Ghost in an
+  /// Active scope so the thread's prior context is preserved for the caller.
+  /// On non-CUDA backends Active is a no-op.
+  class Active {
+   private:
+    Device& _dev;
+    void* _prev;
+
+   public:
+    Active(Device& dev) : _dev(dev), _prev(nullptr) { _dev.activate(&_prev); }
+
+    ~Active() noexcept {
+      try {
+        _dev.deactivate(_prev);
+      } catch (...) {
+      }
+    }
+  };
+
   /// @brief Export the device context for sharing with another Device instance.
   /// @return A SharedContext containing backend-specific handles.
   SharedContext shareContext() const;
+
+  /// @brief Set this as the thread's current device. If @p prevOut is non-null,
+  /// the prior backend-specific context handle is written there so a matching
+  /// deactivate() can restore it.
+  void activate(void** prevOut = nullptr);
+
+  /// @brief Synchronize the device and restore the thread's previous current
+  /// device. @p prev is the handle returned by a paired activate() call.
+  void deactivate(void* prev = nullptr);
 
   /// @brief Get the global binary cache instance.
   /// @return Reference to the shared BinaryCache.

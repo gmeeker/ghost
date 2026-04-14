@@ -15,6 +15,7 @@
 #ifndef GHOST_EXCEPTION_H
 #define GHOST_EXCEPTION_H
 
+#include <exception>
 #include <stdexcept>
 
 namespace ghost {
@@ -28,6 +29,26 @@ class unsupported_error : public std::runtime_error {
  public:
   unsupported_error() : std::runtime_error("unsupported") {}
 };
+
+namespace detail {
+
+/// @brief Store an error that occurred in a context where it cannot be thrown
+/// (destructors, resource-release paths). The first stashed error per thread
+/// is retained; later ones are discarded. Drained by drainErrors().
+void stashError(std::exception_ptr e) noexcept;
+
+/// @brief Drain and rethrow any pending stashed error for the current thread.
+/// Called at public entry points so that deferred errors surface on the next
+/// user-visible Ghost operation.
+void drainErrors();
+
+/// @brief RAII helper: drains on construction. Put one at the top of each
+/// public Ghost entry point.
+struct EntryGuard {
+  EntryGuard() { drainErrors(); }
+};
+
+}  // namespace detail
 }  // namespace ghost
 
 #endif
