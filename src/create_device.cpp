@@ -14,6 +14,7 @@
 
 #include <ghost/cpu/device.h>
 #include <ghost/device.h>
+#include <ghost/exception.h>
 
 #include <algorithm>
 #include <optional>
@@ -112,6 +113,14 @@ std::unique_ptr<Device> createDevice(Backend backend) {
 #endif
     }
   } catch (...) {
+    // A failed construction may have left deferred errors from destructors
+    // (e.g. null-handle release calls from partially-initialized backend
+    // handles). Drop them so they don't poison the next unrelated call on
+    // this thread.
+    try {
+      detail::drainErrors();
+    } catch (...) {
+    }
     return nullptr;
   }
   return nullptr;

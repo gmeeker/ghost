@@ -98,9 +98,8 @@ class ptr {
   ~ptr() { destroy(); }
 
   void destroy() {
-    if (_owned) {
+    if (_owned && value) {
       CUresult err = DETAIL::release(value);
-      _owned = false;
       if (err != CUDA_SUCCESS) {
         try {
           throw cu::runtime_error(err);
@@ -109,6 +108,7 @@ class ptr {
         }
       }
     }
+    _owned = false;
     value = (TYPE)0;
   }
 

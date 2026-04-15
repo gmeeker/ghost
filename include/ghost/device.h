@@ -17,6 +17,7 @@
 
 #include <ghost/encoder.h>
 #include <ghost/event.h>
+#include <ghost/exception.h>
 #include <ghost/function.h>
 #include <ghost/image.h>
 #include <ghost/implementation/impl_device.h>
@@ -315,11 +316,26 @@ class Device {
     void* _prev;
 
    public:
-    Active(Device& dev) : _dev(dev), _prev(nullptr) { _dev.activate(&_prev); }
+    Active(Device& dev) : _dev(dev), _prev(nullptr) {
+      // A library entry point should not inherit deferred errors left on this
+      // thread by unrelated prior work. Drop any pending error before we
+      // touch the device.
+      try {
+        detail::drainErrors();
+      } catch (...) {
+      }
+      _dev.activate(&_prev);
+    }
 
     ~Active() noexcept {
       try {
         _dev.deactivate(_prev);
+      } catch (...) {
+      }
+      // Don't let an error deferred during this scope poison the caller's
+      // next unrelated Ghost call on this thread.
+      try {
+        detail::drainErrors();
       } catch (...) {
       }
     }

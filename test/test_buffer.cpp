@@ -211,7 +211,9 @@ TEST_P(BufferTest, SubBufferCreation) {
 }
 
 TEST_P(BufferTest, SubBufferAliasing) {
-  const size_t N = 16;
+  const size_t align = device().getAttribute(kDeviceBufferAlignment).asInt();
+  const size_t stride = align / sizeof(float);
+  const size_t N = 4 * stride;
   std::vector<float> input(N);
   for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
 
@@ -220,25 +222,25 @@ TEST_P(BufferTest, SubBufferAliasing) {
 
   Buffer sub(nullptr);
   try {
-    // Sub-buffer covering elements [4..8).
-    sub = parent.createSubBuffer(4 * sizeof(float), 4 * sizeof(float));
+    // Sub-buffer covering elements [stride..2*stride).
+    sub = parent.createSubBuffer(align, align);
   } catch (const ghost::unsupported_error&) {
     GTEST_SKIP() << "Sub-buffers not supported on " << BackendName(backend());
   }
 
-  // Read from sub-buffer.
-  std::vector<float> output(4, -1.0f);
-  sub.copyTo(stream(), output.data(), 4 * sizeof(float));
+  std::vector<float> output(stride, -1.0f);
+  sub.copyTo(stream(), output.data(), align);
   stream().sync();
 
-  EXPECT_FLOAT_EQ(output[0], 4.0f);
-  EXPECT_FLOAT_EQ(output[1], 5.0f);
-  EXPECT_FLOAT_EQ(output[2], 6.0f);
-  EXPECT_FLOAT_EQ(output[3], 7.0f);
+  for (size_t i = 0; i < stride; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(stride + i)) << "index " << i;
+  }
 }
 
 TEST_P(BufferTest, SubBufferWriteVisibleInParent) {
-  const size_t N = 8;
+  const size_t align = device().getAttribute(kDeviceBufferAlignment).asInt();
+  const size_t stride = align / sizeof(float);
+  const size_t N = 4 * stride;
   std::vector<float> zeros(N, 0.0f);
 
   auto parent = device().allocateBuffer(N * sizeof(float));
@@ -246,32 +248,35 @@ TEST_P(BufferTest, SubBufferWriteVisibleInParent) {
 
   Buffer sub(nullptr);
   try {
-    sub = parent.createSubBuffer(2 * sizeof(float), 2 * sizeof(float));
+    // Sub covers elements [stride..2*stride).
+    sub = parent.createSubBuffer(align, align);
   } catch (const ghost::unsupported_error&) {
     GTEST_SKIP() << "Sub-buffers not supported";
   }
 
-  // Write to sub-buffer.
-  std::vector<float> data = {99.0f, 100.0f};
-  sub.copy(stream(), data.data(), 2 * sizeof(float));
+  std::vector<float> data(stride);
+  for (size_t i = 0; i < stride; i++) data[i] = 99.0f + static_cast<float>(i);
+  sub.copy(stream(), data.data(), align);
 
-  // Read from parent.
   std::vector<float> output(N, -1.0f);
   parent.copyTo(stream(), output.data(), N * sizeof(float));
   stream().sync();
 
-  EXPECT_FLOAT_EQ(output[0], 0.0f);
-  EXPECT_FLOAT_EQ(output[1], 0.0f);
-  EXPECT_FLOAT_EQ(output[2], 99.0f);
-  EXPECT_FLOAT_EQ(output[3], 100.0f);
-  EXPECT_FLOAT_EQ(output[4], 0.0f);
+  for (size_t i = 0; i < N; i++) {
+    float expected = (i >= stride && i < 2 * stride)
+                         ? 99.0f + static_cast<float>(i - stride)
+                         : 0.0f;
+    EXPECT_FLOAT_EQ(output[i], expected) << "index " << i;
+  }
 }
 
 TEST_P(BufferTest, SubSubBuffer) {
   // Create a sub-buffer of a sub-buffer and verify the offset composes
   // correctly. This catches double-counting bugs in baseOffset() that
   // single-level sub-buffer tests miss.
-  const size_t N = 16;
+  const size_t align = device().getAttribute(kDeviceBufferAlignment).asInt();
+  const size_t stride = align / sizeof(float);
+  const size_t N = 4 * stride;
   std::vector<float> input(N);
   for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
 
@@ -281,38 +286,38 @@ TEST_P(BufferTest, SubSubBuffer) {
   Buffer child(nullptr);
   Buffer grandchild(nullptr);
   try {
-    // child covers elements [4..12) -> 8 floats
-    child = parent.createSubBuffer(4 * sizeof(float), 8 * sizeof(float));
-    // grandchild covers child[2..6) -> parent[6..10) -> 4 floats
-    grandchild = child.createSubBuffer(2 * sizeof(float), 4 * sizeof(float));
+    // child covers elements [stride..3*stride).
+    child = parent.createSubBuffer(align, 2 * align);
+    // grandchild covers child[stride..2*stride) -> parent[2*stride..3*stride).
+    grandchild = child.createSubBuffer(align, align);
   } catch (const ghost::unsupported_error&) {
     GTEST_SKIP() << "Sub-buffers not supported on " << BackendName(backend());
   }
 
   // Read through grandchild — should see parent[6..10).
-  std::vector<float> output(4, -1.0f);
-  grandchild.copyTo(stream(), output.data(), 4 * sizeof(float));
+  std::vector<float> output(stride, -1.0f);
+  grandchild.copyTo(stream(), output.data(), align);
   stream().sync();
 
-  EXPECT_FLOAT_EQ(output[0], 6.0f);
-  EXPECT_FLOAT_EQ(output[1], 7.0f);
-  EXPECT_FLOAT_EQ(output[2], 8.0f);
-  EXPECT_FLOAT_EQ(output[3], 9.0f);
+  for (size_t i = 0; i < stride; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(2 * stride + i))
+        << "index " << i;
+  }
 
-  // Write through grandchild and verify visibility in parent.
-  std::vector<float> data = {90.0f, 91.0f, 92.0f, 93.0f};
-  grandchild.copy(stream(), data.data(), 4 * sizeof(float));
+  std::vector<float> data(stride);
+  for (size_t i = 0; i < stride; i++) data[i] = 90.0f + static_cast<float>(i);
+  grandchild.copy(stream(), data.data(), align);
 
   std::vector<float> parentOut(N, -1.0f);
   parent.copyTo(stream(), parentOut.data(), N * sizeof(float));
   stream().sync();
 
-  EXPECT_FLOAT_EQ(parentOut[5], 5.0f);
-  EXPECT_FLOAT_EQ(parentOut[6], 90.0f);
-  EXPECT_FLOAT_EQ(parentOut[7], 91.0f);
-  EXPECT_FLOAT_EQ(parentOut[8], 92.0f);
-  EXPECT_FLOAT_EQ(parentOut[9], 93.0f);
-  EXPECT_FLOAT_EQ(parentOut[10], 10.0f);
+  for (size_t i = 0; i < N; i++) {
+    float expected = (i >= 2 * stride && i < 3 * stride)
+                         ? 90.0f + static_cast<float>(i - 2 * stride)
+                         : static_cast<float>(i);
+    EXPECT_FLOAT_EQ(parentOut[i], expected) << "index " << i;
+  }
 }
 
 // ---------------------------------------------------------------------------
