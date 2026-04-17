@@ -17,6 +17,7 @@
 
 #include <ghost/implementation/impl_function.h>
 
+#include <filesystem>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -48,7 +49,7 @@ class LibraryCPU : public Library {
   LibraryCPU(const DeviceCPU& dev);
   ~LibraryCPU();
 
-  void loadFromFile(const std::string& filename);
+  void loadFromFile(const std::filesystem::path& filename);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
 

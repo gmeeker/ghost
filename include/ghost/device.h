@@ -24,6 +24,7 @@
 #include <ghost/thread_pool.h>
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -365,7 +366,7 @@ class Device {
   /// @brief Load a compiled GPU program from a file.
   /// @param filename Path to the source or binary file.
   /// @return The loaded Library.
-  Library loadLibraryFromFile(const std::string& filename);
+  Library loadLibraryFromFile(const std::filesystem::path& filename);
 
   /// @brief Compile a GPU program from source text.
   /// @param text Source code string (e.g., OpenCL C, Metal Shading Language).

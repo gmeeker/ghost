@@ -484,16 +484,17 @@ void LibraryMetal::initArchive(const void *data, size_t len,
       return;
     Digest d;
     BinaryCache::makeDigest(d, _dev, 1, data, len, options);
-    _archivePath = _dev.binaryCache().cachePath +
-                   d.get().substr(0, GHOST_DIGEST_FILENAME_LENGTH) +
-                   ".metalarchive";
+    _archivePath =
+        _dev.binaryCache().cachePath /
+        (d.get().substr(0, GHOST_DIGEST_FILENAME_LENGTH) + ".metalarchive");
     NSError *err = nil;
     MTLBinaryArchiveDescriptor *desc = [MTLBinaryArchiveDescriptor new];
 #if !__has_feature(objc_arc)
     [desc autorelease];
 #endif
     desc.url = [NSURL
-        fileURLWithPath:[NSString stringWithUTF8String:_archivePath.c_str()]];
+        fileURLWithPath:[NSString stringWithUTF8String:_archivePath.string()
+                                                           .c_str()]];
     _archive = [_dev.dev.get() newBinaryArchiveWithDescriptor:desc error:&err];
     if (!_archive.get()) {
       // No cached archive yet — create an empty one
@@ -511,7 +512,8 @@ void LibraryMetal::saveArchive() const {
       return;
     NSError *err = nil;
     NSURL *url = [NSURL
-        fileURLWithPath:[NSString stringWithUTF8String:_archivePath.c_str()]];
+        fileURLWithPath:[NSString stringWithUTF8String:_archivePath.string()
+                                                           .c_str()]];
     [_archive.get() serializeToURL:url error:&err];
     _archiveDirty = false;
   }

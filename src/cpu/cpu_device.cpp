@@ -468,7 +468,7 @@ ghost::Library DeviceCPU::loadLibraryFromData(const void* data, size_t len,
 }
 
 ghost::Library DeviceCPU::loadLibraryFromFile(
-    const std::string& filename) const {
+    const std::filesystem::path& filename) const {
   auto ptr = std::make_shared<implementation::LibraryCPU>(*this);
   ptr->loadFromFile(filename);
   return ghost::Library(ptr);

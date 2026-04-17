@@ -92,11 +92,11 @@ LibraryCPU::~LibraryCPU() {
   }
 }
 
-void LibraryCPU::loadFromFile(const std::string& filename) {
+void LibraryCPU::loadFromFile(const std::filesystem::path& filename) {
 #if WIN32
-  _module = (HMODULE)LoadLibraryA(filename.c_str());
+  _module = (HMODULE)LoadLibraryA(filename.string().c_str());
 #else
-  _module = dlopen(filename.c_str(), RTLD_LAZY | RTLD_LOCAL);
+  _module = dlopen(filename.string().c_str(), RTLD_LAZY | RTLD_LOCAL);
 #endif
 }
 

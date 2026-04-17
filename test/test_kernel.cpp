@@ -1,5 +1,7 @@
 #include <ghost/argument_buffer.h>
 
+#include <filesystem>
+
 #include "ghost_test.h"
 
 using namespace ghost;
@@ -490,8 +492,9 @@ TEST_P(KernelTest, FunctionPrivateMemory) {
 TEST_P(KernelTest, BinaryCacheCreatesFiles) {
   auto& cache = Device::binaryCache();
   // Use a temporary directory for cache.
-  std::string tmpDir = "/tmp/ghost_test_cache_" +
-                       std::to_string(reinterpret_cast<uintptr_t>(this));
+  std::filesystem::path tmpDir =
+      std::filesystem::temp_directory_path() /
+      ("ghost_test_cache_" + std::to_string(reinterpret_cast<uintptr_t>(this)));
   cache.cachePath = tmpDir;
 
   const char* src = multConstSource();

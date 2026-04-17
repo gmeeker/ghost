@@ -17,6 +17,7 @@
 
 #include <stdlib.h>
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -43,12 +44,11 @@ class BinaryCache {
   /// @param subfolder Subdirectory within the cache path.
   /// @param days Maximum age in days; files older than this are deleted.
   /// @return @c true if files were successfully purged.
-  static bool purgeFiles(const std::string& subfolder, int days);
+  static bool purgeFiles(const std::filesystem::path& subfolder, int days);
 
  public:
-  typedef std::string PathString;
   /// @brief Root directory for cached binary files.
-  PathString cachePath;
+  std::filesystem::path cachePath;
 
   /// @brief Build a SHA-256 digest key for a compiled program.
   /// @param[in,out] d Digest object to update with the key material.

@@ -24,6 +24,7 @@
 #include <stdlib.h>
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -376,7 +377,8 @@ class Device {
   /// The default implementation reads the file, attempts to load from the
   /// binary cache, and falls back to loadLibraryFromText() or
   /// loadLibraryFromData().
-  virtual ghost::Library loadLibraryFromFile(const std::string& filename) const;
+  virtual ghost::Library loadLibraryFromFile(
+      const std::filesystem::path& filename) const;
 
   virtual void activate(void** prevOut = nullptr) {
     if (prevOut) *prevOut = nullptr;

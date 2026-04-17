@@ -19,6 +19,8 @@
 #include <ghost/implementation/impl_function.h>
 #include <ghost/objc/ptr.h>
 
+#include <filesystem>
+
 namespace ghost {
 namespace implementation {
 class DeviceMetal;
@@ -75,7 +77,7 @@ class LibraryMetal : public Library {
   std::vector<uint8_t> _binaryData;
 #if defined(MAC_OS_VERSION_11_0)
   objc::ptr<id<MTLBinaryArchive>> _archive;
-  std::string _archivePath;
+  std::filesystem::path _archivePath;
   mutable bool _archiveDirty = false;
 
   void initArchive(const void* data, size_t len,

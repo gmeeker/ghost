@@ -158,7 +158,7 @@ class DeviceCPU : public Device {
       const CompilerOptions& options = CompilerOptions(),
       bool retainBinary = false) const override;
   virtual ghost::Library loadLibraryFromFile(
-      const std::string& filename) const override;
+      const std::filesystem::path& filename) const override;
 
   virtual SharedContext shareContext() const override;
 

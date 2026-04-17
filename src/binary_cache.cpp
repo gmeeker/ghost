@@ -20,27 +20,16 @@
 #include <string.h>
 #include <time.h>
 
+#include <chrono>
+#include <filesystem>
 #include <sstream>
-
-#if WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <tchar.h>
-#include <windows.h>
-#else
-#include <dirent.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
-
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace ghost {
+
+namespace fs = std::filesystem;
 
 std::string CompilerOptions::buildFlags() const {
   std::ostringstream result;
@@ -97,46 +86,24 @@ void BinaryCache::makeDigest(Digest& d, const implementation::Device& dev,
   if (data) d.update(data, length);
 }
 
-bool BinaryCache::purgeFiles(const std::string& dirname, int days) {
-  time_t oldest = time(NULL);
-  oldest -= 60 * 60 * 24 * days;  // Remove anything older than 'days'.
-#if WIN32
-#define T(STR) STR
-  HANDLE hFind = INVALID_HANDLE_VALUE;
-  WIN32_FIND_DATAA finddata;
-  hFind = FindFirstFileA((dirname + T("\\*")).c_str(), &finddata);
-  while (hFind != INVALID_HANDLE_VALUE) {
-    PathString filename = dirname + T("\\") + finddata.cFileName;
-    struct _stat s;
-    if (_tstat(filename.c_str(), &s) == 0) {
-      if (s.st_ctime < oldest) {
-        DeleteFileA(filename.c_str());
-      }
+bool BinaryCache::purgeFiles(const fs::path& dirname, int days) {
+  std::error_code ec;
+  if (!fs::is_directory(dirname, ec)) return true;
+  auto cutoff = fs::file_time_type::clock::now() -
+                std::chrono::hours(24 * static_cast<int64_t>(days));
+  for (const auto& entry : fs::directory_iterator(dirname, ec)) {
+    if (ec) break;
+    auto mtime = fs::last_write_time(entry.path(), ec);
+    if (ec) {
+      ec.clear();
+      continue;
     }
-    if (!FindNextFileA(hFind, &finddata)) {
-      FindClose(hFind);
-      hFind = INVALID_HANDLE_VALUE;
+    if (mtime < cutoff) {
+      fs::remove(entry.path(), ec);
+      ec.clear();
     }
   }
-  if (hFind != INVALID_HANDLE_VALUE) FindClose(hFind);
   return true;
-#else
-  DIR* dir = ::opendir(dirname.c_str());
-  if (dir) {
-    struct dirent* d;
-    struct stat s;
-    while ((d = ::readdir(dir))) {
-      std::string path = dirname + "/" + d->d_name;
-      if (::stat(path.c_str(), &s) >= 0) {
-        if (s.st_ctime < oldest) {
-          ::unlink(path.c_str());
-        }
-      }
-    }
-    ::closedir(dir);
-  }
-  return true;
-#endif
 }
 
 void BinaryCache::purgeBinaries(const implementation::Device& dev,
@@ -154,10 +121,10 @@ bool BinaryCache::loadBinaries(
   Digest f, d;
   makeDigest(d, dev, count, nullptr, 0, CompilerOptions());
   makeDigest(f, dev, count, data, length, options);
+  fs::path filePath =
+      cachePath / f.get().substr(0, GHOST_DIGEST_FILENAME_LENGTH);
   FileWrapper file;
-  file = fopen(
-      (cachePath + f.get().substr(0, GHOST_DIGEST_FILENAME_LENGTH)).c_str(),
-      "rb");
+  file = fopen(filePath.string().c_str(), "rb");
   if (!file.okay()) return false;
 
   uint8_t digest1[Digest::length];
@@ -203,10 +170,12 @@ void BinaryCache::saveBinaries(const implementation::Device& dev,
   makeDigest(f, dev, binaries.size(), data, length, options);
   size_t i;
 
+  fs::path filePath =
+      cachePath / f.get().substr(0, GHOST_DIGEST_FILENAME_LENGTH);
+  std::error_code ec;
+  fs::create_directories(cachePath, ec);
   FileWrapper file;
-  file = fopen(
-      (cachePath + f.get().substr(0, GHOST_DIGEST_FILENAME_LENGTH)).c_str(),
-      "wb");
+  file = fopen(filePath.string().c_str(), "wb");
   if (file.okay()) {
     uint8_t digest[Digest::length];
     d.get(digest);

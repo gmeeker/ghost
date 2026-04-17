@@ -72,7 +72,8 @@ BinaryCache Device::_cache;
 
 BinaryCache& Device::binaryCache() { return _cache; }
 
-ghost::Library Device::loadLibraryFromFile(const std::string& filename) const {
+ghost::Library Device::loadLibraryFromFile(
+    const std::filesystem::path& filename) const {
   throw ghost::unsupported_error();
 }
 
@@ -346,7 +347,7 @@ void Device::purgeBinaries(int days) {
   binaryCache().purgeBinaries(*_impl, days);
 }
 
-Library Device::loadLibraryFromFile(const std::string& filename) {
+Library Device::loadLibraryFromFile(const std::filesystem::path& filename) {
   return _impl->loadLibraryFromFile(filename);
 }
 
