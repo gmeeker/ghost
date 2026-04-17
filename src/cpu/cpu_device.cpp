@@ -35,7 +35,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#if defined(_M_IX86) || defined(_M_X64)
+#if defined(_M_IX86) || (defined(_M_X64) && !defined(_M_ARM64EC))
 #include <intrin.h>
 #endif
 #endif
@@ -86,7 +86,7 @@ std::string getCPUName() {
     }
     RegCloseKey(key);
   }
-#if defined(_M_IX86) || defined(_M_X64)
+#if defined(_M_IX86) || (defined(_M_X64) && !defined(_M_ARM64EC))
   {
     int cpuInfo[4] = {};
     __cpuid(cpuInfo, 0x80000002);
@@ -147,7 +147,7 @@ std::string getCPUVendor() {
     }
     RegCloseKey(key);
   }
-#if defined(_M_IX86) || defined(_M_X64)
+#if defined(_M_IX86) || (defined(_M_X64) && !defined(_M_ARM64EC))
   {
     int cpuInfo[4] = {};
     __cpuid(cpuInfo, 0);
