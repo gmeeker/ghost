@@ -39,7 +39,10 @@ namespace cu {
 template <>
 class detail<nvrtcProgram> {
  public:
-  static void release(nvrtcProgram v) { nvrtcDestroyProgram(&v); }
+  static CUresult release(nvrtcProgram v) {
+    nvrtcResult err = nvrtcDestroyProgram(&v);
+    return (err == NVRTC_SUCCESS) ? CUDA_SUCCESS : CUDA_ERROR_UNKNOWN;
+  }
 };
 }  // namespace cu
 
