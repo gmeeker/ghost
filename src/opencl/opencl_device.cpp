@@ -1093,8 +1093,14 @@ Attribute DeviceOpenCL::getAttribute(DeviceAttributeId what) const {
       return Attribute((uint64_t)getInt(CL_DEVICE_IMAGE3D_MAX_WIDTH),
                        (uint64_t)getInt(CL_DEVICE_IMAGE3D_MAX_HEIGHT),
                        (uint64_t)getInt(CL_DEVICE_IMAGE3D_MAX_DEPTH));
-    case kDeviceImageAlignment:
-      return (uint64_t)getInt(CL_DEVICE_IMAGE_PITCH_ALIGNMENT);
+    case kDeviceImageAlignment: {
+      // CL_DEVICE_IMAGE_PITCH_ALIGNMENT returns pixels; convert to bytes
+      // using RGBA Float (largest common pixel format) for a conservative
+      // alignment that works for any format.
+      uint64_t pixels = getInt(CL_DEVICE_IMAGE_PITCH_ALIGNMENT);
+      const size_t kRefPixelSize = 16;  // RGBA Float32
+      return (uint64_t)(pixels * kRefPixelSize);
+    }
     case kDeviceSupportsImageFloatFiltering:
       if (!_fullProfile) {
         return false;

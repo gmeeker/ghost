@@ -1081,7 +1081,7 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
       size = [dev.get()
           minimumLinearTextureAlignmentForPixelFormat:getFormat(descr)];
     }
-    return uint32_t(size / descr.pixelSize());
+    return uint32_t(size);
   }
   case kDeviceSupportsImageIntegerFiltering:
     return true;

@@ -159,4 +159,140 @@ TEST_P(ImageTest, UInt8ImageRoundTrip) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Image alignment query sanity check
+// ---------------------------------------------------------------------------
+
+TEST_P(ImageTest, ImageAlignmentIsReasonable) {
+  auto attr = device().getAttribute(kDeviceImageAlignment);
+  auto alignment = attr.asUInt64();
+  // Alignment must be at least 1 and a power of two.
+  EXPECT_GE(alignment, 1u);
+  EXPECT_EQ(alignment & (alignment - 1), 0u)
+      << "alignment " << alignment << " is not a power of two";
+  // All known backends return at least 16 bytes.
+  EXPECT_GE(alignment, 16u) << "alignment " << alignment
+                            << " seems too small (expected bytes, not pixels?)";
+}
+
+// ---------------------------------------------------------------------------
+// Shared image from buffer with odd (unaligned) width
+// ---------------------------------------------------------------------------
+
+TEST_P(ImageTest, SharedImageFromBufferOddWidth) {
+  auto attr = device().getAttribute(kDeviceImageAlignment);
+  auto alignment = attr.asUInt64();
+  if (alignment == 0) {
+    GTEST_SKIP() << "Backend reports zero image alignment";
+  }
+
+  // Width of 3 RGBA Float pixels = 48 bytes per row, which is unlikely to
+  // satisfy any alignment > 16 without explicit padding.
+  const size_t W = 3, H = 4, C = 4;
+  const size_t pixelSize = C * sizeof(float);
+  const size_t tightRowBytes = W * pixelSize;  // 48
+  // Align row stride up to the device's required alignment.
+  const size_t alignedRowBytes =
+      (tightRowBytes + alignment - 1) & ~(alignment - 1);
+  const size_t dataSize = alignedRowBytes * H;
+
+  ImageDescription descr(Size3(W, H, 1), PixelOrder_RGBA, DataType_Float,
+                         Stride2(static_cast<int32_t>(alignedRowBytes), 0));
+
+  auto buf = device().allocateBuffer(dataSize);
+
+  Image img(nullptr);
+  try {
+    img = device().sharedImage(descr, buf);
+  } catch (const ghost::unsupported_error&) {
+    GTEST_SKIP() << "Shared images not supported on " << BackendName(backend());
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "Shared image failed: " << e.what();
+  }
+
+  // Write padded rows into the buffer, read back via the image.
+  std::vector<uint8_t> input(dataSize, 0);
+  for (size_t y = 0; y < H; y++) {
+    auto* row = reinterpret_cast<float*>(input.data() + y * alignedRowBytes);
+    for (size_t x = 0; x < W * C; x++) {
+      row[x] = static_cast<float>(y * W * C + x);
+    }
+  }
+
+  buf.copy(stream(), input.data(), dataSize);
+
+  // Read back with the same padded layout (output buffer must match stride).
+  std::vector<uint8_t> output(dataSize, 0);
+  img.copyTo(stream(), output.data(), descr);
+  stream().sync();
+
+  for (size_t y = 0; y < H; y++) {
+    auto* expectedRow =
+        reinterpret_cast<float*>(input.data() + y * alignedRowBytes);
+    auto* outputRow =
+        reinterpret_cast<float*>(output.data() + y * alignedRowBytes);
+    for (size_t x = 0; x < W * C; x++) {
+      EXPECT_FLOAT_EQ(outputRow[x], expectedRow[x]) << "y=" << y << " x=" << x;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared image from buffer with single-channel UInt8 (small pixel size)
+// ---------------------------------------------------------------------------
+
+TEST_P(ImageTest, SharedImageFromBufferOddWidthUInt8) {
+  auto attr = device().getAttribute(kDeviceImageAlignment);
+  auto alignment = attr.asUInt64();
+  if (alignment == 0) {
+    GTEST_SKIP() << "Backend reports zero image alignment";
+  }
+
+  // Width of 5 RGBA UInt8 pixels = 20 bytes per row, misaligned for most
+  // backends (alignment typically >= 16).
+  const size_t W = 5, H = 4, C = 4;
+  const size_t pixelSize = C * sizeof(uint8_t);
+  const size_t tightRowBytes = W * pixelSize;  // 20
+  const size_t alignedRowBytes =
+      (tightRowBytes + alignment - 1) & ~(alignment - 1);
+  const size_t dataSize = alignedRowBytes * H;
+
+  ImageDescription descr(Size3(W, H, 1), PixelOrder_RGBA, DataType_UInt8,
+                         Stride2(static_cast<int32_t>(alignedRowBytes), 0));
+
+  auto buf = device().allocateBuffer(dataSize);
+
+  Image img(nullptr);
+  try {
+    img = device().sharedImage(descr, buf);
+  } catch (const ghost::unsupported_error&) {
+    GTEST_SKIP() << "Shared images not supported on " << BackendName(backend());
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "Shared image failed: " << e.what();
+  }
+
+  // Write padded rows into the buffer, read back via the image.
+  std::vector<uint8_t> input(dataSize, 0);
+  for (size_t y = 0; y < H; y++) {
+    auto* row = input.data() + y * alignedRowBytes;
+    for (size_t x = 0; x < W * C; x++) {
+      row[x] = static_cast<uint8_t>((y * W * C + x) & 0xFF);
+    }
+  }
+
+  buf.copy(stream(), input.data(), dataSize);
+
+  std::vector<uint8_t> output(dataSize, 0);
+  img.copyTo(stream(), output.data(), descr);
+  stream().sync();
+
+  for (size_t y = 0; y < H; y++) {
+    auto* expectedRow = input.data() + y * alignedRowBytes;
+    auto* outputRow = output.data() + y * alignedRowBytes;
+    for (size_t x = 0; x < W * C; x++) {
+      EXPECT_EQ(outputRow[x], expectedRow[x]) << "y=" << y << " x=" << x;
+    }
+  }
+}
+
 GHOST_INSTANTIATE_BACKEND_TESTS(ImageTest);
