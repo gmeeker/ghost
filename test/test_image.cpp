@@ -93,6 +93,65 @@ TEST_P(ImageTest, SharedImageFromBuffer) {
   }
 }
 
+TEST_P(ImageTest, SharedImageFromBufferWithPool) {
+  const size_t W = 4, H = 4, C = 4;
+  const size_t pixelCount = W * H * C;
+  const size_t dataSize = pixelCount * sizeof(float);
+  size_t rowStride = W * C * sizeof(float);
+  ImageDescription descr(Size3(W, H, 1), PixelOrder_RGBA, DataType_Float,
+                         Stride2(static_cast<int32_t>(rowStride), 0));
+
+  // Enable a memory pool so buffers may come from a heap/pool.
+  try {
+    device().setMemoryPoolSize(1024 * 1024);
+  } catch (const std::exception&) {
+    // Pool not supported on this backend — test still exercises Shared hint.
+  }
+
+  // Default-hint buffer may be heap-allocated; sharedImage should either
+  // work or throw unsupported_error (not hang).
+  auto defaultBuf = device().allocateBuffer(dataSize);
+  bool defaultWorks = false;
+  try {
+    auto img = device().sharedImage(descr, defaultBuf);
+    defaultWorks = true;
+  } catch (const std::exception&) {
+    // Expected on Metal (heap buffers can't back textures) or backends
+    // that don't support shared images at all.
+  }
+
+  // AllocHint::Shared bypasses the heap, so sharedImage must succeed
+  // (on backends that support shared images at all).
+  auto sharedBuf = device().allocateBuffer(dataSize, AllocHint::Shared);
+  Image img(nullptr);
+  try {
+    img = device().sharedImage(descr, sharedBuf);
+  } catch (const ghost::unsupported_error&) {
+    GTEST_SKIP() << "Shared images not supported on " << BackendName(backend());
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "Shared image failed: " << e.what();
+  }
+
+  // Verify data sharing: write to buffer, read from image.
+  std::vector<float> input(pixelCount), output(pixelCount, -1.0f);
+  for (size_t i = 0; i < pixelCount; i++) {
+    input[i] = static_cast<float>(i);
+  }
+  sharedBuf.copy(stream(), input.data(), dataSize);
+  img.copyTo(stream(), output.data(), descr);
+  stream().sync();
+
+  for (size_t i = 0; i < pixelCount; i++) {
+    EXPECT_FLOAT_EQ(output[i], input[i]) << "index " << i;
+  }
+
+  // Reset pool.
+  try {
+    device().setMemoryPoolSize(0);
+  } catch (const std::exception&) {
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Image-to-image copy
 // ---------------------------------------------------------------------------

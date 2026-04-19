@@ -527,6 +527,14 @@ ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_)
 ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_,
                        BufferMetal &buffer)
     : descr(descr_) {
+  // newTextureWithDescriptor:offset:bytesPerRow: is not supported on buffers
+  // allocated from an MTLHeap. Allocate the buffer with AllocHint::Shared to
+  // bypass the heap.
+  if ([buffer.mem.get() heap] != nil) {
+    throw ghost::unsupported_error(
+        "Cannot create shared image from a heap-allocated buffer. "
+        "Use AllocHint::Shared when allocating the buffer.");
+  }
   objc::ptr<MTLTextureDescriptor *> textureDescriptor(
       getTextureDescriptor(buffer.mem.get(), descr));
   mem = [buffer.mem.get() newTextureWithDescriptor:textureDescriptor.get()
@@ -874,7 +882,7 @@ ghost::Buffer DeviceMetal::allocateBuffer(size_t bytes,
   // Persistent bypass the heap — Staging needs host-visible memory, and
   // Persistent is long-lived so heap fragmentation is undesirable.
   if (heap && opts.hint != AllocHint::Staging &&
-      opts.hint != AllocHint::Persistent) {
+      opts.hint != AllocHint::Persistent && opts.hint != AllocHint::Shared) {
     MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache |
                                  MTLResourceHazardTrackingModeUntracked |
                                  MTLResourceStorageModePrivate;
@@ -899,6 +907,17 @@ DeviceMetal::allocateMappedBuffer(size_t bytes,
 }
 
 ghost::Image DeviceMetal::allocateImage(const ImageDescription &descr) const {
+  if (heap) {
+    objc::ptr<MTLTextureDescriptor *> textureDescriptor(
+        getTextureDescriptor(descr));
+    objc::ptr<id<MTLTexture>> tex(
+        [heap.get() newTextureWithDescriptor:textureDescriptor.get()]);
+    if (tex) {
+      auto ptr = std::make_shared<implementation::ImageMetal>(tex, descr);
+      return ghost::Image(ptr);
+    }
+    // Heap full — fall through to individual allocation
+  }
   auto ptr = std::make_shared<implementation::ImageMetal>(*this, descr);
   return ghost::Image(ptr);
 }

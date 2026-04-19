@@ -28,6 +28,8 @@ namespace ghost {
 class unsupported_error : public std::runtime_error {
  public:
   unsupported_error() : std::runtime_error("unsupported") {}
+
+  explicit unsupported_error(const char* msg) : std::runtime_error(msg) {}
 };
 
 namespace detail {

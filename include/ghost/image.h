@@ -173,6 +173,10 @@ enum class AllocHint {
   /// kernel-read (upload), WriteOnly implies kernel-write / host-read
   /// (readback).
   Staging,
+  /// @brief Buffer will be shared with an image (buffer-backed texture).
+  /// On Metal this bypasses MTLHeap allocation, which is required for
+  /// newTextureWithDescriptor:offset:bytesPerRow: compatibility.
+  Shared,
 };
 
 /// @brief Options controlling buffer allocation.
