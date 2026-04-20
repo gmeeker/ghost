@@ -1195,7 +1195,7 @@ Attribute DeviceDirectX::getAttribute(DeviceAttributeId what) const {
       return Attribute((int32_t)16384, (int32_t)16384);
     case kDeviceMaxImageSize3:
       return Attribute((int32_t)2048, (int32_t)2048, (int32_t)2048);
-    case kDeviceImageAlignment:
+    case kDeviceMaxImageAlignment:
       return Attribute((int32_t)256);
     case kDeviceSupportsImageIntegerFiltering:
       return Attribute(true);

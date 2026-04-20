@@ -535,11 +535,31 @@ ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_,
         "Cannot create shared image from a heap-allocated buffer. "
         "Use AllocHint::Shared when allocating the buffer.");
   }
+
+  // Validate stride: bytesPerRow must be at least width * pixelSize and
+  // aligned to the device's minimum linear texture alignment.
+  size_t minRowBytes = descr.size.x * descr.pixelSize();
+  size_t bytesPerRow = static_cast<size_t>(descr.stride.x);
+  if (bytesPerRow == 0) {
+    bytesPerRow = minRowBytes;
+  }
+  if (bytesPerRow < minRowBytes) {
+    throw std::invalid_argument("bytesPerRow (" + std::to_string(bytesPerRow) +
+                                ") is less than width * pixelSize (" +
+                                std::to_string(minRowBytes) + ")");
+  }
+  size_t requiredBytes = bytesPerRow * descr.size.y;
+  if (buffer.size() < requiredBytes) {
+    throw std::invalid_argument(
+        "buffer size (" + std::to_string(buffer.size()) +
+        ") is less than required (" + std::to_string(requiredBytes) + ")");
+  }
+
   objc::ptr<MTLTextureDescriptor *> textureDescriptor(
       getTextureDescriptor(buffer.mem.get(), descr));
   mem = [buffer.mem.get() newTextureWithDescriptor:textureDescriptor.get()
                                             offset:0
-                                       bytesPerRow:descr.stride.x];
+                                       bytesPerRow:bytesPerRow];
 }
 
 ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_,
@@ -1092,7 +1112,7 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
     const int32_t v = 2048;
     return Attribute(v, v, v);
   }
-  case kDeviceImageAlignment: {
+  case kDeviceMaxImageAlignment: {
     ImageDescription descr(Size3(16, 16, 1), PixelOrder_RGBA, DataType_Float,
                            Stride2(0, 0));
     size_t size = 256;
@@ -1143,6 +1163,15 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
   default:
     return Attribute();
   }
+}
+
+size_t DeviceMetal::imageAlignment(const ImageDescription &descr) const {
+  size_t size = 256;
+  if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, macCatalyst 13.1, *)) {
+    size = [dev.get()
+        minimumLinearTextureAlignmentForPixelFormat:getFormat(descr)];
+  }
+  return size > 0 ? size : 1;
 }
 } // namespace implementation
 

@@ -223,7 +223,7 @@ TEST_P(ImageTest, UInt8ImageRoundTrip) {
 // ---------------------------------------------------------------------------
 
 TEST_P(ImageTest, ImageAlignmentIsReasonable) {
-  auto attr = device().getAttribute(kDeviceImageAlignment);
+  auto attr = device().getAttribute(kDeviceMaxImageAlignment);
   auto alignment = attr.asUInt64();
   // Alignment must be at least 1 and a power of two.
   EXPECT_GE(alignment, 1u);
@@ -235,21 +235,49 @@ TEST_P(ImageTest, ImageAlignmentIsReasonable) {
 }
 
 // ---------------------------------------------------------------------------
+// Format-aware imageAlignment()
+// ---------------------------------------------------------------------------
+
+TEST_P(ImageTest, ImageAlignmentFormatAware) {
+  ImageDescription rgba_f32(Size3(16, 16, 1), PixelOrder_RGBA, DataType_Float,
+                            Stride2(0, 0));
+  auto align_rgba = device().imageAlignment(rgba_f32);
+  EXPECT_GE(align_rgba, 1u);
+  EXPECT_EQ(align_rgba & (align_rgba - 1), 0u)
+      << "alignment " << align_rgba << " is not a power of two";
+
+  ImageDescription r_f32(Size3(16, 16, 1), PixelOrder_RGBA, DataType_Float,
+                         Stride2(0, 0));
+  r_f32.channels = 1;
+  auto align_r = device().imageAlignment(r_f32);
+  EXPECT_GE(align_r, 1u);
+  EXPECT_EQ(align_r & (align_r - 1), 0u)
+      << "alignment " << align_r << " is not a power of two";
+
+  // Single-channel alignment should be <= RGBA alignment (or equal if the
+  // backend doesn't distinguish).
+  EXPECT_LE(align_r, align_rgba);
+}
+
+// ---------------------------------------------------------------------------
 // Shared image from buffer with odd (unaligned) width
 // ---------------------------------------------------------------------------
 
 TEST_P(ImageTest, SharedImageFromBufferOddWidth) {
-  auto attr = device().getAttribute(kDeviceImageAlignment);
-  auto alignment = attr.asUInt64();
-  if (alignment == 0) {
-    GTEST_SKIP() << "Backend reports zero image alignment";
-  }
-
   // Width of 3 RGBA Float pixels = 48 bytes per row, which is unlikely to
   // satisfy any alignment > 16 without explicit padding.
   const size_t W = 3, H = 4, C = 4;
   const size_t pixelSize = C * sizeof(float);
   const size_t tightRowBytes = W * pixelSize;  // 48
+
+  // Use format-aware alignment for the actual pixel format.
+  ImageDescription probe(Size3(W, H, 1), PixelOrder_RGBA, DataType_Float,
+                         Stride2(0, 0));
+  auto alignment = device().imageAlignment(probe);
+  if (alignment == 0) {
+    GTEST_SKIP() << "Backend reports zero image alignment";
+  }
+
   // Align row stride up to the device's required alignment.
   const size_t alignedRowBytes =
       (tightRowBytes + alignment - 1) & ~(alignment - 1);
@@ -258,7 +286,9 @@ TEST_P(ImageTest, SharedImageFromBufferOddWidth) {
   ImageDescription descr(Size3(W, H, 1), PixelOrder_RGBA, DataType_Float,
                          Stride2(static_cast<int32_t>(alignedRowBytes), 0));
 
-  auto buf = device().allocateBuffer(dataSize);
+  // Use AllocHint::Shared so Metal bypasses the heap (required for
+  // buffer-backed textures).
+  auto buf = device().allocateBuffer(dataSize, AllocHint::Shared);
 
   Image img(nullptr);
   try {
@@ -301,17 +331,20 @@ TEST_P(ImageTest, SharedImageFromBufferOddWidth) {
 // ---------------------------------------------------------------------------
 
 TEST_P(ImageTest, SharedImageFromBufferOddWidthUInt8) {
-  auto attr = device().getAttribute(kDeviceImageAlignment);
-  auto alignment = attr.asUInt64();
-  if (alignment == 0) {
-    GTEST_SKIP() << "Backend reports zero image alignment";
-  }
-
   // Width of 5 RGBA UInt8 pixels = 20 bytes per row, misaligned for most
   // backends (alignment typically >= 16).
   const size_t W = 5, H = 4, C = 4;
   const size_t pixelSize = C * sizeof(uint8_t);
   const size_t tightRowBytes = W * pixelSize;  // 20
+
+  // Use format-aware alignment for the actual pixel format.
+  ImageDescription probe(Size3(W, H, 1), PixelOrder_RGBA, DataType_UInt8,
+                         Stride2(0, 0));
+  auto alignment = device().imageAlignment(probe);
+  if (alignment == 0) {
+    GTEST_SKIP() << "Backend reports zero image alignment";
+  }
+
   const size_t alignedRowBytes =
       (tightRowBytes + alignment - 1) & ~(alignment - 1);
   const size_t dataSize = alignedRowBytes * H;
@@ -319,7 +352,9 @@ TEST_P(ImageTest, SharedImageFromBufferOddWidthUInt8) {
   ImageDescription descr(Size3(W, H, 1), PixelOrder_RGBA, DataType_UInt8,
                          Stride2(static_cast<int32_t>(alignedRowBytes), 0));
 
-  auto buf = device().allocateBuffer(dataSize);
+  // Use AllocHint::Shared so Metal bypasses the heap (required for
+  // buffer-backed textures).
+  auto buf = device().allocateBuffer(dataSize, AllocHint::Shared);
 
   Image img(nullptr);
   try {
@@ -351,6 +386,54 @@ TEST_P(ImageTest, SharedImageFromBufferOddWidthUInt8) {
     for (size_t x = 0; x < W * C; x++) {
       EXPECT_EQ(outputRow[x], expectedRow[x]) << "y=" << y << " x=" << x;
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared image with tall narrow shapes (GHOST.md #14 regression)
+// ---------------------------------------------------------------------------
+
+TEST_P(ImageTest, SharedImageTallNarrow) {
+  // Single-channel R32Float, shapes matching Inferency's GlobalAveragePool
+  // image path. Bug #14 reported a hang at W=28 (row_bytes=112) on Apple
+  // Silicon. Test multiple widths to verify the fix.
+  struct Shape {
+    size_t w, h;
+  };
+
+  Shape shapes[] = {{7, 64},    {14, 64},   {28, 64},   {56, 64},
+                    {7, 256},   {28, 256},  {7, 3584},  {14, 3584},
+                    {28, 3584}, {56, 3584}, {112, 3584}};
+
+  for (const auto& s : shapes) {
+    const size_t C = 1;
+    const size_t pixBytes = C * sizeof(float);
+
+    ImageDescription probe(Size3(s.w, s.h, 1), PixelOrder_RGBA, DataType_Float,
+                           Stride2(0, 0));
+    probe.channels = C;
+    auto alignment = device().imageAlignment(probe);
+    if (alignment == 0) continue;
+
+    size_t tightRow = s.w * pixBytes;
+    size_t alignedRow = (tightRow + alignment - 1) & ~(alignment - 1);
+    size_t dataSize = alignedRow * s.h;
+
+    ImageDescription descr(Size3(s.w, s.h, 1), PixelOrder_RGBA, DataType_Float,
+                           Stride2(static_cast<int32_t>(alignedRow), 0));
+    descr.channels = C;
+
+    auto buf = device().allocateBuffer(dataSize, AllocHint::Shared);
+    Image img(nullptr);
+    try {
+      img = device().sharedImage(descr, buf);
+    } catch (const ghost::unsupported_error&) {
+      GTEST_SKIP() << "Shared images not supported on "
+                   << BackendName(backend());
+    } catch (const std::exception& e) {
+      GTEST_SKIP() << "Shared image failed: " << e.what();
+    }
+    ASSERT_TRUE(img) << "W=" << s.w << " H=" << s.h;
   }
 }
 

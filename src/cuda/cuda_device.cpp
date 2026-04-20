@@ -1052,7 +1052,7 @@ Attribute DeviceCUDA::getAttribute(DeviceAttributeId what) const {
           &z, CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_DEPTH, device));
       return Attribute(x, y, z);
     }
-    case kDeviceImageAlignment: {
+    case kDeviceMaxImageAlignment: {
       int v;
       checkError(cuDeviceGetAttribute(&v, CU_DEVICE_ATTRIBUTE_TEXTURE_ALIGNMENT,
                                       device));

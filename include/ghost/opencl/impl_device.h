@@ -243,6 +243,7 @@ class DeviceOpenCL : public Device {
                                    ghost::Image& image) const override;
 
   virtual Attribute getAttribute(DeviceAttributeId what) const override;
+  virtual size_t imageAlignment(const ImageDescription& descr) const override;
 
   bool checkVersion(const std::string& version) const;
   bool checkExtension(const std::string& extension) const;

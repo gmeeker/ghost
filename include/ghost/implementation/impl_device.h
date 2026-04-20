@@ -67,8 +67,12 @@ enum DeviceAttributeId {
   kDeviceMaxImageSize2,
   /// @brief Maximum 3D image dimensions (3-element int array).
   kDeviceMaxImageSize3,
-  /// @brief Required image row alignment in bytes.
-  kDeviceImageAlignment,
+  /// @brief Conservative image row alignment in bytes.
+  ///
+  /// Returns the maximum alignment requirement across all pixel formats.
+  /// Safe to use when the format is not yet known; prefer
+  /// Device::imageAlignment(descr) for format-specific queries.
+  kDeviceMaxImageAlignment,
   /// @brief Whether integer image filtering is supported (bool).
   kDeviceSupportsImageIntegerFiltering,
   /// @brief Whether float image filtering is supported (bool).
@@ -415,6 +419,14 @@ class Device {
                                    ghost::Image& image) const = 0;
 
   virtual Attribute getAttribute(DeviceAttributeId what) const = 0;
+
+  /// @brief Get the required row alignment in bytes for buffer-backed images
+  /// with the given description.
+  ///
+  /// Different pixel formats may have different alignment requirements.
+  /// The default implementation returns @c kDeviceMaxImageAlignment, which uses
+  /// a conservative format-independent value.
+  virtual size_t imageAlignment(const ImageDescription& descr) const;
 
   /// @brief Get the thread pool used by this device for CPU-side parallel
   /// dispatch.

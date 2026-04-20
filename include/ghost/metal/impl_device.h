@@ -195,6 +195,7 @@ class DeviceMetal : public Device {
                                    ghost::Image& image) const override;
 
   virtual Attribute getAttribute(DeviceAttributeId what) const override;
+  virtual size_t imageAlignment(const ImageDescription& descr) const override;
 };
 }  // namespace implementation
 }  // namespace ghost

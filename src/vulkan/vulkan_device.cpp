@@ -1631,7 +1631,7 @@ Attribute DeviceVulkan::getAttribute(DeviceAttributeId what) const {
       return Attribute((int32_t)properties.limits.maxImageDimension3D,
                        (int32_t)properties.limits.maxImageDimension3D,
                        (int32_t)properties.limits.maxImageDimension3D);
-    case kDeviceImageAlignment:
+    case kDeviceMaxImageAlignment:
       return Attribute(
           (int32_t)properties.limits.optimalBufferCopyRowPitchAlignment);
     case kDeviceSupportsImageIntegerFiltering:

@@ -456,6 +456,16 @@ class Device {
   /// @return The attribute value.
   Attribute getAttribute(DeviceAttributeId what) const;
 
+  /// @brief Get the required row alignment in bytes for buffer-backed images
+  /// with the given description.
+  ///
+  /// Unlike @c kDeviceMaxImageAlignment, this returns the correct alignment for
+  /// the specific pixel format described. Use this when computing row strides
+  /// for buffers that will be wrapped with sharedImage().
+  /// @param descr The image description (format, channels, etc.).
+  /// @return Required row alignment in bytes (always a power of two, >= 1).
+  size_t imageAlignment(const ImageDescription& descr) const;
+
   /// @brief Get the host-side thread pool used by this device.
   ///
   /// CPU backends return the active worker pool. GPU backends return

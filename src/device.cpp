@@ -87,6 +87,12 @@ size_t Device::getMemoryPoolSize() const { return _poolSize; }
 
 void Device::setMemoryPoolSize(size_t bytes) { _poolSize = bytes; }
 
+size_t Device::imageAlignment(const ImageDescription&) const {
+  auto attr = getAttribute(kDeviceMaxImageAlignment);
+  auto v = attr.asUInt64();
+  return v > 0 ? static_cast<size_t>(v) : 1;
+}
+
 void Image::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                  const BufferLayout& layout, const Origin3& imageOrigin) {
   throw ghost::unsupported_error();
@@ -413,6 +419,10 @@ Image Device::sharedImage(const ImageDescription& descr, Image& image) const {
 
 Attribute Device::getAttribute(DeviceAttributeId what) const {
   return _impl->getAttribute(what);
+}
+
+size_t Device::imageAlignment(const ImageDescription& descr) const {
+  return _impl->imageAlignment(descr);
 }
 
 std::shared_ptr<ThreadPool> Device::threadPool() const {

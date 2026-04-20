@@ -559,7 +559,7 @@ Attribute DeviceCPU::getAttribute(DeviceAttributeId what) const {
       auto v = std::numeric_limits<int32_t>::max();
       return Attribute(v, v, v);
     }
-    case kDeviceImageAlignment:
+    case kDeviceMaxImageAlignment:
       return 64;
     case kDeviceSupportsImageIntegerFiltering:
       return false;
