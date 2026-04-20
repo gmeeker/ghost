@@ -243,6 +243,8 @@ ImageCUDA::ImageCUDA(const DeviceCUDA& dev, const ImageDescription& descr_)
   err = cuMemAllocPitch(&mem, &pitch, descr.size.x * bytes,
                         descr.size.y * descr.size.z, elementSize);
   checkError(err);
+  descr.stride = Stride2(static_cast<int32_t>(pitch),
+                         static_cast<int32_t>(pitch * descr.size.y));
 }
 
 ImageCUDA::ImageCUDA(const DeviceCUDA& dev, const ImageDescription& descr_,
@@ -261,6 +263,12 @@ ImageCUDA::ImageCUDA(const DeviceCUDA& dev, const ImageDescription& descr_,
 
 void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src) {
   auto src_impl = static_cast<implementation::ImageCUDA*>(src.impl().get());
+  size_t srcPixSize = src_impl->descr.pixelSize();
+  size_t srcRowBytes = src_impl->descr.rowBytes(srcPixSize);
+  size_t srcSliceBytes = src_impl->descr.sliceBytes(srcRowBytes);
+  size_t dstPixSize = descr.pixelSize();
+  size_t dstRowBytes = descr.rowBytes(dstPixSize);
+  size_t dstSliceBytes = descr.sliceBytes(dstRowBytes);
   if (descr.size.z > 1) {
     CUDA_MEMCPY3D a;
     a.srcXInBytes = 0;
@@ -271,8 +279,8 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src) {
     a.srcHost = nullptr;
     a.srcDevice = src_impl->mem;
     a.srcArray = nullptr;
-    a.srcPitch = src_impl->descr.stride.x;
-    a.srcHeight = src_impl->descr.stride.y;
+    a.srcPitch = srcRowBytes;
+    a.srcHeight = srcSliceBytes / srcRowBytes;
     a.dstXInBytes = 0;
     a.dstY = 0;
     a.dstZ = 0;
@@ -281,9 +289,9 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src) {
     a.dstHost = nullptr;
     a.dstDevice = mem;
     a.dstArray = nullptr;
-    a.dstPitch = descr.stride.x;
-    a.dstHeight = descr.stride.y;
-    a.WidthInBytes = descr.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.dstHeight = dstSliceBytes / dstRowBytes;
+    a.WidthInBytes = descr.size.x * dstPixSize;
     a.Height = descr.size.y;
     a.Depth = descr.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
@@ -298,15 +306,15 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src) {
     a.srcHost = nullptr;
     a.srcDevice = src_impl->mem;
     a.srcArray = nullptr;
-    a.srcPitch = src_impl->descr.stride.x;
+    a.srcPitch = srcRowBytes;
     a.dstXInBytes = 0;
     a.dstY = 0;
     a.dstMemoryType = CU_MEMORYTYPE_DEVICE;
     a.dstHost = nullptr;
     a.dstDevice = mem;
     a.dstArray = nullptr;
-    a.dstPitch = descr.stride.x;
-    a.WidthInBytes = descr.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.WidthInBytes = descr.size.x * dstPixSize;
     a.Height = descr.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
     CUresult err;
@@ -318,6 +326,11 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src) {
 void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                      const BufferLayout& layout) {
   auto src_impl = static_cast<implementation::BufferCUDA*>(src.impl().get());
+  size_t pixSize = descr.pixelSize();
+  size_t srcRowBytes = layout.rowBytes(pixSize);
+  size_t srcSliceBytes = layout.sliceBytes(srcRowBytes);
+  size_t dstRowBytes = descr.rowBytes(pixSize);
+  size_t dstSliceBytes = descr.sliceBytes(dstRowBytes);
   if (descr.size.z > 1) {
     CUDA_MEMCPY3D a;
     a.srcXInBytes = 0;
@@ -328,8 +341,8 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
     a.srcHost = nullptr;
     a.srcDevice = src_impl->mem;
     a.srcArray = nullptr;
-    a.srcPitch = layout.stride.x;
-    a.srcHeight = layout.stride.y;
+    a.srcPitch = srcRowBytes;
+    a.srcHeight = srcSliceBytes / srcRowBytes;
     a.dstXInBytes = 0;
     a.dstY = 0;
     a.dstZ = 0;
@@ -338,9 +351,9 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
     a.dstHost = nullptr;
     a.dstDevice = mem;
     a.dstArray = nullptr;
-    a.dstPitch = descr.stride.x;
-    a.dstHeight = descr.stride.y;
-    a.WidthInBytes = descr.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.dstHeight = dstSliceBytes / dstRowBytes;
+    a.WidthInBytes = descr.size.x * pixSize;
     a.Height = descr.size.y;
     a.Depth = descr.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
@@ -353,17 +366,17 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
     a.srcY = 0;
     a.srcMemoryType = CU_MEMORYTYPE_DEVICE;
     a.srcHost = nullptr;
-    a.srcDevice = mem;
+    a.srcDevice = src_impl->mem;
     a.srcArray = nullptr;
-    a.srcPitch = descr.stride.x;
+    a.srcPitch = srcRowBytes;
     a.dstXInBytes = 0;
     a.dstY = 0;
     a.dstMemoryType = CU_MEMORYTYPE_DEVICE;
     a.dstHost = nullptr;
     a.dstDevice = mem;
     a.dstArray = nullptr;
-    a.dstPitch = descr.stride.x;
-    a.WidthInBytes = descr.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.WidthInBytes = descr.size.x * pixSize;
     a.Height = descr.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
     CUresult err;
@@ -374,6 +387,11 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
 
 void ImageCUDA::copy(const ghost::Encoder& s, const void* src,
                      const BufferLayout& layout) {
+  size_t pixSize = descr.pixelSize();
+  size_t srcRowBytes = layout.rowBytes(pixSize);
+  size_t srcSliceBytes = layout.sliceBytes(srcRowBytes);
+  size_t dstRowBytes = descr.rowBytes(pixSize);
+  size_t dstSliceBytes = descr.sliceBytes(dstRowBytes);
   if (descr.size.z > 1) {
     CUDA_MEMCPY3D a;
     a.srcXInBytes = 0;
@@ -384,8 +402,8 @@ void ImageCUDA::copy(const ghost::Encoder& s, const void* src,
     a.srcHost = src;
     a.srcDevice = (CUdeviceptr)0;
     a.srcArray = nullptr;
-    a.srcPitch = layout.stride.x;
-    a.srcHeight = layout.stride.y;
+    a.srcPitch = srcRowBytes;
+    a.srcHeight = srcSliceBytes / srcRowBytes;
     a.dstXInBytes = 0;
     a.dstY = 0;
     a.dstZ = 0;
@@ -394,9 +412,9 @@ void ImageCUDA::copy(const ghost::Encoder& s, const void* src,
     a.dstHost = nullptr;
     a.dstDevice = mem;
     a.dstArray = nullptr;
-    a.dstPitch = descr.stride.x;
-    a.dstHeight = descr.stride.y;
-    a.WidthInBytes = descr.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.dstHeight = dstSliceBytes / dstRowBytes;
+    a.WidthInBytes = descr.size.x * pixSize;
     a.Height = descr.size.y;
     a.Depth = descr.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
@@ -411,15 +429,15 @@ void ImageCUDA::copy(const ghost::Encoder& s, const void* src,
     a.srcHost = src;
     a.srcDevice = (CUdeviceptr)0;
     a.srcArray = nullptr;
-    a.srcPitch = layout.stride.x;
+    a.srcPitch = srcRowBytes;
     a.dstXInBytes = 0;
     a.dstY = 0;
     a.dstMemoryType = CU_MEMORYTYPE_DEVICE;
     a.dstHost = nullptr;
     a.dstDevice = mem;
     a.dstArray = nullptr;
-    a.dstPitch = descr.stride.x;
-    a.WidthInBytes = descr.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.WidthInBytes = descr.size.x * pixSize;
     a.Height = descr.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
     CUresult err;
@@ -431,6 +449,11 @@ void ImageCUDA::copy(const ghost::Encoder& s, const void* src,
 void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                        const BufferLayout& layout) const {
   auto dst_impl = static_cast<implementation::BufferCUDA*>(dst.impl().get());
+  size_t pixSize = descr.pixelSize();
+  size_t srcRowBytes = descr.rowBytes(pixSize);
+  size_t srcSliceBytes = descr.sliceBytes(srcRowBytes);
+  size_t dstRowBytes = layout.rowBytes(pixSize);
+  size_t dstSliceBytes = layout.sliceBytes(dstRowBytes);
   if (descr.size.z > 1) {
     CUDA_MEMCPY3D a;
     a.srcXInBytes = 0;
@@ -441,8 +464,8 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
     a.srcHost = nullptr;
     a.srcDevice = mem;
     a.srcArray = nullptr;
-    a.srcPitch = descr.stride.x;
-    a.srcHeight = descr.stride.y;
+    a.srcPitch = srcRowBytes;
+    a.srcHeight = srcSliceBytes / srcRowBytes;
     a.dstXInBytes = 0;
     a.dstY = 0;
     a.dstZ = 0;
@@ -451,9 +474,9 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
     a.dstHost = nullptr;
     a.dstDevice = dst_impl->mem;
     a.dstArray = nullptr;
-    a.dstPitch = layout.stride.x;
-    a.dstHeight = layout.stride.y;
-    a.WidthInBytes = layout.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.dstHeight = dstSliceBytes / dstRowBytes;
+    a.WidthInBytes = layout.size.x * pixSize;
     a.Height = layout.size.y;
     a.Depth = layout.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
@@ -468,15 +491,15 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
     a.srcHost = nullptr;
     a.srcDevice = mem;
     a.srcArray = nullptr;
-    a.srcPitch = descr.stride.x;
+    a.srcPitch = srcRowBytes;
     a.dstXInBytes = 0;
     a.dstY = 0;
     a.dstMemoryType = CU_MEMORYTYPE_DEVICE;
     a.dstHost = nullptr;
     a.dstDevice = dst_impl->mem;
     a.dstArray = nullptr;
-    a.dstPitch = layout.stride.x;
-    a.WidthInBytes = layout.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.WidthInBytes = layout.size.x * pixSize;
     a.Height = layout.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
     CUresult err;
@@ -487,6 +510,11 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
 
 void ImageCUDA::copyTo(const ghost::Encoder& s, void* dst,
                        const BufferLayout& layout) const {
+  size_t pixSize = descr.pixelSize();
+  size_t srcRowBytes = descr.rowBytes(pixSize);
+  size_t srcSliceBytes = descr.sliceBytes(srcRowBytes);
+  size_t dstRowBytes = layout.rowBytes(pixSize);
+  size_t dstSliceBytes = layout.sliceBytes(dstRowBytes);
   if (descr.size.z > 1) {
     CUDA_MEMCPY3D a;
     a.srcXInBytes = 0;
@@ -497,8 +525,8 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, void* dst,
     a.srcHost = nullptr;
     a.srcDevice = mem;
     a.srcArray = nullptr;
-    a.srcPitch = descr.stride.x;
-    a.srcHeight = descr.stride.y;
+    a.srcPitch = srcRowBytes;
+    a.srcHeight = srcSliceBytes / srcRowBytes;
     a.dstXInBytes = 0;
     a.dstY = 0;
     a.dstZ = 0;
@@ -507,9 +535,9 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, void* dst,
     a.dstHost = dst;
     a.dstDevice = (CUdeviceptr)0;
     a.dstArray = nullptr;
-    a.dstPitch = layout.stride.x;
-    a.dstHeight = layout.stride.y;
-    a.WidthInBytes = layout.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.dstHeight = dstSliceBytes / dstRowBytes;
+    a.WidthInBytes = layout.size.x * pixSize;
     a.Height = layout.size.y;
     a.Depth = layout.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
@@ -524,15 +552,15 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, void* dst,
     a.srcHost = nullptr;
     a.srcDevice = mem;
     a.srcArray = nullptr;
-    a.srcPitch = descr.stride.x;
+    a.srcPitch = srcRowBytes;
     a.dstXInBytes = 0;
     a.dstY = 0;
     a.dstMemoryType = CU_MEMORYTYPE_HOST;
     a.dstHost = dst;
     a.dstDevice = (CUdeviceptr)0;
     a.dstArray = nullptr;
-    a.dstPitch = layout.stride.x;
-    a.WidthInBytes = layout.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.WidthInBytes = layout.size.x * pixSize;
     a.Height = layout.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
     CUresult err;
@@ -544,6 +572,11 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, void* dst,
 void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                      const BufferLayout& layout, const Origin3& imageOrigin) {
   auto src_impl = static_cast<implementation::BufferCUDA*>(src.impl().get());
+  size_t pixSize = descr.pixelSize();
+  size_t srcRowBytes = layout.rowBytes(pixSize);
+  size_t srcSliceBytes = layout.sliceBytes(srcRowBytes);
+  size_t dstRowBytes = descr.rowBytes(pixSize);
+  size_t dstSliceBytes = descr.sliceBytes(dstRowBytes);
   if (descr.size.z > 1) {
     CUDA_MEMCPY3D a;
     a.srcXInBytes = 0;
@@ -554,9 +587,9 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
     a.srcHost = nullptr;
     a.srcDevice = src_impl->mem;
     a.srcArray = nullptr;
-    a.srcPitch = layout.stride.x;
-    a.srcHeight = layout.stride.y;
-    a.dstXInBytes = imageOrigin.x * descr.pixelSize();
+    a.srcPitch = srcRowBytes;
+    a.srcHeight = srcSliceBytes / srcRowBytes;
+    a.dstXInBytes = imageOrigin.x * pixSize;
     a.dstY = imageOrigin.y;
     a.dstZ = imageOrigin.z;
     a.dstLOD = 0;
@@ -564,9 +597,9 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
     a.dstHost = nullptr;
     a.dstDevice = mem;
     a.dstArray = nullptr;
-    a.dstPitch = descr.stride.x;
-    a.dstHeight = descr.stride.y;
-    a.WidthInBytes = layout.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.dstHeight = dstSliceBytes / dstRowBytes;
+    a.WidthInBytes = layout.size.x * pixSize;
     a.Height = layout.size.y;
     a.Depth = layout.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
@@ -581,15 +614,15 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
     a.srcHost = nullptr;
     a.srcDevice = src_impl->mem;
     a.srcArray = nullptr;
-    a.srcPitch = layout.stride.x;
-    a.dstXInBytes = imageOrigin.x * descr.pixelSize();
+    a.srcPitch = srcRowBytes;
+    a.dstXInBytes = imageOrigin.x * pixSize;
     a.dstY = imageOrigin.y;
     a.dstMemoryType = CU_MEMORYTYPE_DEVICE;
     a.dstHost = nullptr;
     a.dstDevice = mem;
     a.dstArray = nullptr;
-    a.dstPitch = descr.stride.x;
-    a.WidthInBytes = layout.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.WidthInBytes = layout.size.x * pixSize;
     a.Height = layout.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
     CUresult err;
@@ -602,9 +635,14 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                        const BufferLayout& layout,
                        const Origin3& imageOrigin) const {
   auto dst_impl = static_cast<implementation::BufferCUDA*>(dst.impl().get());
+  size_t pixSize = descr.pixelSize();
+  size_t srcRowBytes = descr.rowBytes(pixSize);
+  size_t srcSliceBytes = descr.sliceBytes(srcRowBytes);
+  size_t dstRowBytes = layout.rowBytes(pixSize);
+  size_t dstSliceBytes = layout.sliceBytes(dstRowBytes);
   if (descr.size.z > 1) {
     CUDA_MEMCPY3D a;
-    a.srcXInBytes = imageOrigin.x * descr.pixelSize();
+    a.srcXInBytes = imageOrigin.x * pixSize;
     a.srcY = imageOrigin.y;
     a.srcZ = imageOrigin.z;
     a.srcLOD = 0;
@@ -612,8 +650,8 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
     a.srcHost = nullptr;
     a.srcDevice = mem;
     a.srcArray = nullptr;
-    a.srcPitch = descr.stride.x;
-    a.srcHeight = descr.stride.y;
+    a.srcPitch = srcRowBytes;
+    a.srcHeight = srcSliceBytes / srcRowBytes;
     a.dstXInBytes = 0;
     a.dstY = 0;
     a.dstZ = 0;
@@ -622,9 +660,9 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
     a.dstHost = nullptr;
     a.dstDevice = dst_impl->mem;
     a.dstArray = nullptr;
-    a.dstPitch = layout.stride.x;
-    a.dstHeight = layout.stride.y;
-    a.WidthInBytes = layout.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.dstHeight = dstSliceBytes / dstRowBytes;
+    a.WidthInBytes = layout.size.x * pixSize;
     a.Height = layout.size.y;
     a.Depth = layout.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
@@ -633,21 +671,21 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
     checkError(err);
   } else {
     CUDA_MEMCPY2D a;
-    a.srcXInBytes = imageOrigin.x * descr.pixelSize();
+    a.srcXInBytes = imageOrigin.x * pixSize;
     a.srcY = imageOrigin.y;
     a.srcMemoryType = CU_MEMORYTYPE_DEVICE;
     a.srcHost = nullptr;
     a.srcDevice = mem;
     a.srcArray = nullptr;
-    a.srcPitch = descr.stride.x;
+    a.srcPitch = srcRowBytes;
     a.dstXInBytes = 0;
     a.dstY = 0;
     a.dstMemoryType = CU_MEMORYTYPE_DEVICE;
     a.dstHost = nullptr;
     a.dstDevice = dst_impl->mem;
     a.dstArray = nullptr;
-    a.dstPitch = layout.stride.x;
-    a.WidthInBytes = layout.size.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.WidthInBytes = layout.size.x * pixSize;
     a.Height = layout.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
     CUresult err;
@@ -660,9 +698,15 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src,
                      const Size3& region, const Origin3& srcOrigin,
                      const Origin3& dstOrigin) {
   auto src_impl = static_cast<implementation::ImageCUDA*>(src.impl().get());
+  size_t srcPixSize = src_impl->descr.pixelSize();
+  size_t srcRowBytes = src_impl->descr.rowBytes(srcPixSize);
+  size_t srcSliceBytes = src_impl->descr.sliceBytes(srcRowBytes);
+  size_t dstPixSize = descr.pixelSize();
+  size_t dstRowBytes = descr.rowBytes(dstPixSize);
+  size_t dstSliceBytes = descr.sliceBytes(dstRowBytes);
   if (region.z > 1) {
     CUDA_MEMCPY3D a;
-    a.srcXInBytes = srcOrigin.x * src_impl->descr.pixelSize();
+    a.srcXInBytes = srcOrigin.x * srcPixSize;
     a.srcY = srcOrigin.y;
     a.srcZ = srcOrigin.z;
     a.srcLOD = 0;
@@ -670,9 +714,9 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src,
     a.srcHost = nullptr;
     a.srcDevice = src_impl->mem;
     a.srcArray = nullptr;
-    a.srcPitch = src_impl->descr.stride.x;
-    a.srcHeight = src_impl->descr.stride.y;
-    a.dstXInBytes = dstOrigin.x * descr.pixelSize();
+    a.srcPitch = srcRowBytes;
+    a.srcHeight = srcSliceBytes / srcRowBytes;
+    a.dstXInBytes = dstOrigin.x * dstPixSize;
     a.dstY = dstOrigin.y;
     a.dstZ = dstOrigin.z;
     a.dstLOD = 0;
@@ -680,9 +724,9 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src,
     a.dstHost = nullptr;
     a.dstDevice = mem;
     a.dstArray = nullptr;
-    a.dstPitch = descr.stride.x;
-    a.dstHeight = descr.stride.y;
-    a.WidthInBytes = region.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.dstHeight = dstSliceBytes / dstRowBytes;
+    a.WidthInBytes = region.x * dstPixSize;
     a.Height = region.y;
     a.Depth = region.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
@@ -691,21 +735,21 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src,
     checkError(err);
   } else {
     CUDA_MEMCPY2D a;
-    a.srcXInBytes = srcOrigin.x * src_impl->descr.pixelSize();
+    a.srcXInBytes = srcOrigin.x * srcPixSize;
     a.srcY = srcOrigin.y;
     a.srcMemoryType = CU_MEMORYTYPE_DEVICE;
     a.srcHost = nullptr;
     a.srcDevice = src_impl->mem;
     a.srcArray = nullptr;
-    a.srcPitch = src_impl->descr.stride.x;
-    a.dstXInBytes = dstOrigin.x * descr.pixelSize();
+    a.srcPitch = srcRowBytes;
+    a.dstXInBytes = dstOrigin.x * dstPixSize;
     a.dstY = dstOrigin.y;
     a.dstMemoryType = CU_MEMORYTYPE_DEVICE;
     a.dstHost = nullptr;
     a.dstDevice = mem;
     a.dstArray = nullptr;
-    a.dstPitch = descr.stride.x;
-    a.WidthInBytes = region.x * descr.pixelSize();
+    a.dstPitch = dstRowBytes;
+    a.WidthInBytes = region.x * dstPixSize;
     a.Height = region.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
     CUresult err;

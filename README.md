@@ -212,7 +212,15 @@ auto image = device.allocateImage(desc);
 image.copy(stream, pixel_data, desc);       // Host -> GPU
 image.copyTo(stream, output, desc);         // GPU -> Host
 image.copy(stream, other_image);            // Image -> Image
+
+// Tight-packed host data (no padding): use Stride2(0, 0) or omit stride
+BufferLayout tight(Size3(width, height, 1));  // stride defaults to (0, 0)
+image.copyTo(stream, output, tight);          // GPU -> tight-packed host
 ```
+
+Notes:
+- A `Stride2(0, 0)` means tight packing: row stride = width x pixelSize bytes, slice stride = rowStride x height. All backends resolve this consistently.
+- `BufferLayout::rowBytes(pixelSize)` and `BufferLayout::sliceBytes(rowBytes)` resolve stride=0 to the computed tight-pack value.
 
 ### Streams & Synchronization
 

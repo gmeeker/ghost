@@ -218,6 +218,20 @@ class BufferLayout {
   /// @param stride_ Row and slice strides in bytes (default: tight packing).
   BufferLayout(Size3 size_, Stride2 stride_ = Stride2(0, 0))
       : size(size_), stride(stride_) {}
+
+  /// @brief Resolve the row stride, treating 0 as tight packing.
+  /// @param pixelSize Bytes per pixel.
+  /// @return Row stride in bytes (never 0).
+  size_t rowBytes(size_t pixelSize) const {
+    return stride.x > 0 ? static_cast<size_t>(stride.x) : size.x * pixelSize;
+  }
+
+  /// @brief Resolve the slice stride, treating 0 as tight packing.
+  /// @param rowBytes_ Resolved row stride in bytes.
+  /// @return Slice stride in bytes (never 0).
+  size_t sliceBytes(size_t rowBytes_) const {
+    return stride.y > 0 ? static_cast<size_t>(stride.y) : rowBytes_ * size.y;
+  }
 };
 
 /// @brief Descriptor for a 1D, 2D, or 3D GPU image.
