@@ -27,6 +27,12 @@ ghost::Function Library::specializeFunction(
   throw ghost::unsupported_error();
 }
 
+ghost::Function Library::specializeFunctionNamed(
+    const std::string& name,
+    const std::vector<std::pair<std::string, Attribute>>& constants) const {
+  throw ghost::unsupported_error();
+}
+
 void Library::setGlobals(
     const std::vector<std::pair<std::string, Attribute>>& globals) {
   throw ghost::unsupported_error();

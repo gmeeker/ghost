@@ -330,11 +330,30 @@ class Library {
   ///
   /// Non-template overload for dynamic argument counts.
   /// @param name The kernel function name.
-  /// @param args Specialization constant values.
+  /// @param args Specialization constant values (positional).
   /// @return The specialized Function object.
   Function lookupSpecializedFunction(const std::string& name,
                                      const std::vector<Attribute>& args) {
     Function fn = _impl->specializeFunction(name, args);
+    fn._parent = _impl;
+    return fn;
+  }
+
+  /// @brief Look up a specialized function with named constant values.
+  ///
+  /// Constants are identified by name rather than position. On Metal, this
+  /// uses MTLFunctionConstantValues::setConstantValue:type:withName: so the
+  /// caller does not need to know the positional index of each constant.
+  ///
+  /// @param name The kernel function name.
+  /// @param constants Named constant values.
+  /// @return The specialized Function object.
+  /// @throws ghost::unsupported_error if the backend does not support named
+  ///   specialization constants.
+  Function lookupSpecializedFunction(
+      const std::string& name,
+      const std::vector<std::pair<std::string, Attribute>>& constants) {
+    Function fn = _impl->specializeFunctionNamed(name, constants);
     fn._parent = _impl;
     return fn;
   }

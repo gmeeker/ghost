@@ -108,6 +108,58 @@ FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name,
                                                            error:&error];
 }
 
+static MTLFunctionConstantValues *buildNamedConstants(
+    const std::vector<std::pair<std::string, Attribute>> &constants) {
+  MTLFunctionConstantValues *cv = [MTLFunctionConstantValues new];
+#if !__has_feature(objc_arc)
+  [cv autorelease];
+#endif
+  for (auto &pair : constants) {
+    NSString *nsName = [NSString stringWithUTF8String:pair.first.c_str()];
+    auto &attr = pair.second;
+    if (attr.type() == Attribute::Type_Bool)
+      [cv setConstantValue:attr.boolArray()
+                      type:MTLDataTypeBool
+                  withName:nsName];
+    else if (attr.type() == Attribute::Type_Int)
+      [cv setConstantValue:attr.intArray() type:MTLDataTypeInt withName:nsName];
+    else if (attr.type() == Attribute::Type_UInt)
+      [cv setConstantValue:attr.uintArray()
+                      type:MTLDataTypeUInt
+                  withName:nsName];
+    else if (attr.type() == Attribute::Type_Float)
+      [cv setConstantValue:attr.floatArray()
+                      type:MTLDataTypeFloat
+                  withName:nsName];
+  }
+  return cv;
+}
+
+FunctionMetal::FunctionMetal(
+    id<MTLLibrary> library, const std::string &name,
+    const std::vector<std::pair<std::string, Attribute>> &namedConstants) {
+  NSError *error;
+  MTLFunctionConstantValues *constantValues =
+      buildNamedConstants(namedConstants);
+  function =
+      [library newFunctionWithName:[NSString stringWithUTF8String:name.c_str()]
+                    constantValues:constantValues
+                             error:&error];
+  if (!function.get()) {
+    std::string msg = "Metal: function not found: " + name;
+    if (error) {
+      msg +=
+          " (" + std::string([[error localizedDescription] UTF8String]) + ")";
+    }
+    throw std::runtime_error(msg);
+  }
+  if (function.get().functionType != MTLFunctionTypeKernel) {
+    throw std::runtime_error("Metal: function is not a kernel: " + name);
+  }
+  pipeline = [library.device newComputePipelineStateWithFunction:function.get()
+                                                           error:&error];
+}
+
 #if defined(MAC_OS_VERSION_11_0)
 FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name,
                              id<MTLBinaryArchive> archive, bool &dirty) {
@@ -171,6 +223,52 @@ FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name,
                                   type:MTLDataTypeFloat
                                atIndex:j++];
   }
+  function =
+      [library newFunctionWithName:[NSString stringWithUTF8String:name.c_str()]
+                    constantValues:constantValues
+                             error:&error];
+  if (!function.get()) {
+    std::string msg = "Metal: function not found: " + name;
+    if (error) {
+      msg +=
+          " (" + std::string([[error localizedDescription] UTF8String]) + ")";
+    }
+    throw std::runtime_error(msg);
+  }
+  if (function.get().functionType != MTLFunctionTypeKernel) {
+    throw std::runtime_error("Metal: function is not a kernel: " + name);
+  }
+  if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
+    if (archive) {
+      NSError *err = nil;
+      MTLComputePipelineDescriptor *desc = [MTLComputePipelineDescriptor new];
+#if !__has_feature(objc_arc)
+      [desc autorelease];
+#endif
+      desc.computeFunction = function.get();
+      desc.binaryArchives = @[ archive ];
+      pipeline = [library.device newComputePipelineStateWithDescriptor:desc
+                                                               options:0
+                                                            reflection:nil
+                                                                 error:&err];
+      if (pipeline.get()) {
+        [archive addComputePipelineFunctionsWithDescriptor:desc error:nil];
+        dirty = true;
+        return;
+      }
+    }
+  }
+  pipeline = [library.device newComputePipelineStateWithFunction:function.get()
+                                                           error:&error];
+}
+
+FunctionMetal::FunctionMetal(
+    id<MTLLibrary> library, const std::string &name,
+    const std::vector<std::pair<std::string, Attribute>> &namedConstants,
+    id<MTLBinaryArchive> archive, bool &dirty) {
+  NSError *error;
+  MTLFunctionConstantValues *constantValues =
+      buildNamedConstants(namedConstants);
   function =
       [library newFunctionWithName:[NSString stringWithUTF8String:name.c_str()]
                     constantValues:constantValues
@@ -602,6 +700,22 @@ LibraryMetal::specializeFunction(const std::string &name,
   auto f = std::make_shared<FunctionMetal>(library.get(), name, args);
   return ghost::Function(f);
 }
+
+ghost::Function LibraryMetal::specializeFunctionNamed(
+    const std::string &name,
+    const std::vector<std::pair<std::string, Attribute>> &constants) const {
+#if defined(MAC_OS_VERSION_11_0)
+  if (_archive.get()) {
+    auto f = std::make_shared<FunctionMetal>(library.get(), name, constants,
+                                             _archive.get(), _archiveDirty);
+    saveArchive();
+    return ghost::Function(f);
+  }
+#endif
+  auto f = std::make_shared<FunctionMetal>(library.get(), name, constants);
+  return ghost::Function(f);
+}
+
 std::vector<uint8_t> LibraryMetal::getBinary() const { return _binaryData; }
 } // namespace implementation
 } // namespace ghost

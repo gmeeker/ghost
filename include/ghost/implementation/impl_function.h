@@ -216,11 +216,26 @@ class Library {
   /// that support function constants (e.g., Metal, Vulkan) override this
   /// method.
   /// @param name The kernel function name.
-  /// @param args Specialization constant values.
+  /// @param args Specialization constant values (positional).
   /// @return The specialized Function.
   /// @throws ghost::unsupported_error if not supported by the backend.
   virtual ghost::Function specializeFunction(
       const std::string& name, const std::vector<Attribute>& args) const;
+
+  /// @brief Create a specialized function variant with named constant values.
+  ///
+  /// Like specializeFunction() but constants are identified by name rather
+  /// than position. The default implementation throws
+  /// ghost::unsupported_error. Metal overrides this to use
+  /// MTLFunctionConstantValues::setConstantValue:type:withName:.
+  ///
+  /// @param name The kernel function name.
+  /// @param constants Named constant values.
+  /// @return The specialized Function.
+  /// @throws ghost::unsupported_error if not supported by the backend.
+  virtual ghost::Function specializeFunctionNamed(
+      const std::string& name,
+      const std::vector<std::pair<std::string, Attribute>>& constants) const;
 
   /// @brief Set named global constants on this library.
   ///

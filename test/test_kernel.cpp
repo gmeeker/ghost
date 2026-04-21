@@ -1,4 +1,5 @@
 #include <ghost/argument_buffer.h>
+#include <ghost/kernel_source.h>
 
 #include <filesystem>
 
@@ -831,6 +832,132 @@ TEST_P(KernelTest, RequireWrongSubgroupSizeThrows) {
   // Vulkan throws unsupported_error (extension not enabled). Other backends
   // throw std::invalid_argument from the mismatch check.
   EXPECT_THROW(fn(la, stream())(outBuf, inBuf, 1.0f), std::exception);
+}
+
+// ---------------------------------------------------------------------------
+// KernelSource — compile-with-defines caching
+// ---------------------------------------------------------------------------
+
+TEST_P(KernelTest, KernelSourceDefines) {
+  // Uses the same kernel as SetGlobals: SCALE_FACTOR injected as -D define.
+  const char* src = setGlobalsKernelSource(backend());
+  if (!src) GTEST_SKIP() << "KernelSource test needs OpenCL source";
+
+  const size_t N = 128;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+  const float kSentinel = -1.0f;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, kSentinel);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i + 1);
+
+  auto inBuf = device().allocateBuffer(safeN * sizeof(float));
+  auto outBuf = device().allocateBuffer(safeN * sizeof(float));
+  inBuf.copy(stream(), input.data(), safeN * sizeof(float));
+
+  LaunchArgs la;
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
+
+  KernelSource ks(src);
+
+  // Variant 1: SCALE_FACTOR = 3.0
+  {
+    auto fn = ks.getFunction(device(), "scaled_fn",
+                             {{"SCALE_FACTOR", Attribute(3.0f)}});
+    outBuf.copy(stream(), output.data(), safeN * sizeof(float));
+    fn(la, stream())(outBuf, inBuf, static_cast<uint32_t>(N));
+    outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
+    stream().sync();
+
+    for (size_t i = 0; i < N; i++) {
+      EXPECT_FLOAT_EQ(output[i], static_cast<float>(i + 1) * 3.0f)
+          << "index " << i;
+    }
+  }
+
+  // Variant 2: SCALE_FACTOR = 0.5 — different variant, separate compilation.
+  {
+    auto fn = ks.getFunction(device(), "scaled_fn",
+                             {{"SCALE_FACTOR", Attribute(0.5f)}});
+    std::fill(output.begin(), output.end(), kSentinel);
+    outBuf.copy(stream(), output.data(), safeN * sizeof(float));
+    fn(la, stream())(outBuf, inBuf, static_cast<uint32_t>(N));
+    outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
+    stream().sync();
+
+    for (size_t i = 0; i < N; i++) {
+      EXPECT_FLOAT_EQ(output[i], static_cast<float>(i + 1) * 0.5f)
+          << "index " << i;
+    }
+  }
+
+  // Cache hit: re-requesting the same variant should return the same Function.
+  {
+    auto fn1 = ks.getFunction(device(), "scaled_fn",
+                              {{"SCALE_FACTOR", Attribute(3.0f)}});
+    auto fn2 = ks.getFunction(device(), "scaled_fn",
+                              {{"SCALE_FACTOR", Attribute(3.0f)}});
+    EXPECT_EQ(fn1.impl().get(), fn2.impl().get());
+  }
+}
+
+// KernelSource with named specialization (Metal function constants).
+TEST_P(KernelTest, KernelSourceSpecialization) {
+  if (backend() != Backend::Metal) {
+    GTEST_SKIP() << "Named specialization is Metal-only";
+  }
+
+  const char* src = specializedKernelSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 128;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+  const float kSentinel = -1.0f;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, kSentinel);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i + 1);
+
+  auto inBuf = device().allocateBuffer(safeN * sizeof(float));
+  auto outBuf = device().allocateBuffer(safeN * sizeof(float));
+  inBuf.copy(stream(), input.data(), safeN * sizeof(float));
+
+  LaunchArgs la;
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
+
+  KernelSource ks(src);
+
+  // USE_SCALE = true → multiply by scale factor.
+  {
+    auto fn = ks.getFunction(device(), "specialized_fn",
+                             {{"USE_SCALE", Attribute(true)}});
+    outBuf.copy(stream(), output.data(), safeN * sizeof(float));
+    fn(la, stream())(outBuf, inBuf, 3.0f);
+    outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
+    stream().sync();
+
+    for (size_t i = 0; i < N; i++) {
+      EXPECT_FLOAT_EQ(output[i], static_cast<float>(i + 1) * 3.0f)
+          << "index " << i;
+    }
+  }
+
+  // USE_SCALE = false → passthrough.
+  {
+    auto fn = ks.getFunction(device(), "specialized_fn",
+                             {{"USE_SCALE", Attribute(false)}});
+    std::fill(output.begin(), output.end(), kSentinel);
+    outBuf.copy(stream(), output.data(), safeN * sizeof(float));
+    fn(la, stream())(outBuf, inBuf, 3.0f);
+    outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
+    stream().sync();
+
+    for (size_t i = 0; i < N; i++) {
+      EXPECT_FLOAT_EQ(output[i], static_cast<float>(i + 1)) << "index " << i;
+    }
+  }
 }
 
 GHOST_INSTANTIATE_KERNEL_TESTS(KernelTest);

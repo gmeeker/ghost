@@ -154,6 +154,7 @@ set(GHOST_SOURCES
     src/exception.cpp
     src/function.cpp
     src/image.cpp
+    src/kernel_source.cpp
     src/sha256.c
     src/cpu/cpu_device.cpp
     src/cpu/cpu_function.cpp

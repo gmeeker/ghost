@@ -33,12 +33,19 @@ class FunctionMetal : public Function {
   FunctionMetal(id<MTLLibrary> library, const std::string& name);
   FunctionMetal(id<MTLLibrary> library, const std::string& name,
                 const std::vector<Attribute>& args);
+  FunctionMetal(
+      id<MTLLibrary> library, const std::string& name,
+      const std::vector<std::pair<std::string, Attribute>>& namedConstants);
 #if defined(MAC_OS_VERSION_11_0)
   FunctionMetal(id<MTLLibrary> library, const std::string& name,
                 id<MTLBinaryArchive> archive, bool& dirty);
   FunctionMetal(id<MTLLibrary> library, const std::string& name,
                 const std::vector<Attribute>& args,
                 id<MTLBinaryArchive> archive, bool& dirty);
+  FunctionMetal(
+      id<MTLLibrary> library, const std::string& name,
+      const std::vector<std::pair<std::string, Attribute>>& namedConstants,
+      id<MTLBinaryArchive> archive, bool& dirty);
 #endif
 
   virtual void execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
@@ -70,6 +77,10 @@ class LibraryMetal : public Library {
   virtual ghost::Function specializeFunction(
       const std::string& name,
       const std::vector<Attribute>& args) const override;
+  virtual ghost::Function specializeFunctionNamed(
+      const std::string& name,
+      const std::vector<std::pair<std::string, Attribute>>& constants)
+      const override;
   virtual std::vector<uint8_t> getBinary() const override;
 
  private:

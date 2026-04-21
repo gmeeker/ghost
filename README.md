@@ -159,6 +159,55 @@ auto lib = device.loadLibraryFromFile("kernels.spv");
 auto kernel = lib.lookupFunction("my_kernel");
 ```
 
+#### Kernel Specialization with KernelSource
+
+`KernelSource` stores kernel source text or pre-compiled binary data and
+lazily produces specialized function variants for different constant values.
+Each variant is compiled/specialized once and cached in memory (disk caching
+is handled transparently by `BinaryCache`).
+
+**Text mode** (OpenCL C, Metal Shading Language, CUDA via NVRTC): on Metal,
+constants are resolved by name using function constants (no recompilation).
+On OpenCL and CUDA NVRTC, constants become `-D` preprocessor defines.
+
+**Binary mode** (Metal metallib, CUDA fatbin/PTX, Vulkan SPIR-V): on Metal
+and Vulkan, the library is loaded once and specialized per variant. On CUDA,
+each variant loads a separate CUmodule and applies `setGlobals()` so
+concurrent dispatches with different constants are safe.
+
+```cpp
+#include <ghost/kernel_source.h>
+
+// --- Text mode (OpenCL) ---
+ghost::KernelSource poolSource(R"(
+    __kernel void pool(__global float* out,
+                       __global const float* in) {
+        int id = get_global_id(0);
+        out[id] = in[id * POOL_H * POOL_W]; // from -D defines
+    }
+)");
+
+// First call compiles; subsequent calls with the same constants hit cache.
+auto fn = poolSource.getFunction(device, "pool", {
+    {"POOL_H", ghost::Attribute(2)},
+    {"POOL_W", ghost::Attribute(2)},
+});
+fn(args, stream)(outBuf, inBuf);
+
+// Different constants → different cached variant.
+auto fn3x3 = poolSource.getFunction(device, "pool", {
+    {"POOL_H", ghost::Attribute(3)},
+    {"POOL_W", ghost::Attribute(3)},
+});
+
+// --- Binary mode (CUDA fatbin) ---
+ghost::KernelSource cudaSource(fatbin_data, fatbin_size);
+auto fn = cudaSource.getFunction(device, "pool", {
+    {"POOL_H", ghost::Attribute(2)},
+    {"POOL_W", ghost::Attribute(2)},
+});
+```
+
 ### Buffers
 
 ```cpp
