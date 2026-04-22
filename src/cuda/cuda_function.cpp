@@ -63,7 +63,8 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
   CUresult err;
   size_t local_mem = 0;
   std::vector<void*> params;
-  std::list<ptr<CUtexObject>> textures;
+  typedef ptr<CUtexObject, cu::detail<GhostCUtexObject>> texptr;
+  std::list<texptr> textures;
 
   for (auto i = args.begin(); i != args.end(); ++i) {
     switch (i->type()) {
@@ -164,7 +165,7 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
         resDesc.res.pitch2D.height = cuda->descr.size.y;
         resDesc.res.pitch2D.pitchInBytes = cuda->descr.stride.x;
 
-        ptr<CUtexObject> texObj;
+        texptr texObj;
         checkError(cuTexObjectCreate(&texObj, &resDesc, &texDesc, nullptr));
         textures.push_back(texObj);
         params.push_back(&texObj.value);

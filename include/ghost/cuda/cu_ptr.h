@@ -42,6 +42,21 @@ class detail<CUarray> {
   static CUresult release(CUarray v) { return cuArrayDestroy(v); }
 };
 
+// NOTE: `CUtexObject` is typedef'd to `unsigned long long`, identical to
+// `CUdeviceptr` on 64-bit hosts. Using `cu::ptr<CUtexObject>` here would
+// pick up `detail<unsigned long long>` = `detail<CUdeviceptr>`, whose
+// destructor calls `cuMemFree()` on the texture object handle.
+//
+// Use: ptr<CUtexObject, detail<GhostCUtexObject>>
+
+struct GhostCUtexObject {};
+
+template <>
+class detail<GhostCUtexObject> {
+ public:
+  static CUresult release(CUtexObject v) { return cuTexObjectDestroy(v); }
+};
+
 template <>
 class detail<CUevent> {
  public:
