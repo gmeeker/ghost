@@ -19,25 +19,85 @@
 #include <ghost/exception.h>
 #include <stdlib.h>
 
+#include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace ghost {
+
+/// @brief Identifiers for queryable function (kernel) attributes.
+///
+/// Pass these to Function::getAttribute() or
+/// implementation::Function::getAttribute() to retrieve kernel properties after
+/// compilation.
 enum FunctionAttributeId {
+  /// @brief Static local memory used by the kernel in bytes.
   kFunctionLocalMemory,
+  /// @brief Maximum local memory available to the kernel in bytes.
   kFunctionMaxLocalMemory,
+  /// @brief SIMD/warp width for this kernel.
   kFunctionThreadWidth,
+  /// @brief Maximum threads per work-group for this kernel.
   kFunctionMaxThreads,
+  /// @brief Required work-group size (3-element int array), or zeros if none.
   kFunctionRequiredWorkSize,
+  /// @brief Preferred work-group size multiple.
+  kFunctionPreferredWorkMultiple,
+  /// @brief Number of registers used per thread (CUDA).
+  kFunctionNumRegisters,
+  /// @brief Private memory per work-item in bytes.
+  kFunctionPrivateMemory,
 };
 
+class Digest;
+
+/// @brief Device specific compiler options.
+///
+/// Some fields may be ignored by some devices, loading binary formats may
+/// ignore all of them. 'defines' should be used by all devices, if possible.
+/// 'arguments' is preferred over 'flags' unless you know both are supported.
+class CompilerOptions {
+ public:
+  CompilerOptions() = default;
+
+  explicit CompilerOptions(const std::string& flags) : flags(flags) {}
+
+  /// @brief Build a combined flags string from all fields.
+  ///
+  /// Concatenates flags, arguments, and defines (as -Dkey=value) into a
+  /// single command-line string suitable for backends like OpenCL.
+  std::string buildFlags() const;
+
+  /// @brief Update a digest with all fields for binary cache hashing.
+  void updateDigest(Digest& d) const;
+
+  /// @brief Command line style arguments "-Ipath1 -Ipath2".
+  std::string flags;
+  /// @brief Like 'flags' but some devices require the arguments to be split.
+  std::vector<std::string> arguments;
+  /// @brief Pairs of defines, -Dfirst=second or -Dfirst if second is empty.
+  std::vector<std::pair<std::string, std::string>> defines;
+  /// @brief Header file name and contents for NVRTC only.
+  std::vector<std::pair<std::string, std::string>> headers;
+};
+
+class Encoder;
 class Function;
 class Library;
 class Stream;
 class LaunchArgs;
 
 namespace implementation {
+
+class Buffer;
+
+/// @brief Abstract backend interface for a compiled GPU kernel function.
+///
+/// Backend implementations derive from this class to provide kernel execution
+/// and attribute queries. Not copyable. The variadic operator() converts
+/// arguments to a vector of Attribute and delegates to execute().
 class Function {
  public:
   class Arg {};
@@ -50,11 +110,53 @@ class Function {
 
   Function& operator=(const Function& rhs) = delete;
 
-  virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
+  /// @brief Execute the kernel on a stream with the given arguments.
+  /// @param s The stream to enqueue the kernel on.
+  /// @param launchArgs Global and local work size configuration.
+  /// @param args Kernel arguments as a vector of Attribute.
+  virtual void execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) = 0;
+
+  /// @brief Execute the kernel with workgroup counts read from a GPU buffer.
+  ///
+  /// The default implementation syncs the stream, reads 3x uint32_t from
+  /// the indirect buffer, and calls execute(). Backends with native indirect
+  /// dispatch (Metal) override this for zero-CPU-roundtrip dispatch.
+  ///
+  /// @param s The stream to enqueue on.
+  /// @param indirectBuffer Buffer containing 3x uint32_t workgroup counts.
+  /// @param indirectOffset Byte offset into the indirect buffer.
+  /// @param args Kernel arguments.
+  virtual void executeIndirect(const ghost::Encoder& s,
+                               const std::shared_ptr<Buffer>& indirectBuffer,
+                               size_t indirectOffset,
+                               const std::vector<Attribute>& args);
 
   virtual Attribute getAttribute(FunctionAttributeId what) const = 0;
 
+  /// @brief Subgroup width the compiled pipeline will actually use.
+  ///
+  /// Default implementation returns the value of @c kFunctionThreadWidth from
+  /// @ref getAttribute. Backends where the pipeline can lock a different
+  /// subgroup size (Metal, Vulkan with @c VK_EXT_subgroup_size_control)
+  /// override this.
+  virtual uint32_t preferredSubgroupSize() const;
+
+  /// @brief Helper to narrow a @c size_t dispatch dimension to @c uint32_t.
+  ///
+  /// Backends that pass dispatch dimensions to native APIs taking 32-bit
+  /// integers (CUDA, Vulkan, DirectX) call this at the dispatch boundary.
+  /// @throws std::overflow_error if @p v exceeds @c UINT32_MAX.
+  static uint32_t narrowDim(size_t v, const char* dim) {
+    if (v > std::numeric_limits<uint32_t>::max()) {
+      throw std::overflow_error(std::string("LaunchArgs ") + dim +
+                                " exceeds uint32_t: " + std::to_string(v));
+    }
+    return static_cast<uint32_t>(v);
+  }
+
+  /// @brief Helper to build an Attribute vector from variadic arguments.
+  /// @{
   static void addArgs(std::vector<Attribute>&) {}
 
   template <typename ARG>
@@ -69,8 +171,12 @@ class Function {
     addArgs(args, std::forward<ARGS>(tail)...);
   }
 
+  /// @}
+
+  /// @brief Dispatch the kernel, converting variadic arguments to Attribute
+  /// vector.
   template <typename... ARGS>
-  void operator()(const Stream& s, const LaunchArgs& launchArgs,
+  void operator()(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                   ARGS&&... tail) {
     std::vector<Attribute> args;
     addArgs(args, std::forward<ARGS>(tail)...);
@@ -78,9 +184,15 @@ class Function {
   }
 };
 
+/// @brief Abstract backend interface for a compiled GPU program (library).
+///
+/// Backend implementations derive from this class to provide function lookup
+/// and optional specialization. Not copyable.
 class Library {
  public:
   Library() {}
+
+  explicit Library(bool retainBinary) : _retainBinary(retainBinary) {}
 
   Library(const Library& rhs) = delete;
 
@@ -88,9 +200,68 @@ class Library {
 
   Library& operator=(const Library& rhs) = delete;
 
+  /// @brief Whether this library retains compiled binary data for getBinary().
+  bool retainBinary() const { return _retainBinary; }
+
+ private:
+  bool _retainBinary = false;
+
+ public:
   virtual ghost::Function lookupFunction(const std::string& name) const = 0;
+
+  /// @brief Create a specialized function variant with compile-time constant
+  /// values.
+  ///
+  /// The default implementation throws ghost::unsupported_error. Backends
+  /// that support function constants (e.g., Metal, Vulkan) override this
+  /// method.
+  /// @param name The kernel function name.
+  /// @param args Specialization constant values (positional).
+  /// @return The specialized Function.
+  /// @throws ghost::unsupported_error if not supported by the backend.
   virtual ghost::Function specializeFunction(
       const std::string& name, const std::vector<Attribute>& args) const;
+
+  /// @brief Create a specialized function variant with named constant values.
+  ///
+  /// Like specializeFunction() but constants are identified by name rather
+  /// than position. The default implementation throws
+  /// ghost::unsupported_error. Metal overrides this to use
+  /// MTLFunctionConstantValues::setConstantValue:type:withName:.
+  ///
+  /// @param name The kernel function name.
+  /// @param constants Named constant values.
+  /// @return The specialized Function.
+  /// @throws ghost::unsupported_error if not supported by the backend.
+  virtual ghost::Function specializeFunctionNamed(
+      const std::string& name,
+      const std::vector<std::pair<std::string, Attribute>>& constants) const;
+
+  /// @brief Set named global constants on this library.
+  ///
+  /// The semantics are backend-specific:
+  /// - CUDA: writes to __constant__ device globals via cuModuleGetGlobal +
+  ///   cuMemcpyHtoD.
+  /// - OpenCL: recompiles from source with -D defines (only if the library
+  ///   was loaded from source text; throws unsupported_error for
+  ///   binary/SPIR-V).
+  ///
+  /// Previously looked-up functions may be invalidated by this call (e.g.,
+  /// OpenCL recompilation replaces the program).
+  ///
+  /// @param globals Name/value pairs where names match kernel global variable
+  ///   names or preprocessor define names.
+  /// @throws ghost::unsupported_error if not supported by the backend.
+  virtual void setGlobals(
+      const std::vector<std::pair<std::string, Attribute>>& globals);
+
+  /// @brief Retrieve the compiled binary data from this library.
+  ///
+  /// Returns the backend-specific compiled binary (e.g., cubin for CUDA,
+  /// metallib for Metal, device binary for OpenCL, SPIR-V for Vulkan,
+  /// DXIL for DirectX). Returns empty vector if unsupported.
+  /// @return A vector of bytes containing the compiled binary.
+  virtual std::vector<uint8_t> getBinary() const;
 };
 }  // namespace implementation
 }  // namespace ghost

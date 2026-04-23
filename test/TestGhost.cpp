@@ -25,7 +25,7 @@ void testCUDA() {
   auto output = dev.allocateBuffer(32 * sizeof(float));
   LaunchArgs launch;
   launch.global_size(32).local_size(1);
-  kernel(dev.defaultStream(), launch, input, output, 1.5f);
+  kernel(launch, dev.defaultStream())(input, output, 1.5f);
   dev.defaultStream().sync();
 }
 #endif
@@ -50,7 +50,7 @@ kernel void mult_const_f(device float* out [[buffer(0)]],\n\
   auto output = dev.allocateBuffer(32 * sizeof(float));
   LaunchArgs launch;
   launch.global_size(32).local_size(1);
-  kernel(dev.defaultStream(), launch, input, output, 1.5f);
+  kernel(launch, dev.defaultStream())(input, output, 1.5f);
   dev.defaultStream().sync();
 }
 #endif
@@ -71,7 +71,7 @@ __kernel void mult_const_f(__global float *out, __global const float *A, float s
   auto output = dev.allocateBuffer(32 * sizeof(float));
   LaunchArgs launch;
   launch.global_size(32).local_size(1);
-  kernel(dev.defaultStream(), launch, input, output, 1.5f);
+  kernel(launch, dev.defaultStream())(input, output, 1.5f);
   dev.defaultStream().sync();
 }
 #endif

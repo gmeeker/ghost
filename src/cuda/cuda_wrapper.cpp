@@ -22,6 +22,12 @@
 #include <cuda.h>
 
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #else
 #include <dlfcn.h>
@@ -331,6 +337,11 @@ using f_cuLaunchKernel = CUresult(CUDAAPI*)(
     unsigned int gridDimZ, unsigned int blockDimX, unsigned int blockDimY,
     unsigned int blockDimZ, unsigned int sharedMemBytes, CUstream hStream,
     void** kernelParams, void** extra);
+using f_cuLaunchCooperativeKernel = CUresult(CUDAAPI*)(
+    CUfunction f, unsigned int gridDimX, unsigned int gridDimY,
+    unsigned int gridDimZ, unsigned int blockDimX, unsigned int blockDimY,
+    unsigned int blockDimZ, unsigned int sharedMemBytes, CUstream hStream,
+    void** kernelParams);
 using f_cuFuncSetBlockShape = CUresult(CUDAAPI*)(CUfunction hfunc, int x, int y,
                                                  int z);
 using f_cuFuncSetSharedSize = CUresult(CUDAAPI*)(CUfunction hfunc,
@@ -492,6 +503,20 @@ using f_cuStreamBatchMemOp = CUresult(CUDAAPI*)(
     CUstream stream, unsigned int count, CUstreamBatchMemOpParams* paramArray,
     unsigned int flags);
 
+#if CUDA_VERSION >= 11020
+using f_cuMemPoolCreate = CUresult(CUDAAPI*)(CUmemoryPool* pool,
+                                             const CUmemPoolProps* poolProps);
+using f_cuMemPoolDestroy = CUresult(CUDAAPI*)(CUmemoryPool pool);
+using f_cuMemPoolSetAttribute = CUresult(CUDAAPI*)(CUmemoryPool pool,
+                                                   CUmemPool_attribute attr,
+                                                   void* value);
+using f_cuMemAllocFromPoolAsync = CUresult(CUDAAPI*)(CUdeviceptr* dptr,
+                                                     size_t bytesize,
+                                                     CUmemoryPool pool,
+                                                     CUstream hStream);
+using f_cuMemFreeAsync = CUresult(CUDAAPI*)(CUdeviceptr dptr, CUstream hStream);
+#endif
+
 class LibCUDAWrapper {
  public:
   static LibCUDAWrapper& getInstance() {
@@ -642,6 +667,7 @@ class LibCUDAWrapper {
   f_cuFuncSetCacheConfig m_cuFuncSetCacheConfig = nullptr;
   f_cuFuncSetSharedMemConfig m_cuFuncSetSharedMemConfig = nullptr;
   f_cuLaunchKernel m_cuLaunchKernel = nullptr;
+  f_cuLaunchCooperativeKernel m_cuLaunchCooperativeKernel = nullptr;
   f_cuFuncSetBlockShape m_cuFuncSetBlockShape = nullptr;
   f_cuFuncSetSharedSize m_cuFuncSetSharedSize = nullptr;
   f_cuParamSetSize m_cuParamSetSize = nullptr;
@@ -721,6 +747,14 @@ class LibCUDAWrapper {
   f_cuStreamWaitValue32 m_cuStreamWaitValue32 = nullptr;
   f_cuStreamWriteValue32 m_cuStreamWriteValue32 = nullptr;
   f_cuStreamBatchMemOp m_cuStreamBatchMemOp = nullptr;
+
+#if CUDA_VERSION >= 11020
+  f_cuMemPoolCreate m_cuMemPoolCreate = nullptr;
+  f_cuMemPoolDestroy m_cuMemPoolDestroy = nullptr;
+  f_cuMemPoolSetAttribute m_cuMemPoolSetAttribute = nullptr;
+  f_cuMemAllocFromPoolAsync m_cuMemAllocFromPoolAsync = nullptr;
+  f_cuMemFreeAsync m_cuMemFreeAsync = nullptr;
+#endif
 
  private:
   LibCUDAWrapper() {}
@@ -886,6 +920,7 @@ class LibCUDAWrapper {
     INIT_FUNCTION(cuFuncSetCacheConfig);
     INIT_FUNCTION(cuFuncSetSharedMemConfig);
     INIT_FUNCTION(cuLaunchKernel);
+    INIT_FUNCTION(cuLaunchCooperativeKernel);
     INIT_FUNCTION(cuFuncSetBlockShape);
     INIT_FUNCTION(cuFuncSetSharedSize);
     INIT_FUNCTION(cuParamSetSize);
@@ -960,6 +995,14 @@ class LibCUDAWrapper {
     INIT_FUNCTION(cuStreamWaitValue32);
     INIT_FUNCTION(cuStreamWriteValue32);
     INIT_FUNCTION(cuStreamBatchMemOp);
+
+#if CUDA_VERSION >= 11020
+    INIT_FUNCTION(cuMemPoolCreate);
+    INIT_FUNCTION(cuMemPoolDestroy);
+    INIT_FUNCTION(cuMemPoolSetAttribute);
+    INIT_FUNCTION(cuMemAllocFromPoolAsync);
+    INIT_FUNCTION(cuMemFreeAsync);
+#endif
   }
 
  private:
@@ -2381,6 +2424,21 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f, unsigned int gridDimX,
   }
 }
 
+CUresult CUDAAPI cuLaunchCooperativeKernel(
+    CUfunction f, unsigned int gridDimX, unsigned int gridDimY,
+    unsigned int gridDimZ, unsigned int blockDimX, unsigned int blockDimY,
+    unsigned int blockDimZ, unsigned int sharedMemBytes, CUstream hStream,
+    void** kernelParams) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuLaunchCooperativeKernel;
+  if (func) {
+    return func(f, gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY,
+                blockDimZ, sharedMemBytes, hStream, kernelParams);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
 CUresult CUDAAPI cuFuncSetBlockShape(CUfunction hfunc, int x, int y, int z) {
   auto& lib = LibCUDAWrapper::getInstance();
   auto func = lib.m_cuFuncSetBlockShape;
@@ -3161,5 +3219,60 @@ CUresult CUDAAPI cuStreamBatchMemOp(CUstream stream, unsigned int count,
     return CUDA_ERROR_NOT_INITIALIZED;
   }
 }
+
+#if CUDA_VERSION >= 11020
+CUresult CUDAAPI cuMemPoolCreate(CUmemoryPool* pool,
+                                 const CUmemPoolProps* poolProps) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuMemPoolCreate;
+  if (func) {
+    return func(pool, poolProps);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+CUresult CUDAAPI cuMemPoolDestroy(CUmemoryPool pool) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuMemPoolDestroy;
+  if (func) {
+    return func(pool);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+CUresult CUDAAPI cuMemPoolSetAttribute(CUmemoryPool pool,
+                                       CUmemPool_attribute attr, void* value) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuMemPoolSetAttribute;
+  if (func) {
+    return func(pool, attr, value);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+CUresult CUDAAPI cuMemAllocFromPoolAsync(CUdeviceptr* dptr, size_t bytesize,
+                                         CUmemoryPool pool, CUstream hStream) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuMemAllocFromPoolAsync;
+  if (func) {
+    return func(dptr, bytesize, pool, hStream);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+CUresult CUDAAPI cuMemFreeAsync(CUdeviceptr dptr, CUstream hStream) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuMemFreeAsync;
+  if (func) {
+    return func(dptr, hStream);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+#endif
 
 #endif

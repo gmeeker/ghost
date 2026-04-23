@@ -16,6 +16,8 @@
 #define GHOST_CU_PTR_H
 
 #include <cuda.h>
+#include <ghost/cuda/exception.h>
+#include <ghost/exception.h>
 
 namespace ghost {
 namespace cu {
@@ -25,50 +27,73 @@ class detail {};
 template <>
 class detail<void*> {
  public:
-  static void release(void* v) { cuMemFreeHost(v); }
+  static CUresult release(void* v) { return cuMemFreeHost(v); }
 };
 
 template <>
 class detail<CUdeviceptr> {
  public:
-  static void release(CUdeviceptr v) { cuMemFree(v); }
+  static CUresult release(CUdeviceptr v) { return cuMemFree(v); }
 };
 
 template <>
 class detail<CUarray> {
  public:
-  static void release(CUarray v) { cuArrayDestroy(v); }
+  static CUresult release(CUarray v) { return cuArrayDestroy(v); }
+};
+
+// NOTE: `CUtexObject` is typedef'd to `unsigned long long`, identical to
+// `CUdeviceptr` on 64-bit hosts. Using `cu::ptr<CUtexObject>` here would
+// pick up `detail<unsigned long long>` = `detail<CUdeviceptr>`, whose
+// destructor calls `cuMemFree()` on the texture object handle.
+//
+// Use: ptr<CUtexObject, detail<GhostCUtexObject>>
+
+struct GhostCUtexObject {};
+
+template <>
+class detail<GhostCUtexObject> {
+ public:
+  static CUresult release(CUtexObject v) { return cuTexObjectDestroy(v); }
 };
 
 template <>
 class detail<CUevent> {
  public:
-  static void release(CUevent v) { cuEventDestroy(v); }
+  static CUresult release(CUevent v) { return cuEventDestroy(v); }
 };
 
 template <>
 class detail<CUcontext> {
  public:
-  static void release(CUcontext v) { cuCtxDestroy(v); }
+  static CUresult release(CUcontext v) { return cuCtxDestroy(v); }
 };
 
 template <>
 class detail<CUstream> {
  public:
-  static void release(CUstream v) { cuStreamDestroy(v); }
+  static CUresult release(CUstream v) { return cuStreamDestroy(v); }
 };
 
 template <>
 class detail<CUmodule> {
  public:
-  static void release(CUmodule v) { cuModuleUnload(v); }
+  static CUresult release(CUmodule v) { return cuModuleUnload(v); }
 };
 
 template <>
 class detail<CUlinkState> {
  public:
-  static void release(CUlinkState v) { cuLinkDestroy(v); }
+  static CUresult release(CUlinkState v) { return cuLinkDestroy(v); }
 };
+
+#if CUDA_VERSION >= 11020
+template <>
+class detail<CUmemoryPool> {
+ public:
+  static CUresult release(CUmemoryPool v) { return cuMemPoolDestroy(v); }
+};
+#endif
 
 template <typename TYPE, typename DETAIL = detail<TYPE>>
 class ptr {
@@ -83,13 +108,22 @@ class ptr {
 
   ptr(ptr& v) : value(v.value), _owned(v._owned) { v._owned = false; }
 
+  ptr(ptr&& v) : value(v.value), _owned(v._owned) { v._owned = false; }
+
   ~ptr() { destroy(); }
 
   void destroy() {
-    if (_owned) {
-      DETAIL::release(value);
-      _owned = false;
+    if (_owned && value) {
+      CUresult err = DETAIL::release(value);
+      if (err != CUDA_SUCCESS) {
+        try {
+          throw cu::runtime_error(err);
+        } catch (...) {
+          ghost::detail::stashError(std::current_exception());
+        }
+      }
     }
+    _owned = false;
     value = (TYPE)0;
   }
 
@@ -119,6 +153,14 @@ class ptr {
   }
 
   ptr& operator=(ptr& v) {
+    destroy();
+    value = v.value;
+    _owned = v._owned;
+    v._owned = false;
+    return *this;
+  }
+
+  ptr& operator=(ptr&& v) {
     destroy();
     value = v.value;
     _owned = v._owned;

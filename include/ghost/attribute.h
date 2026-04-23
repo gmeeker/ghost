@@ -15,25 +15,70 @@
 #ifndef GHOST_ATTRIBUTE_H
 #define GHOST_ATTRIBUTE_H
 
+#include <ghost/image.h>
 #include <stdint.h>
 
+#include <memory>
+#include <optional>
 #include <string>
 
 namespace ghost {
+class ArgumentBuffer;
 class Buffer;
 class Image;
 
+namespace implementation {
+class Buffer;
+class Image;
+}  // namespace implementation
+
+/// @brief Type-safe tagged union for passing kernel arguments and querying
+/// device/function metadata.
+///
+/// An Attribute can hold one of several types: string, float, integer, boolean,
+/// buffer, image, argument buffer, or a local memory size. Numeric types
+/// support up to 4-element vectors, stored in both 32-bit and 64-bit
+/// representations for convenient access. Kernel arguments have limited
+/// support for 64-bit types we don't define different data sizes.
+///
+/// Attributes are used in two contexts:
+/// - As kernel arguments passed to Function::operator() and
+///   Function::execute().
+/// - As return values from Device::getAttribute() and Function::getAttribute().
+///
+/// Buffer/Image/ArgumentBuffer attributes hold strong references to the
+/// underlying backend implementations, so they remain valid even if the
+/// caller's wrapper objects go out of scope before the kernel actually
+/// dispatches. This is required for deferred execution paths like
+/// CommandBuffer where the recorded Attribute may outlive the wrapper.
 class Attribute {
  public:
+  /// @brief The type tag identifying which value the Attribute holds.
   enum Type {
+    /// @brief No value set.
     Type_Unknown,
+    /// @brief String value.
     Type_String,
+    /// @brief Floating-point value(s) (up to 4 elements).
     Type_Float,
+    /// @brief Signed integer value(s) (up to 4 elements).
     Type_Int,
+    /// @brief Unsigned integer value(s) (up to 4 elements).
+    Type_UInt,
+    /// @brief Boolean value(s) (up to 4 elements).
     Type_Bool,
+    /// @brief Reference to a Buffer (held via shared_ptr to its impl).
     Type_Buffer,
+    /// @brief Reference to an Image (held via shared_ptr to its impl).
     Type_Image,
-    Type_LocalMem
+    /// @brief Local (shared) memory allocation size in bytes.
+    Type_LocalMem,
+    /// @brief Snapshot of an ArgumentBuffer (host data + GPU buffer ref).
+    Type_ArgumentBuffer,
+    /// @brief Standalone sampler description, used to bind an HLSL @c
+    /// SamplerState / Vulkan @c VK_DESCRIPTOR_TYPE_SAMPLER slot that is
+    /// independent of any image.
+    Type_Sampler
   };
 
  private:
@@ -45,8 +90,6 @@ class Attribute {
     int32_t i[4];
     uint32_t u[4];
     bool b[4];
-    Buffer* buffer;
-    Image* image;
   } _u;
 
   union {
@@ -57,6 +100,15 @@ class Attribute {
   } _u64;
 
   std::string _s;
+
+  // Strong references kept alive for the Attribute's lifetime. These are
+  // what make Buffer/Image/ArgumentBuffer Attributes safe to outlive the
+  // user's wrapper objects (e.g., when recording into a CommandBuffer and
+  // submitting later).
+  std::shared_ptr<implementation::Buffer> _bufferImpl;
+  std::shared_ptr<implementation::Image> _imageImpl;
+  std::shared_ptr<ArgumentBuffer> _argBuffer;
+  std::optional<SamplerDescription> _sampler;
 
   template <typename S, typename T>
   void setT(const S* v, S v0, S* s, T* t, size_t num) {
@@ -77,50 +129,92 @@ class Attribute {
   }
 
  public:
-  Attribute() : _type(Type_Unknown), _count(0) {}
+  /// @brief Construct an empty attribute with Type_Unknown.
+  Attribute();
 
-  Attribute(char* s) : _type(Type_String), _count(1), _s(s) {}
+  ~Attribute();
+  Attribute(const Attribute&);
+  Attribute(Attribute&&) noexcept;
+  Attribute& operator=(const Attribute&);
+  Attribute& operator=(Attribute&&) noexcept;
 
-  Attribute(const char* s) : _type(Type_String), _count(1), _s(s) {}
+  /// @name String constructors
+  /// @{
+  Attribute(char* s);
+  Attribute(const char* s);
+  Attribute(const std::string& s);
+  /// @}
 
-  Attribute(const std::string& s) : _type(Type_String), _count(1), _s(s) {}
+  /// @name Buffer / Image / ArgumentBuffer constructors
+  ///
+  /// Each constructor captures a strong reference to the underlying backend
+  /// object so the Attribute remains valid for the duration of any deferred
+  /// dispatch.
+  /// @{
+  Attribute(Buffer* b);
+  Attribute(Buffer& b);
+  Attribute(Image* i);
+  Attribute(Image& i);
+  /// @brief Construct an image attribute with an explicit sampler description.
+  ///
+  /// Used by @c Image::sample() to create a sampled image attribute.
+  Attribute(Image& i, const SamplerDescription& sampler);
+  /// @brief Construct a standalone sampler attribute.
+  ///
+  /// Used to bind HLSL @c SamplerState / Vulkan standalone sampler slots
+  /// that are independent of any image. For the common case of a single
+  /// image paired with a single sampler, prefer @c Image::sample() ΓÇö that
+  /// path is portable across all backends, whereas standalone samplers
+  /// only map cleanly to Vulkan and DirectX.
+  Attribute(const SamplerDescription& sampler);
+  Attribute(ArgumentBuffer* ab);
+  Attribute(ArgumentBuffer& ab);
 
-  Attribute(Buffer* b) : _type(Type_Buffer), _count(1) { _u.buffer = b; }
+  /// @}
 
-  Attribute(Buffer& b) : _type(Type_Buffer), _count(1) { _u.buffer = &b; }
-
-  Attribute(Image* i) : _type(Type_Image), _count(1) { _u.image = i; }
-
-  Attribute(Image& i) : _type(Type_Image), _count(1) { _u.image = &i; }
-
+  /// @name Scalar and vector numeric constructors
+  /// Construct from 1 to 4 numeric values (float, double, int32_t, uint32_t,
+  /// int64_t, uint64_t, or bool). The type is inferred from the argument type.
+  /// @{
   template <typename T>
-  Attribute(T v) {
+  Attribute(T v) : _type(Type_Unknown), _count(0) {
     set(&v, 1);
   }
 
   template <typename T>
-  Attribute(T v0, T v1) {
+  Attribute(T v0, T v1) : _type(Type_Unknown), _count(0) {
     T v[] = {v0, v1};
     set(v, 2);
   }
 
   template <typename T>
-  Attribute(T v0, T v1, T v2) {
+  Attribute(T v0, T v1, T v2) : _type(Type_Unknown), _count(0) {
     T v[] = {v0, v1, v2};
     set(v, 3);
   }
 
   template <typename T>
-  Attribute(T v0, T v1, T v2, T v3) {
+  Attribute(T v0, T v1, T v2, T v3) : _type(Type_Unknown), _count(0) {
     T v[] = {v0, v1, v2, v3};
     set(v, 4);
   }
 
+  /// @brief Construct from an array of @p num values.
+  /// @tparam T Numeric type (float, double, int32_t, uint32_t, int64_t,
+  /// uint64_t, or bool).
+  /// @param v Pointer to the array of values.
+  /// @param num Number of elements (1–4).
   template <typename T>
-  Attribute(const T* v, size_t num) {
+  Attribute(const T* v, size_t num) : _type(Type_Unknown), _count(0) {
     set(v, num);
   }
 
+  /// @}
+
+  /// @name Typed setters
+  /// Set the attribute value from an array. Each overload sets the type tag
+  /// and stores the values in both 32-bit and 64-bit representations.
+  /// @{
   void set(const float* v, size_t num) {
     _type = Type_Float;
     setT(v, 0.f, _u.f, _u64.f, num);
@@ -137,7 +231,7 @@ class Attribute {
   }
 
   void set(const uint32_t* v, size_t num) {
-    _type = Type_Int;
+    _type = Type_UInt;
     setT(v, (uint32_t)0, _u.u, _u64.u, num);
   }
 
@@ -147,7 +241,7 @@ class Attribute {
   }
 
   void set(const uint64_t* v, size_t num) {
-    _type = Type_Int;
+    _type = Type_UInt;
     setT(v, (uint64_t)0, _u64.u, _u.u, num);
   }
 
@@ -156,6 +250,11 @@ class Attribute {
     setT(v, false, _u.b, _u64.b, num);
   }
 
+  /// @}
+
+  /// @brief Set this attribute to represent a local memory allocation.
+  /// @param bytes Size of local (shared) memory in bytes.
+  /// @return Reference to this attribute for chaining.
   Attribute& localMem(uint32_t bytes) {
     _type = Type_LocalMem;
     _count = 1;
@@ -163,12 +262,20 @@ class Attribute {
     return *this;
   }
 
+  /// @brief Check whether the attribute holds a value.
+  /// @return @c true if the type is not Type_Unknown.
   bool valid() const { return _type != Type_Unknown; }
 
+  /// @brief Get the type tag.
   Type type() const { return _type; }
 
+  /// @brief Get the number of elements (1–4 for numeric types).
   size_t count() const { return _count; }
 
+  /// @name Value accessors
+  /// Retrieve the stored value in the requested type. The caller must ensure
+  /// the attribute's type matches the accessor used.
+  /// @{
   const std::string& asString() const { return _s; }
 
   const float asFloat() const { return _u.f[0]; }
@@ -199,10 +306,97 @@ class Attribute {
 
   const bool* boolArray() const { return _u.b; }
 
-  Buffer* asBuffer() const { return _u.buffer; }
+  /// @brief Strong reference to the underlying buffer implementation.
+  ///
+  /// Valid for the lifetime of this Attribute. Backends should use this
+  /// instead of dereferencing the user's wrapper, which may have already
+  /// been destroyed in deferred execution paths.
+  const std::shared_ptr<implementation::Buffer>& bufferImpl() const {
+    return _bufferImpl;
+  }
 
-  Image* asImage() const { return _u.image; }
+  /// @brief Strong reference to the underlying image implementation.
+  const std::shared_ptr<implementation::Image>& imageImpl() const {
+    return _imageImpl;
+  }
+
+  /// @brief Snapshot of the ArgumentBuffer captured at construction time.
+  ///
+  /// Returns a pointer to a heap-allocated copy of the user's
+  /// ArgumentBuffer. The host-side data is snapshotted; the GPU buffer
+  /// (if any) shares its impl with the original via shared_ptr.
+  ArgumentBuffer* argumentBuffer() const { return _argBuffer.get(); }
+
+  /// @brief Sampler description attached to an image attribute.
+  ///
+  /// Present only when the attribute was created via @c Image::sample().
+  /// Backends that create host-side sampler/texture objects (CUDA, Vulkan,
+  /// DirectX) use this to configure filtering and addressing. Backends
+  /// where samplers are declared kernel-side (OpenCL, Metal) may ignore it.
+  const std::optional<SamplerDescription>& sampler() const { return _sampler; }
+
+  /// @}
+
+  /// @name Sampler fluent modifiers
+  ///
+  /// These methods modify the sampler description on an image attribute
+  /// created via @c Image::sample(). They return @c *this for chaining:
+  /// @code
+  /// fn(stream, launch, image.sample().linear().clamp());
+  /// @endcode
+  /// @{
+
+  /// @brief Set the filter mode to linear interpolation.
+  Attribute& linear() {
+    if (_sampler) _sampler->filter = FilterMode::Linear;
+    return *this;
+  }
+
+  /// @brief Set the filter mode to nearest (point) sampling.
+  Attribute& nearest() {
+    if (_sampler) _sampler->filter = FilterMode::Nearest;
+    return *this;
+  }
+
+  /// @brief Set the address mode to clamp.
+  Attribute& clamp() {
+    if (_sampler) _sampler->address = AddressMode::Clamp;
+    return *this;
+  }
+
+  /// @brief Set the address mode to wrap (repeat).
+  Attribute& wrap() {
+    if (_sampler) _sampler->address = AddressMode::Wrap;
+    return *this;
+  }
+
+  /// @brief Set the address mode to mirror.
+  Attribute& mirror() {
+    if (_sampler) _sampler->address = AddressMode::Mirror;
+    return *this;
+  }
+
+  /// @brief Enable or disable normalized coordinates.
+  Attribute& normalized(bool enable = true) {
+    if (_sampler) _sampler->normalizedCoords = enable;
+    return *this;
+  }
+
+  /// @}
 };
+
+/// @brief Construct a standalone sampler argument with default settings.
+///
+/// Chain fluent modifiers to configure it, e.g.
+/// @code
+/// fn(stream, launch, tex, ghost::sampler().linear().wrap(),
+///                          ghost::sampler().nearest().clamp());
+/// @endcode
+/// Portable across Vulkan and DirectX (standalone sampler bindings). For
+/// OpenCL and Metal, samplers are declared kernel-side and this argument
+/// is ignored. For kernels with a 1:1 image/sampler pairing, prefer
+/// @c Image::sample() which is portable to all backends including CUDA.
+Attribute sampler();
 
 }  // namespace ghost
 

@@ -14,6 +14,7 @@
 
 #if WITH_CUDA
 
+#include <ghost/argument_buffer.h>
 #include <ghost/cuda/device.h>
 #include <ghost/cuda/exception.h>
 #include <ghost/cuda/impl_device.h>
@@ -38,7 +39,10 @@ namespace cu {
 template <>
 class detail<nvrtcProgram> {
  public:
-  static void release(nvrtcProgram v) { nvrtcDestroyProgram(&v); }
+  static CUresult release(nvrtcProgram v) {
+    nvrtcResult err = nvrtcDestroyProgram(&v);
+    return (err == NVRTC_SUCCESS) ? CUDA_SUCCESS : CUDA_ERROR_UNKNOWN;
+  }
 };
 }  // namespace cu
 
@@ -53,12 +57,14 @@ using namespace cu;
 FunctionCUDA::FunctionCUDA(const DeviceCUDA& dev, CUfunction k)
     : kernel(k), _dev(dev) {}
 
-void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
+void FunctionCUDA::execute(const ghost::Encoder& s,
+                           const LaunchArgs& launchArgs,
                            const std::vector<Attribute>& args) {
   CUresult err;
-  size_t local_mem;
+  size_t local_mem = 0;
   std::vector<void*> params;
-  std::list<ptr<CUtexObject>> textures;
+  typedef ptr<CUtexObject, cu::detail<GhostCUtexObject>> texptr;
+  std::list<texptr> textures;
 
   for (auto i = args.begin(); i != args.end(); ++i) {
     switch (i->type()) {
@@ -72,23 +78,50 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
         params.push_back(const_cast<int32_t*>(v));
         break;
       }
+      case Attribute::Type_UInt: {
+        const uint32_t* v = i->uintArray();
+        params.push_back(const_cast<uint32_t*>(v));
+        break;
+      }
       case Attribute::Type_Bool: {
         const bool* v = i->boolArray();
         params.push_back(const_cast<bool*>(v));
         break;
       }
       case Attribute::Type_Buffer: {
-        auto cuda = static_cast<implementation::BufferCUDA*>(
-            i->asBuffer()->impl().get());
+        auto cuda =
+            static_cast<implementation::BufferCUDA*>(i->bufferImpl().get());
         params.push_back(&cuda->mem.value);
         break;
       }
       case Attribute::Type_Image: {
         auto cuda =
-            static_cast<implementation::ImageCUDA*>(i->asImage()->impl().get());
+            static_cast<implementation::ImageCUDA*>(i->imageImpl().get());
         CUaddress_mode addressMode = CU_TR_ADDRESS_MODE_CLAMP;
-        CUfilter_mode filterMode = CU_TR_FILTER_MODE_LINEAR;
+        CUfilter_mode filterMode = CU_TR_FILTER_MODE_POINT;
         bool normalizedCoords = false;
+        if (auto& s = i->sampler()) {
+          switch (s->filter) {
+            case FilterMode::Nearest:
+              filterMode = CU_TR_FILTER_MODE_POINT;
+              break;
+            case FilterMode::Linear:
+              filterMode = CU_TR_FILTER_MODE_LINEAR;
+              break;
+          }
+          switch (s->address) {
+            case AddressMode::Clamp:
+              addressMode = CU_TR_ADDRESS_MODE_CLAMP;
+              break;
+            case AddressMode::Wrap:
+              addressMode = CU_TR_ADDRESS_MODE_WRAP;
+              break;
+            case AddressMode::Mirror:
+              addressMode = CU_TR_ADDRESS_MODE_MIRROR;
+              break;
+          }
+          normalizedCoords = s->normalizedCoords;
+        }
         CUDA_RESOURCE_DESC resDesc;
         CUDA_TEXTURE_DESC texDesc;
 
@@ -132,10 +165,21 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
         resDesc.res.pitch2D.height = cuda->descr.size.y;
         resDesc.res.pitch2D.pitchInBytes = cuda->descr.stride.x;
 
-        ptr<CUtexObject> texObj;
+        texptr texObj;
         checkError(cuTexObjectCreate(&texObj, &resDesc, &texDesc, nullptr));
         textures.push_back(texObj);
         params.push_back(&texObj.value);
+        break;
+      }
+      case Attribute::Type_ArgumentBuffer: {
+        auto ab = i->argumentBuffer();
+        if (ab->isStruct()) {
+          params.push_back(const_cast<void*>(ab->data()));
+        } else {
+          auto cuda =
+              static_cast<implementation::BufferCUDA*>(ab->bufferImpl().get());
+          params.push_back(&cuda->mem.value);
+        }
         break;
       }
       case Attribute::Type_LocalMem:
@@ -146,15 +190,36 @@ void FunctionCUDA::execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
     }
   }
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
-  unsigned int global_size[3];
+  if (launchArgs.requiredSubgroupSize() != 0) {
+    int warpSize = 0;
+    checkError(cuDeviceGetAttribute(&warpSize, CU_DEVICE_ATTRIBUTE_WARP_SIZE,
+                                    _dev.device));
+    if ((int)launchArgs.requiredSubgroupSize() != warpSize) {
+      throw std::invalid_argument(
+          "CUDA: requiredSubgroupSize must equal warp size (" +
+          std::to_string(warpSize) + ")");
+    }
+  }
+  static const char* kDimNames[3] = {"global_size[0]", "global_size[1]",
+                                     "global_size[2]"};
+  static const char* kLocalNames[3] = {"local_size[0]", "local_size[1]",
+                                       "local_size[2]"};
+  unsigned int grid_size[3];
   unsigned int local_size[3];
   for (size_t i = 0; i < 3; i++) {
-    global_size[i] = launchArgs.global_size()[i];
-    local_size[i] = launchArgs.local_size()[i];
+    grid_size[i] = narrowDim(launchArgs.count(i), kDimNames[i]);
+    local_size[i] = narrowDim(launchArgs.local_size()[i], kLocalNames[i]);
   }
-  err = cuLaunchKernel(kernel, global_size[0], global_size[1], global_size[2],
-                       local_size[0], local_size[1], local_size[2], local_mem,
-                       stream_impl->queue, &params[0], nullptr);
+  if (launchArgs.is_cooperative()) {
+    err = cuLaunchCooperativeKernel(kernel, grid_size[0], grid_size[1],
+                                    grid_size[2], local_size[0], local_size[1],
+                                    local_size[2], local_mem,
+                                    stream_impl->queue, &params[0]);
+  } else {
+    err = cuLaunchKernel(kernel, grid_size[0], grid_size[1], grid_size[2],
+                         local_size[0], local_size[1], local_size[2], local_mem,
+                         stream_impl->queue, &params[0], nullptr);
+  }
   checkError(err);
 }
 
@@ -186,32 +251,89 @@ Attribute FunctionCUDA::getAttribute(FunctionAttributeId what) const {
     }
     case kFunctionRequiredWorkSize:
       return Attribute(0, 0, 0);
+    case kFunctionPreferredWorkMultiple: {
+      int v;
+      checkError(
+          cuDeviceGetAttribute(&v, CU_DEVICE_ATTRIBUTE_WARP_SIZE, _dev.device));
+      return v;
+    }
+    case kFunctionNumRegisters: {
+      int v;
+      checkError(cuFuncGetAttribute(&v, CU_FUNC_ATTRIBUTE_NUM_REGS, kernel));
+      return v;
+    }
+    case kFunctionPrivateMemory: {
+      int v;
+      checkError(
+          cuFuncGetAttribute(&v, CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, kernel));
+      return v;
+    }
     default:
       return Attribute();
   }
 }
 
-LibraryCUDA::LibraryCUDA(const DeviceCUDA& dev) : program(0), _dev(dev) {}
+uint32_t FunctionCUDA::preferredSubgroupSize() const {
+  int v = 0;
+  checkError(
+      cuDeviceGetAttribute(&v, CU_DEVICE_ATTRIBUTE_WARP_SIZE, _dev.device));
+  return (uint32_t)v;
+}
+
+LibraryCUDA::LibraryCUDA(const DeviceCUDA& dev, bool retainBinary)
+    : Library(retainBinary), program(0), _dev(dev) {}
 
 void LibraryCUDA::loadFromText(const std::string& text,
-                               const std::string& options) {
+                               const CompilerOptions& options) {
 #if WITH_CUDA_NVRTC
   try {
     loadFromCache(text.c_str(), text.size(), options);
   } catch (...) {
   }
   if (program.get() != nullptr) return;
+
+  // Build header arrays from options.headers for NVRTC.
+  std::vector<const char*> headerSources, headerNames;
+  for (auto& h : options.headers) {
+    headerNames.push_back(h.first.c_str());
+    headerSources.push_back(h.second.c_str());
+  }
   ptr<nvrtcProgram> prog;
-  checkNVRTCError(
-      nvrtcCreateProgram(&prog, text.c_str(), "ghost.cu", 0, NULL, NULL));
+  checkNVRTCError(nvrtcCreateProgram(
+      &prog, text.c_str(), "ghost.cu", (int)headerNames.size(),
+      headerSources.empty() ? NULL : &headerSources[0],
+      headerNames.empty() ? NULL : &headerNames[0]));
+
+  // Build compiler options: hardcoded paths + gpu arch + user arguments +
+  // defines.
+  std::vector<std::string> optStrings;
+#ifdef WITH_CUDA_NVRTC_INCLUDE_PATH
+  optStrings.push_back("-I" WITH_CUDA_NVRTC_INCLUDE_PATH);
+#endif
+#ifdef WITH_CUDA_NVRTC_STD_INCLUDE_PATH
+  optStrings.push_back("-I" WITH_CUDA_NVRTC_STD_INCLUDE_PATH);
+#endif
   std::stringstream gpu_arch;
   // If we want PTX:
   // gpu_arch << "--gpu-architecture=compute_" << _dev.computeCapability.major
   //          << "0";
   gpu_arch << "--gpu-architecture=sm_" << _dev.computeCapability.major
            << _dev.computeCapability.minor;
-  const char* opts[] = {gpu_arch.str().c_str()};
-  nvrtcResult compileResult = nvrtcCompileProgram(prog, 1, opts);
+  optStrings.push_back(gpu_arch.str());
+  for (auto& arg : options.arguments) {
+    optStrings.push_back(arg);
+  }
+  for (auto& def : options.defines) {
+    std::string d = "-D" + def.first;
+    if (!def.second.empty()) d += "=" + def.second;
+    optStrings.push_back(d);
+  }
+  std::vector<const char*> opts;
+  for (auto& s : optStrings) {
+    opts.push_back(s.c_str());
+  }
+  nvrtcResult compileResult =
+      nvrtcCompileProgram(prog, (int)opts.size(), opts.data());
   size_t logSize;
   checkNVRTCError(nvrtcGetProgramLogSize(prog, &logSize));
   std::vector<char> log(logSize);
@@ -234,6 +356,10 @@ void LibraryCUDA::loadFromText(const std::string& text,
   // Load resulting cuBin into module
   loadFromBinary(&cuOut[0]);
 
+  if (retainBinary()) {
+    _binaryData.assign(cuOut.begin(), cuOut.end());
+  }
+
   try {
     saveToCache(&cuOut[0], cuOut.size(), text.c_str(), text.size(), options);
   } catch (...) {
@@ -246,19 +372,19 @@ void LibraryCUDA::loadFromText(const std::string& text,
 }
 
 void LibraryCUDA::loadFromData(const void* data, size_t len,
-                               const std::string& options_) {
+                               const CompilerOptions& options) {
   CUjitInputType inputType = CU_JIT_INPUT_FATBINARY;
   if (len == 0) {
     len = strlen(reinterpret_cast<const char*>(data));
     inputType = CU_JIT_INPUT_PTX;
   }
   try {
-    loadFromCache(data, len, options_);
+    loadFromCache(data, len, options);
   } catch (...) {
   }
   if (program.get() != nullptr) return;
 
-  CUjit_option options[6];
+  CUjit_option jitOptions[6];
   void* optionVals[6];
   float walltime;
   std::vector<char> error_log, info_log;
@@ -270,27 +396,27 @@ void LibraryCUDA::loadFromData(const void* data, size_t len,
 
   // Setup linker options
   // Return walltime from JIT compilation
-  options[0] = CU_JIT_WALL_TIME;
+  jitOptions[0] = CU_JIT_WALL_TIME;
   optionVals[0] = (void*)&walltime;
   // Pass a buffer for info messages
-  options[1] = CU_JIT_INFO_LOG_BUFFER;
+  jitOptions[1] = CU_JIT_INFO_LOG_BUFFER;
   optionVals[1] = (void*)&info_log[0];
   // Pass the size of the info buffer
-  options[2] = CU_JIT_INFO_LOG_BUFFER_SIZE_BYTES;
+  jitOptions[2] = CU_JIT_INFO_LOG_BUFFER_SIZE_BYTES;
   optionVals[2] = (void*)info_log.size();
   // Pass a buffer for error message
-  options[3] = CU_JIT_ERROR_LOG_BUFFER;
+  jitOptions[3] = CU_JIT_ERROR_LOG_BUFFER;
   optionVals[3] = (void*)&error_log[0];
   // Pass the size of the error buffer
-  options[4] = CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES;
+  jitOptions[4] = CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES;
   optionVals[4] = (void*)error_log.size();
   // Make the linker verbose
-  options[5] = CU_JIT_LOG_VERBOSE;
+  jitOptions[5] = CU_JIT_LOG_VERBOSE;
   optionVals[5] = (void*)1;
 
   // Create a pending linker invocation
   cu::ptr<CUlinkState> lState;
-  checkError(cuLinkCreate(6, options, optionVals, &lState));
+  checkError(cuLinkCreate(6, jitOptions, optionVals, &lState));
 
   myErr = cuLinkAddData(lState, inputType, const_cast<void*>(data), len, 0, 0,
                         0, 0);
@@ -310,7 +436,7 @@ void LibraryCUDA::loadFromData(const void* data, size_t len,
   loadFromBinary(cuOut);
 
   try {
-    saveToCache(cuOut, outSize, data, len, options_);
+    saveToCache(cuOut, outSize, data, len, options);
   } catch (...) {
   }
 }
@@ -322,7 +448,7 @@ void LibraryCUDA::loadFromBinary(void* binary) {
 }
 
 void LibraryCUDA::loadFromCache(const void* data, size_t length,
-                                const std::string& options) {
+                                const CompilerOptions& options) {
   std::vector<std::vector<unsigned char>> binaries;
   std::vector<size_t> sizes;
   if (_dev.binaryCache().loadBinaries(binaries, sizes, _dev, data, length,
@@ -332,7 +458,8 @@ void LibraryCUDA::loadFromCache(const void* data, size_t length,
 }
 
 void LibraryCUDA::saveToCache(void* binary, size_t binarySize, const void* data,
-                              size_t length, const std::string& options) const {
+                              size_t length,
+                              const CompilerOptions& options) const {
   if (!_dev.binaryCache().isEnabled()) return;
   std::vector<size_t> sizes = {binarySize};
   std::vector<unsigned char*> binaries = {
@@ -349,6 +476,56 @@ ghost::Function LibraryCUDA::lookupFunction(const std::string& name) const {
   auto f = std::make_shared<FunctionCUDA>(_dev, kernel);
   return ghost::Function(f);
 }
+
+void LibraryCUDA::setGlobals(
+    const std::vector<std::pair<std::string, Attribute>>& globals) {
+  for (auto& g : globals) {
+    CUdeviceptr dptr;
+    size_t dsize;
+    checkError(
+        cuModuleGetGlobal(&dptr, &dsize, program.get(), g.first.c_str()));
+    auto& attr = g.second;
+    switch (attr.type()) {
+      case Attribute::Type_Float: {
+        size_t sz = sizeof(float) * attr.count();
+        if (sz > dsize)
+          throw std::runtime_error("CUDA global '" + g.first +
+                                   "': size mismatch");
+        checkError(cuMemcpyHtoD(dptr, attr.floatArray(), sz));
+        break;
+      }
+      case Attribute::Type_Int: {
+        size_t sz = sizeof(int32_t) * attr.count();
+        if (sz > dsize)
+          throw std::runtime_error("CUDA global '" + g.first +
+                                   "': size mismatch");
+        checkError(cuMemcpyHtoD(dptr, attr.intArray(), sz));
+        break;
+      }
+      case Attribute::Type_UInt: {
+        size_t sz = sizeof(uint32_t) * attr.count();
+        if (sz > dsize)
+          throw std::runtime_error("CUDA global '" + g.first +
+                                   "': size mismatch");
+        checkError(cuMemcpyHtoD(dptr, attr.uintArray(), sz));
+        break;
+      }
+      case Attribute::Type_Bool: {
+        // CUDA __constant__ bool may be 1 byte; copy as-is
+        size_t sz = sizeof(bool) * attr.count();
+        if (sz > dsize)
+          throw std::runtime_error("CUDA global '" + g.first +
+                                   "': size mismatch");
+        checkError(cuMemcpyHtoD(dptr, attr.boolArray(), sz));
+        break;
+      }
+      default:
+        throw std::runtime_error("CUDA setGlobals: unsupported attribute type");
+    }
+  }
+}
+
+std::vector<uint8_t> LibraryCUDA::getBinary() const { return _binaryData; }
 }  // namespace implementation
 }  // namespace ghost
 #endif

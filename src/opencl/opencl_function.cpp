@@ -14,7 +14,9 @@
 
 #if WITH_OPENCL
 
+#include <ghost/argument_buffer.h>
 #include <ghost/digest.h>
+#include <ghost/exception.h>
 #include <ghost/function.h>
 #include <ghost/io.h>
 #include <ghost/opencl/device.h>
@@ -33,7 +35,7 @@ FunctionOpenCL::FunctionOpenCL(const DeviceOpenCL& dev,
                                opencl::ptr<cl_kernel> k)
     : kernel(k), _dev(dev) {}
 
-void FunctionOpenCL::execute(const ghost::Stream& s,
+void FunctionOpenCL::execute(const ghost::Encoder& s,
                              const LaunchArgs& launchArgs,
                              const std::vector<Attribute>& args) {
   cl_int err;
@@ -58,6 +60,15 @@ void FunctionOpenCL::execute(const ghost::Stream& s,
         checkError(err);
         break;
       }
+      case Attribute::Type_UInt: {
+        const uint32_t* v = i->uintArray();
+        size_t count = i->count();
+        // cl_uint3 is the same as cl_uint4
+        if (count == 3) count = 4;
+        err = clSetKernelArg(kernel, idx++, sizeof(v[0]) * count, v);
+        checkError(err);
+        break;
+      }
       case Attribute::Type_Bool: {
         const bool* v = i->boolArray();
         size_t count = i->count();
@@ -68,18 +79,31 @@ void FunctionOpenCL::execute(const ghost::Stream& s,
         break;
       }
       case Attribute::Type_Buffer: {
-        auto opencl = static_cast<implementation::BufferOpenCL*>(
-            i->asBuffer()->impl().get());
+        auto opencl =
+            static_cast<implementation::BufferOpenCL*>(i->bufferImpl().get());
         cl_mem v = opencl->mem.get();
         err = clSetKernelArg(kernel, idx++, sizeof(v), &v);
         checkError(err);
         break;
       }
       case Attribute::Type_Image: {
-        auto opencl = static_cast<implementation::ImageOpenCL*>(
-            i->asImage()->impl().get());
+        auto opencl =
+            static_cast<implementation::ImageOpenCL*>(i->imageImpl().get());
         cl_mem v = opencl->mem.get();
         err = clSetKernelArg(kernel, idx++, sizeof(v), &v);
+        checkError(err);
+        break;
+      }
+      case Attribute::Type_ArgumentBuffer: {
+        auto ab = i->argumentBuffer();
+        if (ab->isStruct()) {
+          err = clSetKernelArg(kernel, idx++, ab->size(), ab->data());
+        } else {
+          auto ocl = static_cast<implementation::BufferOpenCL*>(
+              ab->bufferImpl().get());
+          cl_mem v = ocl->mem.get();
+          err = clSetKernelArg(kernel, idx++, sizeof(v), &v);
+        }
         checkError(err);
         break;
       }
@@ -92,8 +116,16 @@ void FunctionOpenCL::execute(const ghost::Stream& s,
     }
   }
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
-  opencl::ptr<cl_event> outEvent;
-  std::vector<cl_event> waitEvents;
+  if (launchArgs.requiredSubgroupSize() != 0) {
+    uint32_t actual = preferredSubgroupSize();
+    if (launchArgs.requiredSubgroupSize() != actual) {
+      throw std::invalid_argument(
+          "OpenCL: requiredSubgroupSize (" +
+          std::to_string(launchArgs.requiredSubgroupSize()) +
+          ") does not match kernel subgroup width (" + std::to_string(actual) +
+          ")");
+    }
+  }
   size_t global_size[3];
   size_t local_size[3];
   for (size_t i = 0; i < 3; i++) {
@@ -101,10 +133,11 @@ void FunctionOpenCL::execute(const ghost::Stream& s,
     local_size[i] = launchArgs.local_size()[i];
   }
   err = clEnqueueNDRangeKernel(
-      stream_impl->queue, kernel, launchArgs.dims(), NULL, global_size,
-      launchArgs.is_local_defined() ? local_size : nullptr, waitEvents.size(),
-      waitEvents.empty() ? nullptr : &waitEvents[0], &outEvent);
+      stream_impl->queue, kernel, (cl_uint)launchArgs.dims(), NULL, global_size,
+      launchArgs.is_local_defined() ? local_size : nullptr,
+      stream_impl->events.size(), stream_impl->events, stream_impl->event());
   checkError(err);
+  stream_impl->addEvent();
 }
 
 Attribute FunctionOpenCL::getAttribute(FunctionAttributeId what) const {
@@ -151,9 +184,44 @@ Attribute FunctionOpenCL::getAttribute(FunctionAttributeId what) const {
       return Attribute((uint64_t)workSize[0], (uint64_t)workSize[1],
                        (uint64_t)workSize[2]);
     }
+    case kFunctionPreferredWorkMultiple: {
+      size_t v;
+      checkError(clGetKernelWorkGroupInfo(
+          kernel, devices[0], CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE,
+          sizeof(v), &v, nullptr));
+      return (uint64_t)v;
+    }
+    case kFunctionNumRegisters:
+      return 0;
+    case kFunctionPrivateMemory: {
+      cl_ulong bytes;
+      checkError(clGetKernelWorkGroupInfo(kernel, devices[0],
+                                          CL_KERNEL_PRIVATE_MEM_SIZE,
+                                          sizeof(bytes), &bytes, nullptr));
+      return (uint64_t)bytes;
+    }
     default:
       return Attribute();
   }
+}
+
+uint32_t FunctionOpenCL::preferredSubgroupSize() const {
+  std::vector<cl_device_id> devices;
+  cl_int err;
+  size_t numDevs;
+  err =
+      clGetContextInfo(_dev.context, CL_CONTEXT_DEVICES, 0, nullptr, &numDevs);
+  checkError(err);
+  numDevs /= sizeof(cl_device_id);
+  devices.resize(numDevs);
+  err = clGetContextInfo(_dev.context, CL_CONTEXT_DEVICES,
+                         numDevs * sizeof(cl_device_id), &devices[0], nullptr);
+  checkError(err);
+  size_t v = 0;
+  checkError(clGetKernelWorkGroupInfo(
+      kernel, devices[0], CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE,
+      sizeof(v), &v, nullptr));
+  return (uint32_t)v;
 }
 
 LibraryOpenCL::LibraryOpenCL(const DeviceOpenCL& dev) : program(0), _dev(dev) {}
@@ -186,7 +254,7 @@ void LibraryOpenCL::checkBuildLog(cl_int err0) {
 }
 
 void LibraryOpenCL::loadFromText(const std::string& text,
-                                 const std::string& options) {
+                                 const CompilerOptions& options) {
   opencl::ptr<cl_context> context = _dev.context;
   cl_int err;
   try {
@@ -198,7 +266,8 @@ void LibraryOpenCL::loadFromText(const std::string& text,
   program = opencl::ptr<cl_program>(
       clCreateProgramWithSource(context, 1, &progtext, nullptr, &err));
   checkError(err);
-  err = clBuildProgram(program, 0, nullptr, options.c_str(), nullptr, nullptr);
+  std::string flags = options.buildFlags();
+  err = clBuildProgram(program, 0, nullptr, flags.c_str(), nullptr, nullptr);
   checkBuildLog(err);
   try {
     saveToCache(text.c_str(), text.size(), options);
@@ -206,38 +275,58 @@ void LibraryOpenCL::loadFromText(const std::string& text,
   }
 }
 
+// SPIR-V magic number (first 4 bytes of any SPIR-V module).
+static const uint32_t kSpirvMagic = 0x07230203;
+
+static bool isSpirvData(const void* data, size_t len) {
+  if (len < 4) return false;
+  uint32_t magic;
+  memcpy(&magic, data, sizeof(magic));
+  return magic == kSpirvMagic;
+}
+
 void LibraryOpenCL::loadFromData(const void* data, size_t len,
-                                 const std::string& options) {
-#if !defined(CL_VERSION_3_0)
-  (void)data;
-  (void)len;
-  (void)options;
-  checkError(CL_COMPILER_NOT_AVAILABLE);
-#else
-  opencl::ptr<cl_context> context = _dev.context;
-  if (!_dev.checkExtension("cl_khr_spir"))
-    checkError(CL_COMPILER_NOT_AVAILABLE);
-  cl_int err;
+                                 const CompilerOptions& options) {
   try {
     loadFromCache(data, len, options);
   } catch (...) {
   }
   if (program.get() != nullptr) return;
-  program =
-      opencl::ptr<cl_program>(clCreateProgramWithIL(context, data, len, &err));
-  checkError(err);
-  err = clBuildProgram(program, 0, nullptr, options.c_str(), nullptr, nullptr);
-  checkBuildLog(err);
-  try {
-    saveToCache(data, len, options);
-  } catch (...) {
-  }
+
+  if (isSpirvData(data, len)) {
+    // SPIR-V / SPIR-IL — use clCreateProgramWithIL (requires CL 2.1+).
+#if defined(CL_VERSION_2_0)
+    if (_dev.checkExtension("cl_khr_spir")) {
+      cl_int err;
+      program = opencl::ptr<cl_program>(
+          clCreateProgramWithIL(_dev.context, data, len, &err));
+      checkError(err);
+      std::string flags = options.buildFlags();
+      err =
+          clBuildProgram(program, 0, nullptr, flags.c_str(), nullptr, nullptr);
+      checkBuildLog(err);
+      try {
+        saveToCache(data, len, options);
+      } catch (...) {
+      }
+      return;
+    }
 #endif
+    checkError(CL_COMPILER_NOT_AVAILABLE);
+  } else {
+    // Device-specific binary — use clCreateProgramWithBinary.
+    auto bytes = reinterpret_cast<const unsigned char*>(data);
+    loadFromBinaries(&len, &bytes, options);
+    try {
+      saveToCache(data, len, options);
+    } catch (...) {
+    }
+  }
 }
 
 void LibraryOpenCL::loadFromBinaries(const size_t* lengths,
                                      const unsigned char** binaries,
-                                     const std::string& options) {
+                                     const CompilerOptions& options) {
   opencl::ptr<cl_context> context = _dev.context;
   cl_int err;
   auto devices = _dev.getDevices();
@@ -245,12 +334,13 @@ void LibraryOpenCL::loadFromBinaries(const size_t* lengths,
       clCreateProgramWithBinary(context, (cl_uint)devices.size(), &devices[0],
                                 lengths, binaries, nullptr, &err));
   checkError(err);
-  err = clBuildProgram(program, 0, nullptr, options.c_str(), nullptr, nullptr);
+  std::string flags = options.buildFlags();
+  err = clBuildProgram(program, 0, nullptr, flags.c_str(), nullptr, nullptr);
   checkBuildLog(err);
 }
 
 void LibraryOpenCL::loadFromCache(const void* data, size_t length,
-                                  const std::string& options) {
+                                  const CompilerOptions& options) {
   std::vector<std::vector<unsigned char>> binaries;
   std::vector<size_t> sizes;
   if (_dev.binaryCache().loadBinaries(binaries, sizes, _dev, data, length,
@@ -263,7 +353,7 @@ void LibraryOpenCL::loadFromCache(const void* data, size_t length,
 }
 
 void LibraryOpenCL::saveToCache(const void* data, size_t length,
-                                const std::string& options) const {
+                                const CompilerOptions& options) const {
   if (!_dev.binaryCache().isEnabled()) return;
   auto devices = _dev.getDevices();
   size_t i, numDevs;
@@ -301,6 +391,35 @@ ghost::Function LibraryOpenCL::lookupFunction(const std::string& name) const {
   auto f = std::make_shared<FunctionOpenCL>(_dev, kernel);
   return ghost::Function(f);
 }
+
+std::vector<uint8_t> LibraryOpenCL::getBinary() const {
+  if (!program.get()) return {};
+
+  cl_uint numDevices = 0;
+  cl_int err = clGetProgramInfo(program, CL_PROGRAM_NUM_DEVICES,
+                                sizeof(numDevices), &numDevices, nullptr);
+  if (err != CL_SUCCESS || numDevices == 0) return {};
+
+  std::vector<size_t> sizes(numDevices);
+  err = clGetProgramInfo(program, CL_PROGRAM_BINARY_SIZES,
+                         sizeof(size_t) * numDevices, sizes.data(), nullptr);
+  if (err != CL_SUCCESS || sizes[0] == 0) return {};
+
+  // Get binary for the first device
+  std::vector<std::vector<unsigned char>> binaries(numDevices);
+  std::vector<unsigned char*> ptrs(numDevices);
+  for (cl_uint i = 0; i < numDevices; i++) {
+    binaries[i].resize(sizes[i]);
+    ptrs[i] = binaries[i].data();
+  }
+  err = clGetProgramInfo(program, CL_PROGRAM_BINARIES,
+                         sizeof(unsigned char*) * numDevices, ptrs.data(),
+                         nullptr);
+  if (err != CL_SUCCESS) return {};
+
+  return std::vector<uint8_t>(binaries[0].begin(), binaries[0].end());
+}
+
 }  // namespace implementation
 }  // namespace ghost
 #endif

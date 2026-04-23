@@ -1,0 +1,90 @@
+; SPIR-V assembly for Vulkan compute shader: mult_const_f
+; Equivalent to: out[tid] = A[tid] * scale
+; Assembled via: spirv-as --target-env vulkan1.1
+;
+; Layout:
+;   set=0, binding=0: storage buffer (out, float[])
+;   set=0, binding=1: storage buffer (A, float[])
+;   set=0, binding=2: uniform buffer (scale, float)
+
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "mult_const_f" %gl_GlobalInvocationID
+               OpExecutionMode %main LocalSize 64 1 1
+
+               ; Decorations
+               OpDecorate %gl_GlobalInvocationID BuiltIn GlobalInvocationId
+
+               OpDecorate %out_buf_block Block
+               OpMemberDecorate %out_buf_block 0 Offset 0
+               OpDecorate %out_rta ArrayStride 4
+               OpDecorate %out_var DescriptorSet 0
+               OpDecorate %out_var Binding 0
+
+               OpDecorate %a_buf_block Block
+               OpMemberDecorate %a_buf_block 0 Offset 0
+               OpDecorate %a_rta ArrayStride 4
+               OpDecorate %a_var DescriptorSet 0
+               OpDecorate %a_var Binding 1
+
+               OpDecorate %params_block Block
+               OpMemberDecorate %params_block 0 Offset 0
+               OpDecorate %params_var DescriptorSet 0
+               OpDecorate %params_var Binding 2
+
+       %void = OpTypeVoid
+   %void_fn = OpTypeFunction %void
+      %float = OpTypeFloat 32
+       %uint = OpTypeInt 32 0
+        %int = OpTypeInt 32 1
+    %v3uint = OpTypeVector %uint 3
+
+  %ptr_input_v3uint = OpTypePointer Input %v3uint
+  %ptr_input_uint = OpTypePointer Input %uint
+
+  %gl_GlobalInvocationID = OpVariable %ptr_input_v3uint Input
+
+     %out_rta = OpTypeRuntimeArray %float
+%out_buf_block = OpTypeStruct %out_rta
+%ptr_out_block = OpTypePointer StorageBuffer %out_buf_block
+    %out_var = OpVariable %ptr_out_block StorageBuffer
+%ptr_out_float = OpTypePointer StorageBuffer %float
+
+       %a_rta = OpTypeRuntimeArray %float
+ %a_buf_block = OpTypeStruct %a_rta
+ %ptr_a_block = OpTypePointer StorageBuffer %a_buf_block
+      %a_var = OpVariable %ptr_a_block StorageBuffer
+  %ptr_a_float = OpTypePointer StorageBuffer %float
+
+%params_block = OpTypeStruct %float
+%ptr_params_block = OpTypePointer Uniform %params_block
+  %params_var = OpVariable %ptr_params_block Uniform
+%ptr_params_float = OpTypePointer Uniform %float
+
+     %int_0 = OpConstant %int 0
+    %uint_0 = OpConstant %uint 0
+
+       %main = OpFunction %void None %void_fn
+      %entry = OpLabel
+
+               ; tid = gl_GlobalInvocationID.x
+        %gid = OpLoad %v3uint %gl_GlobalInvocationID
+        %tid = OpCompositeExtract %uint %gid 0
+
+               ; scale = params.scale
+   %scale_ptr = OpAccessChain %ptr_params_float %params_var %int_0
+      %scale = OpLoad %float %scale_ptr
+
+               ; a_val = A[tid]
+      %a_ptr = OpAccessChain %ptr_a_float %a_var %int_0 %tid
+      %a_val = OpLoad %float %a_ptr
+
+               ; result = a_val * scale
+     %result = OpFMul %float %a_val %scale
+
+               ; out[tid] = result
+    %out_ptr = OpAccessChain %ptr_out_float %out_var %int_0 %tid
+               OpStore %out_ptr %result
+
+               OpReturn
+               OpFunctionEnd

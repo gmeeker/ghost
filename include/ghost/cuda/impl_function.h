@@ -15,9 +15,8 @@
 #ifndef GHOST_CUDA_IMPL_FUNCTION_H
 #define GHOST_CUDA_IMPL_FUNCTION_H
 
+#include <ghost/cuda/cu_ptr.h>
 #include <ghost/implementation/impl_function.h>
-
-#include "cu_ptr.h"
 
 namespace ghost {
 namespace implementation {
@@ -29,10 +28,12 @@ class FunctionCUDA : public Function {
 
   FunctionCUDA(const DeviceCUDA& dev, CUfunction k);
 
-  virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
+  virtual void execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
 
   virtual Attribute getAttribute(FunctionAttributeId what) const override;
+
+  virtual uint32_t preferredSubgroupSize() const override;
 
  private:
   const DeviceCUDA& _dev;
@@ -42,19 +43,24 @@ class LibraryCUDA : public Library {
  public:
   cu::ptr<CUmodule> program;
 
-  LibraryCUDA(const DeviceCUDA& dev);
+  LibraryCUDA(const DeviceCUDA& dev, bool retainBinary = false);
 
-  void loadFromText(const std::string& text, const std::string& options);
-  void loadFromData(const void* data, size_t len, const std::string& options);
+  void loadFromText(const std::string& text, const CompilerOptions& options);
+  void loadFromData(const void* data, size_t len,
+                    const CompilerOptions& options);
   void loadFromBinary(void* binary);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
+  virtual void setGlobals(
+      const std::vector<std::pair<std::string, Attribute>>& globals) override;
+  virtual std::vector<uint8_t> getBinary() const override;
 
  private:
+  std::vector<uint8_t> _binaryData;
   void loadFromCache(const void* data, size_t length,
-                     const std::string& options);
+                     const CompilerOptions& options);
   void saveToCache(void* binary, size_t binarySize, const void* data,
-                   size_t length, const std::string& options) const;
+                   size_t length, const CompilerOptions& options) const;
   const DeviceCUDA& _dev;
 };
 }  // namespace implementation

@@ -12,24 +12,68 @@
 // License for the specific language governing permissions and limitations under
 // the License.
 
+#include <ghost/command_buffer.h>
 #include <ghost/device.h>
+#include <ghost/exception.h>
 
+#include <cstring>
 #include <memory>
 #include <string>
 
 namespace ghost {
 namespace implementation {
-void* Buffer::map(const ghost::Stream&, Access, bool) {
+double Event::timestamp() const { return 0.0; }
+
+double Event::elapsed(const Event&) const { return 0.0; }
+
+std::shared_ptr<Event> Stream::record() { throw ghost::unsupported_error(); }
+
+void Stream::waitForEvent(const std::shared_ptr<Event>&) {
   throw ghost::unsupported_error();
 }
 
-void Buffer::unmap(const ghost::Stream&) { throw ghost::unsupported_error(); }
+CommandBuffer* Encoder::asCommandBuffer() { return nullptr; }
+
+size_t Buffer::baseOffset() const { return 0; }
+
+std::shared_ptr<Buffer> Buffer::createSubBuffer(const std::shared_ptr<Buffer>&,
+                                                size_t, size_t) {
+  throw ghost::unsupported_error();
+}
+
+void* Buffer::map(const ghost::Encoder&, Access, bool) {
+  throw ghost::unsupported_error();
+}
+
+void Buffer::unmap(const ghost::Encoder&) { throw ghost::unsupported_error(); }
+
+void Buffer::copy(const ghost::Encoder&, const ghost::Buffer&, size_t, size_t,
+                  size_t) {
+  throw ghost::unsupported_error();
+}
+
+void Buffer::copy(const ghost::Encoder&, const void*, size_t, size_t) {
+  throw ghost::unsupported_error();
+}
+
+void Buffer::copyTo(const ghost::Encoder&, void*, size_t, size_t) const {
+  throw ghost::unsupported_error();
+}
+
+void Buffer::fill(const ghost::Encoder&, size_t, size_t, uint8_t) {
+  throw ghost::unsupported_error();
+}
+
+void Buffer::fill(const ghost::Encoder&, size_t, size_t, const void*, size_t) {
+  throw ghost::unsupported_error();
+}
 
 BinaryCache Device::_cache;
 
 BinaryCache& Device::binaryCache() { return _cache; }
 
-ghost::Library Device::loadLibraryFromFile(const std::string& filename) const {
+ghost::Library Device::loadLibraryFromFile(
+    const std::filesystem::path& filename) const {
   throw ghost::unsupported_error();
 }
 
@@ -42,61 +86,260 @@ void Device::freeHostMemory(void* ptr) const {
 size_t Device::getMemoryPoolSize() const { return _poolSize; }
 
 void Device::setMemoryPoolSize(size_t bytes) { _poolSize = bytes; }
+
+size_t Device::imageAlignment(const ImageDescription&) const {
+  auto attr = getAttribute(kDeviceMaxImageAlignment);
+  auto v = attr.asUInt64();
+  return v > 0 ? static_cast<size_t>(v) : 1;
+}
+
+void Image::copy(const ghost::Encoder& s, const ghost::Buffer& src,
+                 const BufferLayout& layout, const Origin3& imageOrigin) {
+  throw ghost::unsupported_error();
+}
+
+void Image::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
+                   const BufferLayout& layout,
+                   const Origin3& imageOrigin) const {
+  throw ghost::unsupported_error();
+}
+
+void Image::copy(const ghost::Encoder& s, const ghost::Image& src,
+                 const Size3& region, const Origin3& srcOrigin,
+                 const Origin3& dstOrigin) {
+  throw ghost::unsupported_error();
+}
 }  // namespace implementation
 
-Stream::Stream(std::shared_ptr<implementation::Stream> impl) : _impl(impl) {}
+Event::Event(std::shared_ptr<implementation::Event> impl) : _impl(impl) {}
 
-void Stream::sync() { impl()->sync(); }
+void Event::wait() { _impl->wait(); }
+
+bool Event::isComplete() const { return _impl->isComplete(); }
+
+double Event::timestamp() const { return _impl->timestamp(); }
+
+double Event::elapsed(const Event& start, const Event& end) {
+  return start._impl->elapsed(*end._impl);
+}
+
+Encoder::Encoder(std::shared_ptr<implementation::Encoder> impl) : _impl(impl) {}
+
+Stream::Stream(std::shared_ptr<implementation::Stream> impl) : Encoder(impl) {}
+
+void Stream::sync() {
+  detail::EntryGuard _g;
+  static_cast<implementation::Stream*>(_impl.get())->sync();
+}
+
+Event Stream::record() {
+  return Event(static_cast<implementation::Stream*>(_impl.get())->record());
+}
+
+void Stream::waitForEvent(const Event& e) {
+  static_cast<implementation::Stream*>(_impl.get())->waitForEvent(e.impl());
+}
 
 Buffer::Buffer(std::shared_ptr<implementation::Buffer> impl) : _impl(impl) {}
 
-void Buffer::copy(const Stream& s, const Buffer& src, size_t bytes) {
-  _impl->copy(s, src, bytes);
+size_t Buffer::size() const { return _impl->size(); }
+
+void Buffer::copy(const Encoder& s, const Buffer& src, size_t bytes) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyBuffer(_impl, src._impl, 0, 0, bytes);
+  else
+    _impl->copy(s, src, bytes);
 }
 
-void Buffer::copy(const Stream& s, const void* src, size_t bytes) {
-  _impl->copy(s, src, bytes);
+void Buffer::copy(const Encoder& s, const void* src, size_t bytes) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyBufferRaw(_impl, src, 0, bytes);
+  else
+    _impl->copy(s, src, bytes);
 }
 
-void Buffer::copyTo(const Stream& s, void* dst, size_t bytes) const {
-  _impl->copyTo(s, dst, bytes);
+void Buffer::copyTo(const Encoder& s, void* dst, size_t bytes) const {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->readBuffer(_impl, dst, 0, bytes);
+  else
+    _impl->copyTo(s, dst, bytes);
+}
+
+void Buffer::copy(const Encoder& s, const Buffer& src, size_t srcOffset,
+                  size_t dstOffset, size_t bytes) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyBuffer(_impl, src._impl, srcOffset, dstOffset, bytes);
+  else
+    _impl->copy(s, src, srcOffset, dstOffset, bytes);
+}
+
+void Buffer::copy(const Encoder& s, const void* src, size_t dstOffset,
+                  size_t bytes) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyBufferRaw(_impl, src, dstOffset, bytes);
+  else
+    _impl->copy(s, src, dstOffset, bytes);
+}
+
+void Buffer::copyTo(const Encoder& s, void* dst, size_t srcOffset,
+                    size_t bytes) const {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->readBuffer(_impl, dst, srcOffset, bytes);
+  else
+    _impl->copyTo(s, dst, srcOffset, bytes);
+}
+
+void Buffer::fill(const Encoder& s, size_t offset, size_t size, uint8_t value) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->fillBuffer(_impl, offset, size, value);
+  else
+    _impl->fill(s, offset, size, value);
+}
+
+void Buffer::fill(const Encoder& s, size_t offset, size_t size,
+                  uint32_t value) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->fillBufferPattern(_impl, offset, size, &value, sizeof(value));
+  else
+    _impl->fill(s, offset, size, &value, sizeof(value));
+}
+
+void Buffer::fill(const Encoder& s, size_t offset, size_t size,
+                  const void* pattern, size_t patternSize) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->fillBufferPattern(_impl, offset, size, pattern, patternSize);
+  else
+    _impl->fill(s, offset, size, pattern, patternSize);
+}
+
+Buffer Buffer::createSubBuffer(size_t offset, size_t size) {
+  return Buffer(_impl->createSubBuffer(_impl, offset, size));
 }
 
 MappedBuffer::MappedBuffer(std::shared_ptr<implementation::Buffer> impl)
     : Buffer(impl) {}
 
-void* MappedBuffer::map(const Stream& s, Access access, bool sync) {
+void* MappedBuffer::map(const Encoder& s, Access access, bool sync) {
   return impl()->map(s, access, sync);
 }
 
-void MappedBuffer::unmap(const Stream& s) { impl()->unmap(s); }
+void MappedBuffer::unmap(const Encoder& s) { impl()->unmap(s); }
 
 Image::Image(std::shared_ptr<implementation::Image> impl) : _impl(impl) {}
 
-void Image::copy(const Stream& s, const Image& src) { _impl->copy(s, src); }
-
-void Image::copy(const Stream& s, const Buffer& src,
-                 const ImageDescription& descr) {
-  _impl->copy(s, src, descr);
+const ImageDescription& Image::description() const {
+  return _impl->description();
 }
 
-void Image::copy(const Stream& s, const void* src,
-                 const ImageDescription& descr) {
-  _impl->copy(s, src, descr);
+Attribute Image::sample() const {
+  return Attribute(*const_cast<Image*>(this), SamplerDescription{});
 }
 
-void Image::copyTo(const Stream& s, Buffer& dst,
-                   const ImageDescription& descr) const {
-  _impl->copyTo(s, dst, descr);
+void Image::copy(const Encoder& s, const Image& src) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImage(_impl, src._impl);
+  else
+    _impl->copy(s, src);
 }
 
-void Image::copyTo(const Stream& s, void* dst,
-                   const ImageDescription& descr) const {
-  _impl->copyTo(s, dst, descr);
+void Image::copy(const Encoder& s, const Buffer& src) {
+  auto layout = BufferLayout(description().size);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageFromBuffer(_impl, src.impl(), layout);
+  else
+    _impl->copy(s, src, layout);
 }
 
-Device::Device(std::shared_ptr<implementation::Device> impl)
-    : _impl(impl), _stream(nullptr) {}
+void Image::copy(const Encoder& s, const void* src) {
+  auto layout = BufferLayout(description().size);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageFromHost(_impl, src, layout);
+  else
+    _impl->copy(s, src, layout);
+}
+
+void Image::copyTo(const Encoder& s, Buffer& dst) const {
+  auto layout = BufferLayout(description().size);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageToBuffer(_impl, dst.impl(), layout);
+  else
+    _impl->copyTo(s, dst, layout);
+}
+
+void Image::copyTo(const Encoder& s, void* dst) const {
+  auto layout = BufferLayout(description().size);
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageToHost(_impl, dst, layout);
+  else
+    _impl->copyTo(s, dst, layout);
+}
+
+void Image::copy(const Encoder& s, const Buffer& src,
+                 const BufferLayout& layout) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageFromBuffer(_impl, src.impl(), layout);
+  else
+    _impl->copy(s, src, layout);
+}
+
+void Image::copy(const Encoder& s, const void* src,
+                 const BufferLayout& layout) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageFromHost(_impl, src, layout);
+  else
+    _impl->copy(s, src, layout);
+}
+
+void Image::copyTo(const Encoder& s, Buffer& dst,
+                   const BufferLayout& layout) const {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageToBuffer(_impl, dst.impl(), layout);
+  else
+    _impl->copyTo(s, dst, layout);
+}
+
+void Image::copyTo(const Encoder& s, void* dst,
+                   const BufferLayout& layout) const {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageToHost(_impl, dst, layout);
+  else
+    _impl->copyTo(s, dst, layout);
+}
+
+void Image::copy(const Encoder& s, const Buffer& src,
+                 const BufferLayout& layout, const Origin3& imageOrigin) {
+  _impl->copy(s, src, layout, imageOrigin);
+}
+
+void Image::copyTo(const Encoder& s, Buffer& dst, const BufferLayout& layout,
+                   const Origin3& imageOrigin) const {
+  _impl->copyTo(s, dst, layout, imageOrigin);
+}
+
+void Image::copy(const Encoder& s, const Image& src, const Size3& region,
+                 const Origin3& srcOrigin, const Origin3& dstOrigin) {
+  _impl->copy(s, src, region, srcOrigin, dstOrigin);
+}
+
+Device::Device(std::shared_ptr<implementation::Device> impl) : _impl(impl) {}
 
 void Device::setDefaultStream(std::shared_ptr<implementation::Stream> stream) {
   _stream.impl() = stream;
@@ -110,23 +353,34 @@ void Device::purgeBinaries(int days) {
   binaryCache().purgeBinaries(*_impl, days);
 }
 
-Library Device::loadLibraryFromFile(const std::string& filename) {
+Library Device::loadLibraryFromFile(const std::filesystem::path& filename) {
   return _impl->loadLibraryFromFile(filename);
 }
 
 Library Device::loadLibraryFromText(const std::string& text,
-                                    const std::string& options) const {
-  return _impl->loadLibraryFromText(text, options);
+                                    const CompilerOptions& options,
+                                    bool retainBinary) const {
+  return _impl->loadLibraryFromText(text, options, retainBinary);
 }
 
 Library Device::loadLibraryFromData(const void* data, size_t len,
-                                    const std::string& options) const {
-  return _impl->loadLibraryFromData(data, len, options);
+                                    const CompilerOptions& options,
+                                    bool retainBinary) const {
+  return _impl->loadLibraryFromData(data, len, options, retainBinary);
 }
+
+void Device::activate(void** prevOut) {
+  detail::EntryGuard _g;
+  _impl->activate(prevOut);
+}
+
+void Device::deactivate(void* prev) { _impl->deactivate(prev); }
 
 SharedContext Device::shareContext() const { return _impl->shareContext(); }
 
-Stream Device::createStream() const { return _impl->createStream(); }
+Stream Device::createStream(const StreamOptions& options) const {
+  return _impl->createStream(options);
+}
 
 Stream Device::defaultStream() const { return _stream; }
 
@@ -142,12 +396,13 @@ void* Device::allocateHostMemory(size_t bytes) const {
 
 void Device::freeHostMemory(void* ptr) const { _impl->freeHostMemory(ptr); }
 
-Buffer Device::allocateBuffer(size_t bytes, Access access) const {
-  return _impl->allocateBuffer(bytes, access);
+Buffer Device::allocateBuffer(size_t bytes, BufferOptions opts) const {
+  return _impl->allocateBuffer(bytes, opts);
 }
 
-MappedBuffer Device::allocateMappedBuffer(size_t bytes, Access access) const {
-  return _impl->allocateMappedBuffer(bytes, access);
+MappedBuffer Device::allocateMappedBuffer(size_t bytes,
+                                          BufferOptions opts) const {
+  return _impl->allocateMappedBuffer(bytes, opts);
 }
 
 Image Device::allocateImage(const ImageDescription& descr) const {
@@ -164,6 +419,14 @@ Image Device::sharedImage(const ImageDescription& descr, Image& image) const {
 
 Attribute Device::getAttribute(DeviceAttributeId what) const {
   return _impl->getAttribute(what);
+}
+
+size_t Device::imageAlignment(const ImageDescription& descr) const {
+  return _impl->imageAlignment(descr);
+}
+
+std::shared_ptr<ThreadPool> Device::threadPool() const {
+  return _impl->threadPool();
 }
 
 }  // namespace ghost

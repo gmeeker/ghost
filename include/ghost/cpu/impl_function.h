@@ -17,6 +17,10 @@
 
 #include <ghost/implementation/impl_function.h>
 
+#include <filesystem>
+#include <stdexcept>
+#include <unordered_map>
+
 namespace ghost {
 namespace implementation {
 class DeviceCPU;
@@ -29,10 +33,12 @@ class FunctionCPU : public Function {
 
   FunctionCPU(const DeviceCPU& dev, Type f);
 
-  virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
+  virtual void execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
 
   virtual Attribute getAttribute(FunctionAttributeId what) const override;
+
+  virtual uint32_t preferredSubgroupSize() const override { return 1; }
 
  private:
   const DeviceCPU& _dev;
@@ -43,13 +49,26 @@ class LibraryCPU : public Library {
   LibraryCPU(const DeviceCPU& dev);
   ~LibraryCPU();
 
-  void loadFromFile(const std::string& filename);
+  void loadFromFile(const std::filesystem::path& filename);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
 
  private:
   const DeviceCPU& _dev;
   void* _module;
+};
+
+class InlineLibraryCPU : public Library {
+ public:
+  InlineLibraryCPU(const DeviceCPU& dev);
+
+  void addFunction(const std::string& name, FunctionCPU::Type fn);
+  virtual ghost::Function lookupFunction(
+      const std::string& name) const override;
+
+ private:
+  const DeviceCPU& _dev;
+  std::unordered_map<std::string, FunctionCPU::Type> _functions;
 };
 }  // namespace implementation
 }  // namespace ghost

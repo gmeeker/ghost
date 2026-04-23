@@ -28,6 +28,11 @@ namespace ghost {
 namespace implementation {
 using namespace metal;
 
+#if !defined(MAC_OS_VERSION_26_0)
+// SDK is too old for MTLGPUFamilyApple10
+#define MTLGPUFamilyApple10 (MTLGPUFamily)1010
+#endif
+
 namespace {
 MTLPixelFormat getFormat(const ImageDescription &descr) {
   switch (descr.channels) {
@@ -94,14 +99,18 @@ getTextureDescriptor(const ImageDescription &descr, bool isPrivate = true) {
                                                          width:descr.size.x
                                                         height:descr.size.y
                                                      mipmapped:NO];
+  if (descr.size.z > 1) {
+    d.get().textureType = MTLTextureType3D;
+    d.get().depth = descr.size.z;
+  }
   switch (descr.access) {
-  case Access_ReadOnly:
+  case Access::ReadOnly:
     d.get().usage = MTLTextureUsageShaderRead;
     break;
-  case Access_WriteOnly:
+  case Access::WriteOnly:
     d.get().usage = MTLTextureUsageShaderWrite;
     break;
-  case Access_ReadWrite:
+  case Access::ReadWrite:
     d.get().usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
     break;
   default:
@@ -121,14 +130,18 @@ getTextureDescriptor(id<MTLResource> resource, const ImageDescription &descr) {
                                                          width:descr.size.x
                                                         height:descr.size.y
                                                      mipmapped:NO];
+  if (descr.size.z > 1) {
+    d.get().textureType = MTLTextureType3D;
+    d.get().depth = descr.size.z;
+  }
   switch (descr.access) {
-  case Access_ReadOnly:
+  case Access::ReadOnly:
     d.get().usage = MTLTextureUsageShaderRead;
     break;
-  case Access_WriteOnly:
+  case Access::WriteOnly:
     d.get().usage = MTLTextureUsageShaderWrite;
     break;
-  case Access_ReadWrite:
+  case Access::ReadWrite:
     d.get().usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
     break;
   default:
@@ -156,94 +169,347 @@ static bool IsPrivate(id<MTLResource> res) {
 }
 } // namespace
 
+EventMetal::EventMetal(objc::ptr<id<MTLSharedEvent>> event_, uint64_t value)
+    : sharedEvent(event_), targetValue(value) {}
+
+void EventMetal::wait() {
+  if (sharedEvent.get().signaledValue >= targetValue)
+    return;
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  MTLSharedEventListener *listener = [[MTLSharedEventListener alloc] init];
+  [sharedEvent.get()
+      notifyListener:listener
+             atValue:targetValue
+               block:^(id<MTLSharedEvent> event, uint64_t value) {
+                 dispatch_semaphore_signal(sem);
+               }];
+  dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+}
+
+bool EventMetal::isComplete() const {
+  return sharedEvent.get().signaledValue >= targetValue;
+}
+
 StreamMetal::StreamMetal(objc::ptr<id<MTLCommandQueue>> queue_)
-    : queue(queue_) {}
+    : queue(queue_) {
+  if (queue.get()) {
+    syncEvent = [queue.get().device newEvent];
+  }
+}
 StreamMetal::StreamMetal(id<MTLDevice> dev) {
   queue = [dev newCommandQueue];
   checkExists(queue);
+  syncEvent = [dev newEvent];
 }
 
-void StreamMetal::sync() {}
+void StreamMetal::commitAndTrack(id<MTLCommandBuffer> cb) {
+  syncCounter++;
+  [cb encodeSignalEvent:syncEvent.get() value:syncCounter];
+  [cb commit];
+  lastCommandBuffer = objc::ptr<id<MTLCommandBuffer>>(cb, true);
+}
 
-BufferMetal::BufferMetal(objc::ptr<id<MTLBuffer>> mem_) : mem(mem_) {}
+void StreamMetal::encodeWait(id<MTLCommandBuffer> cb) {
+  if (syncCounter > 0) {
+    [cb encodeWaitForEvent:syncEvent.get() value:syncCounter];
+  }
+}
 
-BufferMetal::BufferMetal(const DeviceMetal &dev, size_t bytes, Access access) {
+void StreamMetal::sync() {
+  if (lastCommandBuffer.get()) {
+    [lastCommandBuffer.get() waitUntilCompleted];
+    lastCommandBuffer = objc::ptr<id<MTLCommandBuffer>>();
+  }
+}
+
+std::shared_ptr<Event> StreamMetal::record() {
+  id<MTLDevice> device = queue.get().device;
+  objc::ptr<id<MTLSharedEvent>> sharedEvent =
+      objc::ptr<id<MTLSharedEvent>>([device newSharedEvent]);
+  uint64_t value = 1;
+  id<MTLCommandBuffer> commandBuffer = [queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost Event Record";
+  [commandBuffer encodeSignalEvent:sharedEvent.get() value:value];
+  commitAndTrack(commandBuffer);
+  return std::make_shared<EventMetal>(sharedEvent, value);
+}
+
+void StreamMetal::waitForEvent(const std::shared_ptr<Event> &e) {
+  auto eventMetal = static_cast<EventMetal *>(e.get());
+  id<MTLCommandBuffer> commandBuffer = [queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost Event Wait";
+  [commandBuffer encodeWaitForEvent:eventMetal->sharedEvent.get()
+                              value:eventMetal->targetValue];
+  commitAndTrack(commandBuffer);
+}
+
+BufferMetal::BufferMetal(objc::ptr<id<MTLBuffer>> mem_, size_t bytes)
+    : mem(mem_), _size(bytes) {}
+
+BufferMetal::BufferMetal(const DeviceMetal &dev, size_t bytes,
+                         const BufferOptions &opts)
+    : _size(bytes) {
   MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache |
-                               MTLResourceHazardTrackingModeUntracked |
-                               MTLResourceStorageModePrivate;
+                               MTLResourceHazardTrackingModeUntracked;
+  // Staging hint routes to a host-visible shared buffer. Other hints
+  // currently fall through to private storage (the default fast path).
+  if (opts.hint == AllocHint::Staging) {
+    options |= MTLResourceStorageModeShared;
+    if (opts.access == Access::ReadOnly) {
+      // Host writes, kernel reads — write-combined is efficient for upload.
+      options |= MTLResourceCPUCacheModeWriteCombined;
+    }
+  } else {
+    options |= MTLResourceStorageModePrivate;
+  }
   mem = [dev.dev newBufferWithLength:bytes options:options];
   checkExists(mem);
 }
 
-void BufferMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
+size_t BufferMetal::size() const { return _size; }
+
+void BufferMetal::copy(const ghost::Encoder &s, const ghost::Buffer &src,
                        size_t bytes) {
+  copy(s, src, 0, 0, bytes);
+}
+
+void BufferMetal::copy(const ghost::Encoder &s, const void *src, size_t bytes) {
+  copy(s, src, 0, bytes);
+}
+
+void BufferMetal::copyTo(const ghost::Encoder &s, void *dst,
+                         size_t bytes) const {
+  copyTo(s, dst, 0, bytes);
+}
+
+void BufferMetal::copy(const ghost::Encoder &s, const ghost::Buffer &src,
+                       size_t srcOffset, size_t dstOffset, size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
-  id<MTLCommandBuffer> commandBuffer = nil;
-  commandBuffer = [stream_impl->queue.get() commandBuffer];
-  commandBuffer.label = @"Ghost";
-  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
-  [blit copyFromBuffer:src_impl->mem.get()
-           sourceOffset:0
-               toBuffer:mem.get()
-      destinationOffset:0
-                   size:bytes];
-  [blit endEncoding];
+  size_t effectiveSrcOff = src_impl->baseOffset() + srcOffset;
+  size_t effectiveDstOff = baseOffset() + dstOffset;
+
+  // Metal's copyFromBuffer has undefined behavior when source and destination
+  // regions overlap within the same buffer. Use a staging buffer in that case.
+  bool sameBuffer = (src_impl->mem.get() == mem.get());
+  bool overlaps = sameBuffer && (effectiveSrcOff < effectiveDstOff + bytes) &&
+                  (effectiveDstOff < effectiveSrcOff + bytes);
+
+  if (overlaps) {
+    id<MTLDevice> device = mem.get().device;
+    id<MTLBuffer> staging =
+        [device newBufferWithLength:bytes options:mem.get().resourceOptions];
+    id<MTLCommandBuffer> commandBuffer =
+        [stream_impl->queue.get() commandBuffer];
+    commandBuffer.label = @"Ghost";
+    stream_impl->encodeWait(commandBuffer);
+    id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+    [blit copyFromBuffer:src_impl->mem.get()
+             sourceOffset:effectiveSrcOff
+                 toBuffer:staging
+        destinationOffset:0
+                     size:bytes];
+    [blit copyFromBuffer:staging
+             sourceOffset:0
+                 toBuffer:mem.get()
+        destinationOffset:effectiveDstOff
+                     size:bytes];
+    [blit endEncoding];
+    stream_impl->commitAndTrack(commandBuffer);
+  } else {
+    id<MTLCommandBuffer> commandBuffer =
+        [stream_impl->queue.get() commandBuffer];
+    commandBuffer.label = @"Ghost";
+    stream_impl->encodeWait(commandBuffer);
+    id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+    [blit copyFromBuffer:src_impl->mem.get()
+             sourceOffset:effectiveSrcOff
+                 toBuffer:mem.get()
+        destinationOffset:effectiveDstOff
+                     size:bytes];
+    [blit endEncoding];
+    stream_impl->commitAndTrack(commandBuffer);
+  }
 }
 
-void BufferMetal::copy(const ghost::Stream &s, const void *src, size_t bytes) {
+void BufferMetal::copy(const ghost::Encoder &s, const void *src,
+                       size_t dstOffset, size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  size_t effectiveDstOff = baseOffset() + dstOffset;
   if (IsPrivate(mem)) {
+    // For private buffers, use a temporary shared buffer and blit
+    id<MTLBuffer> staging =
+        [mem.get().device newBufferWithBytes:src
+                                      length:bytes
+                                     options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> commandBuffer =
+        [stream_impl->queue.get() commandBuffer];
+    commandBuffer.label = @"Ghost";
+    stream_impl->encodeWait(commandBuffer);
+    id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+    [blit copyFromBuffer:staging
+             sourceOffset:0
+                 toBuffer:mem.get()
+        destinationOffset:effectiveDstOff
+                     size:bytes];
+    [blit endEncoding];
+    stream_impl->commitAndTrack(commandBuffer);
   } else {
-    void *dst = [mem contents];
+    void *dst = static_cast<uint8_t *>([mem contents]) + effectiveDstOff;
     memcpy(dst, src, bytes);
     if (mem.get().storageMode == MTLStorageModeManaged)
-      [mem didModifyRange:NSMakeRange(0, bytes)];
+      [mem didModifyRange:NSMakeRange(effectiveDstOff, bytes)];
   }
 }
 
-void BufferMetal::copyTo(const ghost::Stream &s, void *dst,
+void BufferMetal::copyTo(const ghost::Encoder &s, void *dst, size_t srcOffset,
                          size_t bytes) const {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
-  if (IsPrivate(mem)) {
-    if (mem.get().storageMode == MTLStorageModeManaged) {
-      id<MTLCommandBuffer> commandBuffer = nil;
-      commandBuffer = [stream_impl->queue.get() commandBuffer];
-      commandBuffer.label = @"Ghost";
-      id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
-      [blit synchronizeResource:mem];
-      [blit endEncoding];
-    }
+  size_t effectiveSrcOff = baseOffset() + srcOffset;
+  if (mem.get().storageMode == MTLStorageModePrivate) {
+    // Private buffers: blit to a shared staging buffer, wait, then memcpy.
+    id<MTLBuffer> staging =
+        [mem.get().device newBufferWithLength:bytes
+                                      options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> commandBuffer =
+        [stream_impl->queue.get() commandBuffer];
+    commandBuffer.label = @"Ghost";
+    stream_impl->encodeWait(commandBuffer);
+    id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+    [blit copyFromBuffer:mem.get()
+             sourceOffset:effectiveSrcOff
+                 toBuffer:staging
+        destinationOffset:0
+                     size:bytes];
+    [blit endEncoding];
+    [commandBuffer commit];
+    [commandBuffer waitUntilCompleted];
+    memcpy(dst, [staging contents], bytes);
+  } else if (mem.get().storageMode == MTLStorageModeManaged) {
+    id<MTLCommandBuffer> commandBuffer =
+        [stream_impl->queue.get() commandBuffer];
+    commandBuffer.label = @"Ghost";
+    stream_impl->encodeWait(commandBuffer);
+    id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+    [blit synchronizeResource:mem];
+    [blit endEncoding];
+    [commandBuffer commit];
+    [commandBuffer waitUntilCompleted];
+    const void *src =
+        static_cast<const uint8_t *>([mem contents]) + effectiveSrcOff;
+    memcpy(dst, src, bytes);
   } else {
-    const void *src = [mem contents];
+    const void *src =
+        static_cast<const uint8_t *>([mem contents]) + effectiveSrcOff;
     memcpy(dst, src, bytes);
   }
+}
+
+void BufferMetal::fill(const ghost::Encoder &s, size_t offset, size_t size,
+                       uint8_t value) {
+  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  size_t effectiveOff = baseOffset() + offset;
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
+  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+  [blit fillBuffer:mem.get() range:NSMakeRange(effectiveOff, size) value:value];
+  [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
+}
+
+std::shared_ptr<Buffer>
+BufferMetal::createSubBuffer(const std::shared_ptr<Buffer> &self, size_t offset,
+                             size_t size) {
+  return std::make_shared<SubBufferMetal>(self, mem, baseOffset() + offset,
+                                          size);
+}
+
+SubBufferMetal::SubBufferMetal(std::shared_ptr<Buffer> parent,
+                               objc::ptr<id<MTLBuffer>> mem_, size_t offset,
+                               size_t size)
+    : BufferMetal(mem_, size), _parent(parent), _offset(offset) {}
+
+size_t SubBufferMetal::baseOffset() const { return _offset; }
+
+void SubBufferMetal::copy(const ghost::Encoder &s, const ghost::Buffer &src,
+                          size_t bytes) {
+  BufferMetal::copy(s, src, 0, 0, bytes);
+}
+
+void SubBufferMetal::copy(const ghost::Encoder &s, const void *src,
+                          size_t bytes) {
+  BufferMetal::copy(s, src, 0, bytes);
+}
+
+void SubBufferMetal::copyTo(const ghost::Encoder &s, void *dst,
+                            size_t bytes) const {
+  BufferMetal::copyTo(s, dst, 0, bytes);
+}
+
+void BufferMetal::fill(const ghost::Encoder &s, size_t offset, size_t size,
+                       const void *pattern, size_t patternSize) {
+  // Metal only supports single-byte fill natively.
+  // For multi-byte patterns, fill on CPU side if accessible, otherwise use
+  // staging.
+  if (patternSize == 1) {
+    fill(s, offset, size, *static_cast<const uint8_t *>(pattern));
+    return;
+  }
+  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  size_t effectiveOff = baseOffset() + offset;
+  // Build the fill pattern in a staging buffer
+  id<MTLBuffer> staging =
+      [mem.get().device newBufferWithLength:size
+                                    options:MTLResourceStorageModeShared];
+  uint8_t *dst = static_cast<uint8_t *>([staging contents]);
+  for (size_t i = 0; i < size; i += patternSize) {
+    size_t n = std::min(patternSize, size - i);
+    memcpy(dst + i, pattern, n);
+  }
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
+  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+  [blit copyFromBuffer:staging
+           sourceOffset:0
+               toBuffer:mem.get()
+      destinationOffset:effectiveOff
+                   size:size];
+  [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
 MappedBufferMetal::MappedBufferMetal(objc::ptr<id<MTLBuffer>> mem_,
                                      size_t bytes)
-    : BufferMetal(mem_), length(bytes) {}
+    : BufferMetal(mem_, bytes), length(bytes) {}
 
 MappedBufferMetal::MappedBufferMetal(const DeviceMetal &dev, size_t bytes,
-                                     Access access)
-    : BufferMetal(objc::ptr<id<MTLBuffer>>()), length(bytes) {
+                                     const BufferOptions &opts)
+    : BufferMetal(objc::ptr<id<MTLBuffer>>(), bytes), length(bytes) {
   MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache |
                                MTLResourceHazardTrackingModeUntracked |
                                MTLResourceStorageModeShared;
-  if (access == Access_WriteOnly)
+  // WriteOnly / Staging+ReadOnly both mean host-write / kernel-read: use
+  // write-combined cache mode for faster upload.
+  if (opts.access == Access::WriteOnly ||
+      (opts.hint == AllocHint::Staging && opts.access == Access::ReadOnly))
     options |= MTLResourceCPUCacheModeWriteCombined;
   mem = [dev.dev newBufferWithLength:bytes options:options];
   checkExists(mem);
 }
 
-void *MappedBufferMetal::map(const ghost::Stream &s, Access access, bool sync) {
+void *MappedBufferMetal::map(const ghost::Encoder &s, Access access,
+                             bool sync) {
   if (sync) {
-    // TODO
+    auto stream_impl =
+        static_cast<implementation::StreamMetal *>(s.impl().get());
+    stream_impl->sync();
   }
   return [mem contents];
 }
 
-void MappedBufferMetal::unmap(const ghost::Stream &s) {
+void MappedBufferMetal::unmap(const ghost::Encoder &s) {
   [mem didModifyRange:NSMakeRange(0, length)];
 }
 
@@ -261,11 +527,39 @@ ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_)
 ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_,
                        BufferMetal &buffer)
     : descr(descr_) {
+  // newTextureWithDescriptor:offset:bytesPerRow: is not supported on buffers
+  // allocated from an MTLHeap. Allocate the buffer with AllocHint::Shared to
+  // bypass the heap.
+  if ([buffer.mem.get() heap] != nil) {
+    throw ghost::unsupported_error(
+        "Cannot create shared image from a heap-allocated buffer. "
+        "Use AllocHint::Shared when allocating the buffer.");
+  }
+
+  // Validate stride: bytesPerRow must be at least width * pixelSize and
+  // aligned to the device's minimum linear texture alignment.
+  size_t minRowBytes = descr.size.x * descr.pixelSize();
+  size_t bytesPerRow = static_cast<size_t>(descr.stride.x);
+  if (bytesPerRow == 0) {
+    bytesPerRow = minRowBytes;
+  }
+  if (bytesPerRow < minRowBytes) {
+    throw std::invalid_argument("bytesPerRow (" + std::to_string(bytesPerRow) +
+                                ") is less than width * pixelSize (" +
+                                std::to_string(minRowBytes) + ")");
+  }
+  size_t requiredBytes = bytesPerRow * descr.size.y;
+  if (buffer.size() < requiredBytes) {
+    throw std::invalid_argument(
+        "buffer size (" + std::to_string(buffer.size()) +
+        ") is less than required (" + std::to_string(requiredBytes) + ")");
+  }
+
   objc::ptr<MTLTextureDescriptor *> textureDescriptor(
       getTextureDescriptor(buffer.mem.get(), descr));
   mem = [buffer.mem.get() newTextureWithDescriptor:textureDescriptor.get()
                                             offset:0
-                                       bytesPerRow:descr.stride.x];
+                                       bytesPerRow:bytesPerRow];
 }
 
 ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_,
@@ -274,12 +568,12 @@ ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_,
   mem = [image.mem.get() newTextureViewWithPixelFormat:getFormat(descr)];
 }
 
-void ImageMetal::copy(const ghost::Stream &s, const ghost::Image &src) {
+void ImageMetal::copy(const ghost::Encoder &s, const ghost::Image &src) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto src_impl = static_cast<implementation::ImageMetal *>(src.impl().get());
-  id<MTLCommandBuffer> commandBuffer = nil;
-  commandBuffer = [stream_impl->queue.get() commandBuffer];
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
   MTLRegion region = {{0, 0, 0}, {descr.size.x, descr.size.y, descr.size.z}};
   MTLOrigin dst_origin = {0, 0, 0};
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
@@ -293,52 +587,82 @@ void ImageMetal::copy(const ghost::Stream &s, const ghost::Image &src) {
        destinationLevel:0
       destinationOrigin:dst_origin];
   [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
-void ImageMetal::copy(const ghost::Stream &s, const ghost::Buffer &src,
-                      const ImageDescription &descr_) {
+void ImageMetal::copy(const ghost::Encoder &s, const ghost::Buffer &src,
+                      const BufferLayout &layout) {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
-  id<MTLCommandBuffer> commandBuffer = nil;
-  commandBuffer = [stream_impl->queue.get() commandBuffer];
+  size_t rowStride = layout.rowBytes(descr.pixelSize());
+  size_t sliceStride = layout.sliceBytes(rowStride);
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
   MTLRegion region = {{0, 0, 0}, {descr.size.x, descr.size.y, descr.size.z}};
   MTLOrigin dst_origin = {0, 0, 0};
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
   [blit copyFromBuffer:src_impl->mem.get()
-             sourceOffset:0
-        sourceBytesPerRow:descr_.stride.x
-      sourceBytesPerImage:descr_.stride.y
+             sourceOffset:src_impl->baseOffset()
+        sourceBytesPerRow:rowStride
+      sourceBytesPerImage:sliceStride
                sourceSize:region.size
                 toTexture:mem.get()
          destinationSlice:0
          destinationLevel:0
         destinationOrigin:dst_origin];
   [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
-void ImageMetal::copy(const ghost::Stream &s, const void *src,
-                      const ImageDescription &descr_) {
+void ImageMetal::copy(const ghost::Encoder &s, const void *src,
+                      const BufferLayout &layout) {
+  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  size_t rowStride = layout.rowBytes(descr.pixelSize());
+  size_t sliceStride = layout.sliceBytes(rowStride);
   if (!IsPrivate(mem.get())) {
-    // d->wait(*ctx);
     MTLRegion region = {{0, 0, 0},
-                        {descr_.size.x, descr_.size.y, descr_.size.z}};
+                        {layout.size.x, layout.size.y, layout.size.z}};
     [mem.get() replaceRegion:region
                  mipmapLevel:0
                    withBytes:src
-                 bytesPerRow:descr_.stride.x];
-    // d->dirty = false; // This updates the CPU side first.
+                 bytesPerRow:rowStride];
     return;
   }
+  // Private texture: upload via staging buffer + blit
+  size_t dataSize = sliceStride * layout.size.z;
+  id<MTLBuffer> staging =
+      [mem.get().device newBufferWithBytes:src
+                                    length:dataSize
+                                   options:MTLResourceStorageModeShared];
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
+  MTLRegion region = {{0, 0, 0}, {layout.size.x, layout.size.y, layout.size.z}};
+  MTLOrigin dst_origin = {0, 0, 0};
+  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+  [blit copyFromBuffer:staging
+             sourceOffset:0
+        sourceBytesPerRow:rowStride
+      sourceBytesPerImage:sliceStride
+               sourceSize:region.size
+                toTexture:mem.get()
+         destinationSlice:0
+         destinationLevel:0
+        destinationOrigin:dst_origin];
+  [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
-void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
-                        const ImageDescription &descr_) const {
+void ImageMetal::copyTo(const ghost::Encoder &s, ghost::Buffer &dst,
+                        const BufferLayout &layout) const {
   auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
   auto dst_impl = static_cast<implementation::BufferMetal *>(dst.impl().get());
-  id<MTLCommandBuffer> commandBuffer = nil;
-  commandBuffer = [stream_impl->queue.get() commandBuffer];
+  size_t rowStride = layout.rowBytes(descr.pixelSize());
+  size_t sliceStride = layout.sliceBytes(rowStride);
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
   commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
   MTLRegion region = {{0, 0, 0}, {descr.size.x, descr.size.y, descr.size.z}};
   MTLOrigin dst_origin = {0, 0, 0};
   id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
@@ -348,14 +672,131 @@ void ImageMetal::copyTo(const ghost::Stream &s, ghost::Buffer &dst,
                   sourceOrigin:region.origin
                     sourceSize:region.size
                       toBuffer:dst_impl->mem.get()
-             destinationOffset:0
-        destinationBytesPerRow:descr_.stride.x
-      destinationBytesPerImage:descr_.stride.y];
+             destinationOffset:dst_impl->baseOffset()
+        destinationBytesPerRow:rowStride
+      destinationBytesPerImage:sliceStride];
   [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
 }
 
-void ImageMetal::copyTo(const ghost::Stream &s, void *dst,
-                        const ImageDescription &descr_) const {}
+void ImageMetal::copyTo(const ghost::Encoder &s, void *dst,
+                        const BufferLayout &layout) const {
+  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  size_t rowStride = layout.rowBytes(descr.pixelSize());
+  size_t sliceStride = layout.sliceBytes(rowStride);
+  // For non-private textures accessed from CPU, we need to sync pending GPU
+  // work.
+  if (!IsPrivate(mem.get())) {
+    stream_impl->sync();
+    // Shared/Managed: read directly from texture
+    MTLRegion region = {{0, 0, 0},
+                        {layout.size.x, layout.size.y, layout.size.z}};
+    [mem.get() getBytes:dst
+            bytesPerRow:rowStride
+             fromRegion:region
+            mipmapLevel:0];
+    return;
+  }
+  // Private texture: blit to staging buffer, wait, then memcpy
+  size_t dataSize = sliceStride * layout.size.z;
+  id<MTLBuffer> staging =
+      [mem.get().device newBufferWithLength:dataSize
+                                    options:MTLResourceStorageModeShared];
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
+  MTLRegion region = {{0, 0, 0}, {layout.size.x, layout.size.y, layout.size.z}};
+  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+  [blit copyFromTexture:mem.get()
+                   sourceSlice:0
+                   sourceLevel:0
+                  sourceOrigin:region.origin
+                    sourceSize:region.size
+                      toBuffer:staging
+             destinationOffset:0
+        destinationBytesPerRow:rowStride
+      destinationBytesPerImage:sliceStride];
+  [blit endEncoding];
+  [commandBuffer commit];
+  [commandBuffer waitUntilCompleted];
+  memcpy(dst, [staging contents], dataSize);
+}
+
+void ImageMetal::copy(const ghost::Encoder &s, const ghost::Buffer &src,
+                      const BufferLayout &layout, const Origin3 &imageOrigin) {
+  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  auto src_impl = static_cast<implementation::BufferMetal *>(src.impl().get());
+  size_t rowStride = layout.rowBytes(descr.pixelSize());
+  size_t sliceStride = layout.sliceBytes(rowStride);
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
+  MTLRegion region = {{0, 0, 0}, {layout.size.x, layout.size.y, layout.size.z}};
+  MTLOrigin dst_origin = {imageOrigin.x, imageOrigin.y, imageOrigin.z};
+  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+  [blit copyFromBuffer:src_impl->mem.get()
+             sourceOffset:src_impl->baseOffset()
+        sourceBytesPerRow:rowStride
+      sourceBytesPerImage:sliceStride
+               sourceSize:region.size
+                toTexture:mem.get()
+         destinationSlice:0
+         destinationLevel:0
+        destinationOrigin:dst_origin];
+  [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
+}
+
+void ImageMetal::copyTo(const ghost::Encoder &s, ghost::Buffer &dst,
+                        const BufferLayout &layout,
+                        const Origin3 &imageOrigin) const {
+  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  auto dst_impl = static_cast<implementation::BufferMetal *>(dst.impl().get());
+  size_t rowStride = layout.rowBytes(descr.pixelSize());
+  size_t sliceStride = layout.sliceBytes(rowStride);
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
+  MTLRegion region = {{imageOrigin.x, imageOrigin.y, imageOrigin.z},
+                      {layout.size.x, layout.size.y, layout.size.z}};
+  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+  [blit copyFromTexture:mem.get()
+                   sourceSlice:0
+                   sourceLevel:0
+                  sourceOrigin:region.origin
+                    sourceSize:region.size
+                      toBuffer:dst_impl->mem.get()
+             destinationOffset:dst_impl->baseOffset()
+        destinationBytesPerRow:rowStride
+      destinationBytesPerImage:sliceStride];
+  [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
+}
+
+void ImageMetal::copy(const ghost::Encoder &s, const ghost::Image &src,
+                      const Size3 &region, const Origin3 &srcOrigin,
+                      const Origin3 &dstOrigin) {
+  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
+  auto src_impl = static_cast<implementation::ImageMetal *>(src.impl().get());
+  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
+  commandBuffer.label = @"Ghost";
+  stream_impl->encodeWait(commandBuffer);
+  MTLRegion srcRegion = {{srcOrigin.x, srcOrigin.y, srcOrigin.z},
+                         {region.x, region.y, region.z}};
+  MTLOrigin dst = {dstOrigin.x, dstOrigin.y, dstOrigin.z};
+  id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+  [blit copyFromTexture:src_impl->mem.get()
+            sourceSlice:0
+            sourceLevel:0
+           sourceOrigin:srcRegion.origin
+             sourceSize:srcRegion.size
+              toTexture:mem.get()
+       destinationSlice:0
+       destinationLevel:0
+      destinationOrigin:dst];
+  [blit endEncoding];
+  stream_impl->commitAndTrack(commandBuffer);
+}
 
 DeviceMetal::DeviceMetal(const SharedContext &share) {
   if (share.device) {
@@ -387,18 +828,45 @@ DeviceMetal::DeviceMetal(const SharedContext &share) {
   }
 }
 
-ghost::Library
-DeviceMetal::loadLibraryFromText(const std::string &text,
-                                 const std::string &options) const {
-  auto ptr = std::make_shared<implementation::LibraryMetal>(*this);
+DeviceMetal::DeviceMetal(const GpuInfo &info) {
+  @autoreleasepool {
+#if TARGET_OS_OSX
+    NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
+    if (info.index >= 0 && info.index < (int)devices.count) {
+      dev = objc::ptr<id<MTLDevice>>(devices[info.index], true);
+      queue = [dev.get() newCommandQueue];
+      checkExists(queue);
+      return;
+    }
+#endif
+    // Fallback: default device
+    dev = MTLCreateSystemDefaultDevice();
+    checkExists(dev);
+    queue = [dev.get() newCommandQueue];
+    checkExists(queue);
+  }
+}
+
+DeviceMetal::DeviceMetal(id<MTLDevice> device) {
+  dev = objc::ptr<id<MTLDevice>>(device, true);
+  queue = [dev.get() newCommandQueue];
+  checkExists(queue);
+}
+
+ghost::Library DeviceMetal::loadLibraryFromText(const std::string &text,
+                                                const CompilerOptions &options,
+                                                bool retainBinary) const {
+  auto ptr =
+      std::make_shared<implementation::LibraryMetal>(*this, retainBinary);
   ptr->loadFromText(text, options);
   return ghost::Library(ptr);
 }
 
-ghost::Library
-DeviceMetal::loadLibraryFromData(const void *data, size_t len,
-                                 const std::string &options) const {
-  auto ptr = std::make_shared<implementation::LibraryMetal>(*this);
+ghost::Library DeviceMetal::loadLibraryFromData(const void *data, size_t len,
+                                                const CompilerOptions &options,
+                                                bool retainBinary) const {
+  auto ptr =
+      std::make_shared<implementation::LibraryMetal>(*this, retainBinary);
   ptr->loadFromData(data, len, options);
   return ghost::Library(ptr);
 }
@@ -415,29 +883,73 @@ SharedContext DeviceMetal::shareContext() const {
   return c;
 }
 
-ghost::Stream DeviceMetal::createStream() const {
+ghost::Stream DeviceMetal::createStream(const StreamOptions &options) const {
   auto ptr = std::make_shared<implementation::StreamMetal>(dev.get());
   return ghost::Stream(ptr);
 }
 
-size_t DeviceMetal::getMemoryPoolSize() const {}
+size_t DeviceMetal::getMemoryPoolSize() const {
+  if (heap)
+    return heap.get().size;
+  return Device::getMemoryPoolSize();
+}
 
-void DeviceMetal::setMemoryPoolSize(size_t bytes) {}
+void DeviceMetal::setMemoryPoolSize(size_t bytes) {
+  Device::setMemoryPoolSize(bytes);
+  if (bytes > 0) {
+    MTLHeapDescriptor *descriptor = [[MTLHeapDescriptor alloc] init];
+    descriptor.size = bytes;
+    descriptor.storageMode = MTLStorageModePrivate;
+    descriptor.cpuCacheMode = MTLCPUCacheModeDefaultCache;
+    descriptor.hazardTrackingMode = MTLHazardTrackingModeUntracked;
+    heap = [dev.get() newHeapWithDescriptor:descriptor];
+  } else {
+    heap = objc::ptr<id<MTLHeap>>();
+  }
+}
 
-ghost::Buffer DeviceMetal::allocateBuffer(size_t bytes, Access access) const {
-  auto ptr =
-      std::make_shared<implementation::BufferMetal>(*this, bytes, access);
+ghost::Buffer DeviceMetal::allocateBuffer(size_t bytes,
+                                          const BufferOptions &opts) const {
+  // Use the MTLHeap for Default/Transient (private storage). Staging and
+  // Persistent bypass the heap — Staging needs host-visible memory, and
+  // Persistent is long-lived so heap fragmentation is undesirable.
+  if (heap && opts.hint != AllocHint::Staging &&
+      opts.hint != AllocHint::Persistent && opts.hint != AllocHint::Shared) {
+    MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache |
+                                 MTLResourceHazardTrackingModeUntracked |
+                                 MTLResourceStorageModePrivate;
+    objc::ptr<id<MTLBuffer>> buf([heap.get() newBufferWithLength:bytes
+                                                         options:options]);
+    if (buf) {
+      auto ptr = std::make_shared<implementation::BufferMetal>(buf, bytes);
+      return ghost::Buffer(ptr);
+    }
+    // Heap full — fall through to individual allocation
+  }
+  auto ptr = std::make_shared<implementation::BufferMetal>(*this, bytes, opts);
   return ghost::Buffer(ptr);
 }
 
-ghost::MappedBuffer DeviceMetal::allocateMappedBuffer(size_t bytes,
-                                                      Access access) const {
+ghost::MappedBuffer
+DeviceMetal::allocateMappedBuffer(size_t bytes,
+                                  const BufferOptions &opts) const {
   auto ptr =
-      std::make_shared<implementation::MappedBufferMetal>(*this, bytes, access);
+      std::make_shared<implementation::MappedBufferMetal>(*this, bytes, opts);
   return ghost::MappedBuffer(ptr);
 }
 
 ghost::Image DeviceMetal::allocateImage(const ImageDescription &descr) const {
+  if (heap) {
+    objc::ptr<MTLTextureDescriptor *> textureDescriptor(
+        getTextureDescriptor(descr));
+    objc::ptr<id<MTLTexture>> tex(
+        [heap.get() newTextureWithDescriptor:textureDescriptor.get()]);
+    if (tex) {
+      auto ptr = std::make_shared<implementation::ImageMetal>(tex, descr);
+      return ghost::Image(ptr);
+    }
+    // Heap full — fall through to individual allocation
+  }
   auto ptr = std::make_shared<implementation::ImageMetal>(*this, descr);
   return ghost::Image(ptr);
 }
@@ -534,12 +1046,42 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
     return "Apple";
   case kDeviceDriverVersion:
     return getMetalVersion();
+  case kDeviceFamily:
+    if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *)) {
+      if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, *)) {
+        if ([dev.get() supportsFamily:MTLGPUFamilyApple10])
+          return "Apple10";
+      }
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple9])
+        return "Apple9";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple8])
+        return "Apple8";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple7])
+        return "Apple7";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple6])
+        return "Apple6";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple5])
+        return "Apple5";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple4])
+        return "Apple4";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple3])
+        return "Apple3";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple2])
+        return "Apple2";
+      if ([dev.get() supportsFamily:MTLGPUFamilyApple1])
+        return "Apple1";
+      if ([dev.get() supportsFamily:MTLGPUFamilyMac2])
+        return "Mac2";
+      if ([dev.get() supportsFamily:MTLGPUFamilyMac1])
+        return "Mac1";
+    }
+    return "Unknown";
   case kDeviceCount:
     return 1;
   case kDeviceProcessorCount:
     return 1;
   case kDeviceUnifiedMemory:
-    return dev.get().hasUnifiedMemory;
+    return (bool)dev.get().hasUnifiedMemory;
   case kDeviceMemory:
     return (uint64_t)dev.get().recommendedMaxWorkingSetSize;
   case kDeviceLocalMemory:
@@ -559,8 +1101,10 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
   case kDeviceMaxImageSize2: {
     int32_t v = 16384;
     if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *)) {
-      if ([dev.get() supportsFamily:MTLGPUFamilyApple10]) {
-        v = 32786;
+      if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, *)) {
+        if ([dev.get() supportsFamily:MTLGPUFamilyApple10]) {
+          v = 32786;
+        }
       } else if (![dev.get() supportsFamily:MTLGPUFamilyApple3]) {
         v = 8192;
       }
@@ -580,7 +1124,7 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
     const int32_t v = 2048;
     return Attribute(v, v, v);
   }
-  case kDeviceImageAlignment: {
+  case kDeviceMaxImageAlignment: {
     ImageDescription descr(Size3(16, 16, 1), PixelOrder_RGBA, DataType_Float,
                            Stride2(0, 0));
     size_t size = 256;
@@ -588,7 +1132,7 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
       size = [dev.get()
           minimumLinearTextureAlignmentForPixelFormat:getFormat(descr)];
     }
-    return uint32_t(size / descr.pixelSize());
+    return uint32_t(size);
   }
   case kDeviceSupportsImageIntegerFiltering:
     return true;
@@ -601,6 +1145,8 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
     return true;
   case kDeviceSupportsProgramConstants:
     return true;
+  case kDeviceSupportsProgramGlobals:
+    return false;
   case kDeviceSupportsSubgroup:
   case kDeviceSupportsSubgroupShuffle:
     if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, macCatalyst 11.0, *)) {
@@ -609,9 +1155,37 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
     return false;
   case kDeviceSubgroupWidth:
     return 32;
+  case kDeviceMaxComputeUnits:
+    return 1;
+  case kDeviceMemoryAlignment:
+    return (uint32_t)256;
+  case kDeviceBufferAlignment:
+    return (uint32_t)256;
+  case kDeviceMaxBufferSize:
+    return (uint64_t)dev.get().maxBufferLength;
+  case kDeviceMaxConstantBufferSize:
+    return (uint64_t)dev.get().maxBufferLength;
+  case kDeviceTimestampPeriod:
+    return 0.0f;
+  case kDeviceSupportsProfilingTimer:
+    return false;
+  case kDeviceSupportsCooperativeMatrix:
+    if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *)) {
+      return (bool)[dev.get() supportsFamily:MTLGPUFamilyApple7];
+    }
+    return false;
   default:
     return Attribute();
   }
+}
+
+size_t DeviceMetal::imageAlignment(const ImageDescription &descr) const {
+  size_t size = 256;
+  if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, macCatalyst 13.1, *)) {
+    size = [dev.get()
+        minimumLinearTextureAlignmentForPixelFormat:getFormat(descr)];
+  }
+  return size > 0 ? size : 1;
 }
 } // namespace implementation
 
@@ -619,6 +1193,45 @@ DeviceMetal::DeviceMetal(const SharedContext &share)
     : Device(std::make_shared<implementation::DeviceMetal>(share)) {
   auto metal = static_cast<implementation::DeviceMetal *>(impl().get());
   setDefaultStream(std::make_shared<implementation::StreamMetal>(metal->queue));
+}
+
+DeviceMetal::DeviceMetal(const GpuInfo &info)
+    : Device(std::make_shared<implementation::DeviceMetal>(info)) {
+  auto metal = static_cast<implementation::DeviceMetal *>(impl().get());
+  setDefaultStream(std::make_shared<implementation::StreamMetal>(metal->queue));
+}
+
+std::vector<GpuInfo> DeviceMetal::enumerateDevices() {
+  std::vector<GpuInfo> result;
+  @autoreleasepool {
+#if TARGET_OS_OSX
+    NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
+    for (NSUInteger i = 0; i < devices.count; i++) {
+      id<MTLDevice> d = devices[i];
+      GpuInfo info;
+      info.name = [[d name] UTF8String];
+      info.vendor = "Apple";
+      info.implementation = "Metal";
+      info.memory = (uint64_t)d.recommendedMaxWorkingSetSize;
+      info.unifiedMemory = d.hasUnifiedMemory;
+      info.index = (int)i;
+      result.push_back(info);
+    }
+#else
+    id<MTLDevice> d = MTLCreateSystemDefaultDevice();
+    if (d) {
+      GpuInfo info;
+      info.name = [[d name] UTF8String];
+      info.vendor = "Apple";
+      info.implementation = "Metal";
+      info.memory = (uint64_t)d.recommendedMaxWorkingSetSize;
+      info.unifiedMemory = d.hasUnifiedMemory;
+      info.index = 0;
+      result.push_back(info);
+    }
+#endif
+  }
+  return result;
 }
 } // namespace ghost
 #endif

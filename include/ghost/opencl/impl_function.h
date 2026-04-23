@@ -16,8 +16,7 @@
 #define GHOST_OPENCL_IMPL_FUNCTION_H
 
 #include <ghost/implementation/impl_function.h>
-
-#include "ptr.h"
+#include <ghost/opencl/ptr.h>
 
 namespace ghost {
 namespace implementation {
@@ -29,37 +28,41 @@ class FunctionOpenCL : public Function {
 
   FunctionOpenCL(const DeviceOpenCL& dev, opencl::ptr<cl_kernel> k);
 
-  virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
+  virtual void execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
 
   virtual Attribute getAttribute(FunctionAttributeId what) const override;
+
+  virtual uint32_t preferredSubgroupSize() const override;
 
  private:
   const DeviceOpenCL& _dev;
 };
 
 class LibraryOpenCL : public Library {
- protected:
-  opencl::ptr<cl_context> context;
-
  public:
   opencl::ptr<cl_program> program;
 
   LibraryOpenCL(const DeviceOpenCL& dev);
 
-  void loadFromText(const std::string& text, const std::string& options);
-  void loadFromData(const void* data, size_t len, const std::string& options);
+  void loadFromText(const std::string& text, const CompilerOptions& options);
+  void loadFromData(const void* data, size_t len,
+                    const CompilerOptions& options);
   void loadFromBinaries(const size_t* lengths, const unsigned char** binaries,
-                        const std::string& options);
+                        const CompilerOptions& options);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
+  virtual std::vector<uint8_t> getBinary() const override;
+
+ protected:
+  opencl::ptr<cl_context> context;
 
  private:
   void checkBuildLog(cl_int err0);
   void loadFromCache(const void* data, size_t length,
-                     const std::string& options);
+                     const CompilerOptions& options);
   void saveToCache(const void* data, size_t length,
-                   const std::string& options) const;
+                   const CompilerOptions& options) const;
   const DeviceOpenCL& _dev;
 };
 }  // namespace implementation

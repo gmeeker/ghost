@@ -15,13 +15,23 @@
 #ifndef GHOST_CUDA_IMPL_DEVICE_H
 #define GHOST_CUDA_IMPL_DEVICE_H
 
+#include <ghost/cuda/cu_ptr.h>
 #include <ghost/device.h>
-
-#include "cu_ptr.h"
 
 namespace ghost {
 namespace implementation {
 class DeviceCUDA;
+
+class EventCUDA : public Event {
+ public:
+  cu::ptr<CUevent> event;
+
+  EventCUDA(cu::ptr<CUevent> event_);
+
+  virtual void wait() override;
+  virtual bool isComplete() const override;
+  virtual double elapsed(const Event& other) const override;
+};
 
 class StreamCUDA : public Stream {
  public:
@@ -31,22 +41,50 @@ class StreamCUDA : public Stream {
   StreamCUDA(CUcontext dev);
 
   void sync();
+  virtual std::shared_ptr<Event> record() override;
+  virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
 };
 
 class BufferCUDA : public Buffer {
  public:
   cu::ptr<CUdeviceptr> mem;
+  size_t _size;
 
-  BufferCUDA(cu::ptr<CUdeviceptr> mem_);
+  BufferCUDA(cu::ptr<CUdeviceptr> mem_, size_t bytes);
   BufferCUDA(const DeviceCUDA& dev, size_t bytes,
-             Access access = Access_ReadWrite);
+             const BufferOptions& opts = {});
 
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+  virtual size_t size() const override;
+
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     size_t bytes) override;
-  virtual void copy(const ghost::Stream& s, const void* src,
+  virtual void copy(const ghost::Encoder& s, const void* src,
                     size_t bytes) override;
-  virtual void copyTo(const ghost::Stream& s, void* dst,
+  virtual void copyTo(const ghost::Encoder& s, void* dst,
                       size_t bytes) const override;
+
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
+                    size_t srcOffset, size_t dstOffset, size_t bytes) override;
+  virtual void copy(const ghost::Encoder& s, const void* src, size_t dstOffset,
+                    size_t bytes) override;
+  virtual void copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
+                      size_t bytes) const override;
+
+  virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
+                    uint8_t value) override;
+  virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
+                    const void* pattern, size_t patternSize) override;
+
+  virtual std::shared_ptr<Buffer> createSubBuffer(
+      const std::shared_ptr<Buffer>& self, size_t offset, size_t size) override;
+};
+
+class SubBufferCUDA : public BufferCUDA {
+ public:
+  std::shared_ptr<Buffer> _parent;
+
+  SubBufferCUDA(std::shared_ptr<Buffer> parent, cu::ptr<CUdeviceptr> mem_,
+                size_t bytes);
 };
 
 class MappedBufferCUDA : public BufferCUDA {
@@ -55,11 +93,11 @@ class MappedBufferCUDA : public BufferCUDA {
 
   MappedBufferCUDA(cu::ptr<void*> mem_);
   MappedBufferCUDA(const DeviceCUDA& dev, size_t bytes,
-                   Access access = Access_ReadWrite);
+                   const BufferOptions& opts = {});
 
-  virtual void* map(const ghost::Stream& s, Access access,
+  virtual void* map(const ghost::Encoder& s, Access access,
                     bool sync = true) override;
-  virtual void unmap(const ghost::Stream& s) override;
+  virtual void unmap(const ghost::Encoder& s) override;
 };
 
 class ImageCUDA : public Image {
@@ -74,15 +112,43 @@ class ImageCUDA : public Image {
   ImageCUDA(const DeviceCUDA& dev, const ImageDescription& descr_,
             ImageCUDA& image);
 
-  virtual void copy(const ghost::Stream& s, const ghost::Image& src) override;
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
-                    const ImageDescription& descr) override;
-  virtual void copy(const ghost::Stream& s, const void* src,
-                    const ImageDescription& descr) override;
-  virtual void copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                      const ImageDescription& descr) const override;
-  virtual void copyTo(const ghost::Stream& s, void* dst,
-                      const ImageDescription& descr) const override;
+  virtual const ImageDescription& description() const override { return descr; }
+
+  virtual void copy(const ghost::Encoder& s, const ghost::Image& src) override;
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
+                    const BufferLayout& layout) override;
+  virtual void copy(const ghost::Encoder& s, const void* src,
+                    const BufferLayout& layout) override;
+  virtual void copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
+                      const BufferLayout& layout) const override;
+  virtual void copyTo(const ghost::Encoder& s, void* dst,
+                      const BufferLayout& layout) const override;
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
+                    const BufferLayout& layout,
+                    const Origin3& imageOrigin) override;
+  virtual void copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
+                      const BufferLayout& layout,
+                      const Origin3& imageOrigin) const override;
+  virtual void copy(const ghost::Encoder& s, const ghost::Image& src,
+                    const Size3& region, const Origin3& srcOrigin,
+                    const Origin3& dstOrigin) override;
+};
+
+// Class to track thread's current context, even if other libraries change it.
+// Use one cuCtxPushContext and wait to pop until exiting from the thread (or
+// destroying a context).
+class CU_CurrentContext {
+ protected:
+  static thread_local size_t _pushCount;
+
+ public:
+  // get context (cuCtxGetCurrent).
+  static CUcontext get();
+  // set context, pushing on stack if necessary.
+  static CUresult set(CUcontext c);
+  // cuCtxPushContext (or cuCtxContextCreate) was just called.
+  static void pushed();
+  static void pop();
 };
 
 class DeviceCUDA : public Device {
@@ -90,29 +156,42 @@ class DeviceCUDA : public Device {
   cu::ptr<CUcontext> context;
   cu::ptr<CUstream> queue;
   CUdevice device;
+#if CUDA_VERSION >= 11020
+  cu::ptr<CUmemoryPool> memPool;
+#endif
 
   struct ComputeCapability {
     int major, minor;
   } computeCapability;
 
   DeviceCUDA(const SharedContext& share);
+  DeviceCUDA(const GpuInfo& info);
+  DeviceCUDA(int deviceOrdinal);
+  ~DeviceCUDA() override;
+
+  void activate(void** prevOut = nullptr) override;
+  void deactivate(void* prev = nullptr) override;
 
   virtual ghost::Library loadLibraryFromText(
-      const std::string& text, const std::string& options = "") const override;
+      const std::string& text,
+      const CompilerOptions& options = CompilerOptions(),
+      bool retainBinary = false) const override;
   virtual ghost::Library loadLibraryFromData(
       const void* data, size_t len,
-      const std::string& options = "") const override;
+      const CompilerOptions& options = CompilerOptions(),
+      bool retainBinary = false) const override;
 
   virtual SharedContext shareContext() const override;
 
-  virtual ghost::Stream createStream() const override;
+  virtual ghost::Stream createStream(
+      const StreamOptions& options = {}) const override;
 
   virtual size_t getMemoryPoolSize() const override;
   virtual void setMemoryPoolSize(size_t bytes) override;
   virtual ghost::Buffer allocateBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::MappedBuffer allocateMappedBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::Image allocateImage(
       const ImageDescription& descr) const override;
   virtual ghost::Image sharedImage(const ImageDescription& descr,

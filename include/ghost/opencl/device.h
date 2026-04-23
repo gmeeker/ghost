@@ -16,11 +16,17 @@
 #define GHOST_OPENCL_DEVICE_H
 
 #include <ghost/device.h>
+#include <ghost/gpu_info.h>
+
+#include <vector>
 
 namespace ghost {
 class DeviceOpenCL : public Device {
  public:
   DeviceOpenCL(const SharedContext& share = SharedContext());
+  DeviceOpenCL(const GpuInfo& info);
+
+  static std::vector<GpuInfo> enumerateDevices();
 };
 }  // namespace ghost
 

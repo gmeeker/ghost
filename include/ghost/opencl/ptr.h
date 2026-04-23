@@ -21,6 +21,9 @@
 #include <CL/cl.h>
 #endif
 
+#include <ghost/exception.h>
+#include <ghost/opencl/exception.h>
+
 namespace ghost {
 namespace opencl {
 template <typename T>
@@ -29,7 +32,7 @@ class detail {};
 template <>
 class detail<cl_command_queue> {
  public:
-  static void release(cl_command_queue v) { clReleaseCommandQueue(v); }
+  static cl_int release(cl_command_queue v) { return clReleaseCommandQueue(v); }
 
   static void retain(cl_command_queue v) { clRetainCommandQueue(v); }
 };
@@ -37,7 +40,7 @@ class detail<cl_command_queue> {
 template <>
 class detail<cl_context> {
  public:
-  static void release(cl_context v) { clReleaseContext(v); }
+  static cl_int release(cl_context v) { return clReleaseContext(v); }
 
   static void retain(cl_context v) { clRetainContext(v); }
 };
@@ -45,7 +48,7 @@ class detail<cl_context> {
 template <>
 class detail<cl_device_id> {
  public:
-  static void release(cl_device_id v) { clReleaseDevice(v); }
+  static cl_int release(cl_device_id v) { return clReleaseDevice(v); }
 
   static void retain(cl_device_id v) { clRetainDevice(v); }
 };
@@ -53,7 +56,7 @@ class detail<cl_device_id> {
 template <>
 class detail<cl_event> {
  public:
-  static void release(cl_event v) { clReleaseEvent(v); }
+  static cl_int release(cl_event v) { return clReleaseEvent(v); }
 
   static void retain(cl_event v) { clRetainEvent(v); }
 };
@@ -61,7 +64,7 @@ class detail<cl_event> {
 template <>
 class detail<cl_kernel> {
  public:
-  static void release(cl_kernel v) { clReleaseKernel(v); }
+  static cl_int release(cl_kernel v) { return clReleaseKernel(v); }
 
   static void retain(cl_kernel v) { clRetainKernel(v); }
 };
@@ -69,7 +72,7 @@ class detail<cl_kernel> {
 template <>
 class detail<cl_mem> {
  public:
-  static void release(cl_mem v) { clReleaseMemObject(v); }
+  static cl_int release(cl_mem v) { return clReleaseMemObject(v); }
 
   static void retain(cl_mem v) { clRetainMemObject(v); }
 };
@@ -77,7 +80,7 @@ class detail<cl_mem> {
 template <>
 class detail<cl_program> {
  public:
-  static void release(cl_program v) { clReleaseProgram(v); }
+  static cl_int release(cl_program v) { return clReleaseProgram(v); }
 
   static void retain(cl_program v) { clRetainProgram(v); }
 };
@@ -85,7 +88,7 @@ class detail<cl_program> {
 template <>
 class detail<cl_sampler> {
  public:
-  static void release(cl_sampler v) { clReleaseSampler(v); }
+  static cl_int release(cl_sampler v) { return clReleaseSampler(v); }
 
   static void retain(cl_sampler v) { clRetainSampler(v); }
 };
@@ -116,8 +119,15 @@ class ptr {
 
   void reset() {
     if (object_) {
-      DETAIL::release(object_);
+      cl_int err = DETAIL::release(object_);
       object_ = nullptr;
+      if (err != CL_SUCCESS) {
+        try {
+          throw opencl::runtime_error(err);
+        } catch (...) {
+          ghost::detail::stashError(std::current_exception());
+        }
+      }
     }
   }
 
@@ -193,15 +203,26 @@ class array {
   ~array() { reset(); }
 
   void reset() {
+    cl_int firstErr = CL_SUCCESS;
     for (auto i = objects_.begin(); i != objects_.end(); ++i) {
-      DETAIL::release(*i);
+      cl_int err = DETAIL::release(*i);
+      if (err != CL_SUCCESS && firstErr == CL_SUCCESS) firstErr = err;
     }
     objects_.clear();
+    if (firstErr != CL_SUCCESS) {
+      try {
+        throw opencl::runtime_error(firstErr);
+      } catch (...) {
+        ghost::detail::stashError(std::current_exception());
+      }
+    }
   }
 
   const cl_type* get() const {
     return objects_.empty() ? nullptr : &objects_[0];
   }
+
+  bool empty() const { return objects_.empty(); }
 
   size_t size() const { return objects_.size(); }
 

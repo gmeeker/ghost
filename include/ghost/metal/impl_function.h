@@ -19,6 +19,8 @@
 #include <ghost/implementation/impl_function.h>
 #include <ghost/objc/ptr.h>
 
+#include <filesystem>
+
 namespace ghost {
 namespace implementation {
 class DeviceMetal;
@@ -31,29 +33,68 @@ class FunctionMetal : public Function {
   FunctionMetal(id<MTLLibrary> library, const std::string& name);
   FunctionMetal(id<MTLLibrary> library, const std::string& name,
                 const std::vector<Attribute>& args);
+  FunctionMetal(
+      id<MTLLibrary> library, const std::string& name,
+      const std::vector<std::pair<std::string, Attribute>>& namedConstants);
+#if defined(MAC_OS_VERSION_11_0)
+  FunctionMetal(id<MTLLibrary> library, const std::string& name,
+                id<MTLBinaryArchive> archive, bool& dirty);
+  FunctionMetal(id<MTLLibrary> library, const std::string& name,
+                const std::vector<Attribute>& args,
+                id<MTLBinaryArchive> archive, bool& dirty);
+  FunctionMetal(
+      id<MTLLibrary> library, const std::string& name,
+      const std::vector<std::pair<std::string, Attribute>>& namedConstants,
+      id<MTLBinaryArchive> archive, bool& dirty);
+#endif
 
-  virtual void execute(const ghost::Stream& s, const LaunchArgs& launchArgs,
+  virtual void execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
 
+  virtual void executeIndirect(const ghost::Encoder& s,
+                               const std::shared_ptr<Buffer>& indirectBuffer,
+                               size_t indirectOffset,
+                               const std::vector<Attribute>& args) override;
+
   virtual Attribute getAttribute(FunctionAttributeId what) const override;
+
+  virtual uint32_t preferredSubgroupSize() const override {
+    return (uint32_t)pipeline.get().threadExecutionWidth;
+  }
 };
 
 class LibraryMetal : public Library {
  public:
   objc::ptr<id<MTLLibrary>> library;
 
-  LibraryMetal(const DeviceMetal& dev);
+  LibraryMetal(const DeviceMetal& dev, bool retainBinary = false);
 
-  void loadFromText(const std::string& text, const std::string& options);
-  void loadFromData(const void* data, size_t len, const std::string& options);
+  void loadFromText(const std::string& text, const CompilerOptions& options);
+  void loadFromData(const void* data, size_t len,
+                    const CompilerOptions& options);
   virtual ghost::Function lookupFunction(
       const std::string& name) const override;
   virtual ghost::Function specializeFunction(
       const std::string& name,
       const std::vector<Attribute>& args) const override;
+  virtual ghost::Function specializeFunctionNamed(
+      const std::string& name,
+      const std::vector<std::pair<std::string, Attribute>>& constants)
+      const override;
+  virtual std::vector<uint8_t> getBinary() const override;
 
  private:
   const DeviceMetal& _dev;
+  std::vector<uint8_t> _binaryData;
+#if defined(MAC_OS_VERSION_11_0)
+  objc::ptr<id<MTLBinaryArchive>> _archive;
+  std::filesystem::path _archivePath;
+  mutable bool _archiveDirty = false;
+
+  void initArchive(const void* data, size_t len,
+                   const CompilerOptions& options);
+  void saveArchive() const;
+#endif
 };
 }  // namespace implementation
 }  // namespace ghost

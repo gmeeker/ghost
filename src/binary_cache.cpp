@@ -15,27 +15,63 @@
 #include <ghost/binary_cache.h>
 #include <ghost/device.h>
 #include <ghost/digest.h>
+#include <ghost/implementation/impl_function.h>
 #include <ghost/io.h>
 #include <string.h>
 #include <time.h>
 
-#if WIN32
-#include <windows.h>
-#else
-#include <dirent.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
-
+#include <chrono>
+#include <filesystem>
+#include <sstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace ghost {
+
+namespace fs = std::filesystem;
+
+std::string CompilerOptions::buildFlags() const {
+  std::ostringstream result;
+  result << flags;
+  for (auto& arg : arguments) {
+    if (result.tellp() > 0) result << ' ';
+    result << arg;
+  }
+  for (auto& def : defines) {
+    if (result.tellp() > 0) result << ' ';
+    result << "-D" << def.first;
+    if (!def.second.empty()) result << '=' << def.second;
+  }
+  return result.str();
+}
+
+void CompilerOptions::updateDigest(Digest& d) const {
+  static const char sep = '\0';
+  if (!flags.empty()) d.update(flags.c_str(), flags.size());
+  for (auto& arg : arguments) {
+    d.update(&sep, 1);
+    d.update(arg.c_str(), arg.size());
+  }
+  for (auto& def : defines) {
+    d.update(&sep, 1);
+    d.update(def.first.c_str(), def.first.size());
+    d.update("=", 1);
+    d.update(def.second.c_str(), def.second.size());
+  }
+  for (auto& hdr : headers) {
+    d.update(&sep, 1);
+    d.update(hdr.first.c_str(), hdr.first.size());
+    d.update(&sep, 1);
+    d.update(hdr.second.c_str(), hdr.second.size());
+  }
+}
+
 bool BinaryCache::isEnabled() const { return !cachePath.empty(); }
 
 void BinaryCache::makeDigest(Digest& d, const implementation::Device& dev,
                              size_t count, const void* data, size_t length,
-                             const std::string& options) {
+                             const CompilerOptions& options) {
   for (size_t i = 0; i < count; i++) {
     std::string vendor = dev.getAttribute(kDeviceVendor).asString();
     std::string name = dev.getAttribute(kDeviceName).asString();
@@ -46,51 +82,28 @@ void BinaryCache::makeDigest(Digest& d, const implementation::Device& dev,
     if (!driverVersion.empty())
       d.update(driverVersion.c_str(), driverVersion.size());
   }
-  if (!options.empty()) d.update(options.c_str(), options.size());
+  options.updateDigest(d);
   if (data) d.update(data, length);
 }
 
-bool BinaryCache::purgeFiles(const std::string& dirname, int days) {
-  time_t oldest = time(NULL);
-  oldest -= 60 * 60 * 24 * days;  // Remove anything older than 'days'.
-#if WIN32
-  std::basic_string<TCHAR> name;
-  if (!getFileName(name, "", subfolder)) return false;
-  HANDLE hFind = INVALID_HANDLE_VALUE;
-  WIN32_FIND_DATA finddata;
-  hFind = FindFirstFile((name + _T("\\*")).c_str(), &finddata);
-  while (hFind != INVALID_HANDLE_VALUE) {
-    std::basic_string<TCHAR> filename = name + _T("\\") + finddata.cFileName;
-    DALStructStat s;
-    if (DALStat(filename.c_str(), &s) == 0) {
-      if (s.st_ctime < oldest) {
-        DeleteFile(filename.c_str());
-      }
+bool BinaryCache::purgeFiles(const fs::path& dirname, int days) {
+  std::error_code ec;
+  if (!fs::is_directory(dirname, ec)) return true;
+  auto cutoff = fs::file_time_type::clock::now() -
+                std::chrono::hours(24 * static_cast<int64_t>(days));
+  for (const auto& entry : fs::directory_iterator(dirname, ec)) {
+    if (ec) break;
+    auto mtime = fs::last_write_time(entry.path(), ec);
+    if (ec) {
+      ec.clear();
+      continue;
     }
-    if (!FindNextFile(hFind, &finddata)) {
-      FindClose(hFind);
-      hFind = INVALID_HANDLE_VALUE;
+    if (mtime < cutoff) {
+      fs::remove(entry.path(), ec);
+      ec.clear();
     }
   }
-  if (hFind != INVALID_HANDLE_VALUE) FindClose(hFind);
   return true;
-#else
-  DIR* dir = ::opendir(dirname.c_str());
-  if (dir) {
-    struct dirent* d;
-    struct stat s;
-    while ((d = ::readdir(dir))) {
-      std::string path = dirname + "/" + d->d_name;
-      if (::stat(path.c_str(), &s) >= 0) {
-        if (s.st_ctime < oldest) {
-          ::unlink(path.c_str());
-        }
-      }
-    }
-    ::closedir(dir);
-  }
-  return true;
-#endif
 }
 
 void BinaryCache::purgeBinaries(const implementation::Device& dev,
@@ -102,14 +115,16 @@ void BinaryCache::purgeBinaries(const implementation::Device& dev,
 bool BinaryCache::loadBinaries(
     std::vector<std::vector<unsigned char>>& binaries,
     std::vector<size_t>& sizes, const implementation::Device& dev,
-    const void* data, size_t length, const std::string& options) const {
+    const void* data, size_t length, const CompilerOptions& options) const {
   if (cachePath.empty()) return false;
   size_t count = (size_t)dev.getAttribute(kDeviceCount).asInt();
   Digest f, d;
-  makeDigest(d, dev, count, nullptr, 0, "");
+  makeDigest(d, dev, count, nullptr, 0, CompilerOptions());
   makeDigest(f, dev, count, data, length, options);
+  fs::path filePath =
+      cachePath / f.get().substr(0, GHOST_DIGEST_FILENAME_LENGTH);
   FileWrapper file;
-  file = fopen((cachePath + f.get()).c_str(), "rb");
+  file = fopen(filePath.string().c_str(), "rb");
   if (!file.okay()) return false;
 
   uint8_t digest1[Digest::length];
@@ -148,15 +163,19 @@ void BinaryCache::saveBinaries(const implementation::Device& dev,
                                const std::vector<unsigned char*>& binaries,
                                const std::vector<size_t>& sizes,
                                const void* data, size_t length,
-                               const std::string& options) const {
+                               const CompilerOptions& options) const {
   if (cachePath.empty()) return;
   Digest f, d;
-  makeDigest(d, dev, binaries.size(), nullptr, 0, "");
+  makeDigest(d, dev, binaries.size(), nullptr, 0, CompilerOptions());
   makeDigest(f, dev, binaries.size(), data, length, options);
   size_t i;
 
+  fs::path filePath =
+      cachePath / f.get().substr(0, GHOST_DIGEST_FILENAME_LENGTH);
+  std::error_code ec;
+  fs::create_directories(cachePath, ec);
   FileWrapper file;
-  file = fopen((cachePath + f.get()).c_str(), "wb");
+  file = fopen(filePath.string().c_str(), "wb");
   if (file.okay()) {
     uint8_t digest[Digest::length];
     d.get(digest);

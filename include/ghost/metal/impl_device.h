@@ -23,30 +23,90 @@ namespace ghost {
 namespace implementation {
 class DeviceMetal;
 
+class EventMetal : public Event {
+ public:
+  objc::ptr<id<MTLSharedEvent>> sharedEvent;
+  uint64_t targetValue;
+
+  EventMetal(objc::ptr<id<MTLSharedEvent>> event_, uint64_t value);
+
+  virtual void wait() override;
+  virtual bool isComplete() const override;
+};
+
 class StreamMetal : public Stream {
  public:
   objc::ptr<id<MTLCommandQueue>> queue;
+  objc::ptr<id<MTLCommandBuffer>> lastCommandBuffer;
+  objc::ptr<id<MTLEvent>> syncEvent;
+  uint64_t syncCounter = 0;
 
   StreamMetal(
       objc::ptr<id<MTLCommandQueue>> queue_ = objc::ptr<id<MTLCommandQueue>>());
   StreamMetal(id<MTLDevice> dev);
 
+  // Commit a command buffer, signal the sync event, and track it for sync().
+  void commitAndTrack(id<MTLCommandBuffer> cb);
+
+  // Encode a wait for all previously committed work on a new command buffer.
+  // Must be called before encoding any operations that read untracked resources
+  // written by prior command buffers.
+  void encodeWait(id<MTLCommandBuffer> cb);
+
   virtual void sync() override;
+  virtual std::shared_ptr<Event> record() override;
+  virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
 };
 
 class BufferMetal : public Buffer {
  public:
   objc::ptr<id<MTLBuffer>> mem;
+  size_t _size;
 
-  BufferMetal(objc::ptr<id<MTLBuffer>> mem_);
+  BufferMetal(objc::ptr<id<MTLBuffer>> mem_, size_t bytes);
   BufferMetal(const DeviceMetal& dev, size_t bytes,
-              Access access = Access_ReadWrite);
+              const BufferOptions& opts = {});
 
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+  virtual size_t size() const override;
+
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     size_t bytes) override;
-  virtual void copy(const ghost::Stream& s, const void* src,
+  virtual void copy(const ghost::Encoder& s, const void* src,
                     size_t bytes) override;
-  virtual void copyTo(const ghost::Stream& s, void* dst,
+  virtual void copyTo(const ghost::Encoder& s, void* dst,
+                      size_t bytes) const override;
+
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
+                    size_t srcOffset, size_t dstOffset, size_t bytes) override;
+  virtual void copy(const ghost::Encoder& s, const void* src, size_t dstOffset,
+                    size_t bytes) override;
+  virtual void copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
+                      size_t bytes) const override;
+
+  virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
+                    uint8_t value) override;
+  virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
+                    const void* pattern, size_t patternSize) override;
+
+  virtual std::shared_ptr<Buffer> createSubBuffer(
+      const std::shared_ptr<Buffer>& self, size_t offset, size_t size) override;
+};
+
+class SubBufferMetal : public BufferMetal {
+ public:
+  std::shared_ptr<Buffer> _parent;
+  size_t _offset;
+
+  SubBufferMetal(std::shared_ptr<Buffer> parent, objc::ptr<id<MTLBuffer>> mem_,
+                 size_t offset, size_t size);
+
+  virtual size_t baseOffset() const override;
+
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
+                    size_t bytes) override;
+  virtual void copy(const ghost::Encoder& s, const void* src,
+                    size_t bytes) override;
+  virtual void copyTo(const ghost::Encoder& s, void* dst,
                       size_t bytes) const override;
 };
 
@@ -56,11 +116,11 @@ class MappedBufferMetal : public BufferMetal {
 
   MappedBufferMetal(objc::ptr<id<MTLBuffer>> mem_, size_t bytes);
   MappedBufferMetal(const DeviceMetal& dev, size_t bytes,
-                    Access access = Access_ReadWrite);
+                    const BufferOptions& opts = {});
 
-  virtual void* map(const ghost::Stream& s, Access access,
+  virtual void* map(const ghost::Encoder& s, Access access,
                     bool sync = true) override;
-  virtual void unmap(const ghost::Stream& s) override;
+  virtual void unmap(const ghost::Encoder& s) override;
 };
 
 class ImageMetal : public Image {
@@ -75,40 +135,58 @@ class ImageMetal : public Image {
   ImageMetal(const DeviceMetal& dev, const ImageDescription& descr,
              ImageMetal& image);
 
-  virtual void copy(const ghost::Stream& s, const ghost::Image& src) override;
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
-                    const ImageDescription& descr) override;
-  virtual void copy(const ghost::Stream& s, const void* src,
-                    const ImageDescription& descr) override;
-  virtual void copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                      const ImageDescription& descr) const override;
-  virtual void copyTo(const ghost::Stream& s, void* dst,
-                      const ImageDescription& descr) const override;
+  virtual const ImageDescription& description() const override { return descr; }
+
+  virtual void copy(const ghost::Encoder& s, const ghost::Image& src) override;
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
+                    const BufferLayout& layout) override;
+  virtual void copy(const ghost::Encoder& s, const void* src,
+                    const BufferLayout& layout) override;
+  virtual void copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
+                      const BufferLayout& layout) const override;
+  virtual void copyTo(const ghost::Encoder& s, void* dst,
+                      const BufferLayout& layout) const override;
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
+                    const BufferLayout& layout,
+                    const Origin3& imageOrigin) override;
+  virtual void copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
+                      const BufferLayout& layout,
+                      const Origin3& imageOrigin) const override;
+  virtual void copy(const ghost::Encoder& s, const ghost::Image& src,
+                    const Size3& region, const Origin3& srcOrigin,
+                    const Origin3& dstOrigin) override;
 };
 
 class DeviceMetal : public Device {
  public:
   objc::ptr<id<MTLDevice>> dev;
   objc::ptr<id<MTLCommandQueue>> queue;
+  objc::ptr<id<MTLHeap>> heap;
 
   DeviceMetal(const SharedContext& share);
+  DeviceMetal(const GpuInfo& info);
+  DeviceMetal(id<MTLDevice> device);
 
   virtual ghost::Library loadLibraryFromText(
-      const std::string& text, const std::string& options = "") const override;
+      const std::string& text,
+      const CompilerOptions& options = CompilerOptions(),
+      bool retainBinary = false) const override;
   virtual ghost::Library loadLibraryFromData(
       const void* data, size_t len,
-      const std::string& options = "") const override;
+      const CompilerOptions& options = CompilerOptions(),
+      bool retainBinary = false) const override;
 
   virtual SharedContext shareContext() const override;
 
-  virtual ghost::Stream createStream() const override;
+  virtual ghost::Stream createStream(
+      const StreamOptions& options = {}) const override;
 
   virtual size_t getMemoryPoolSize() const override;
   virtual void setMemoryPoolSize(size_t bytes) override;
   virtual ghost::Buffer allocateBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::MappedBuffer allocateMappedBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::Image allocateImage(
       const ImageDescription& descr) const override;
   virtual ghost::Image sharedImage(const ImageDescription& descr,
@@ -117,6 +195,7 @@ class DeviceMetal : public Device {
                                    ghost::Image& image) const override;
 
   virtual Attribute getAttribute(DeviceAttributeId what) const override;
+  virtual size_t imageAlignment(const ImageDescription& descr) const override;
 };
 }  // namespace implementation
 }  // namespace ghost

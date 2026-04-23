@@ -17,99 +17,94 @@
 
 #include <ghost/cpu/impl_function.h>
 #include <ghost/device.h>
-
-#ifdef __APPLE_CC__
-#include <dispatch/dispatch.h>
-#endif
+#include <ghost/thread_pool.h>
 
 #include <set>
-
-#ifdef __APPLE_CC__
-#define GHOST_USE_STD_THREAD 0
-#else
-#define GHOST_USE_STD_THREAD 1
-#endif
-#if GHOST_USE_STD_THREAD
-#include <condition_variable>
-#include <mutex>
-#include <queue>
-#include <thread>
-#endif
 
 namespace ghost {
 namespace implementation {
 class DeviceCPU;
 
-class ThreadWork {
+class EventCPU : public Event {
  public:
-  FunctionCPU::Type function;
-  std::vector<Attribute> args;
-  size_t i, count;
-  bool quit;
-};
+  double _timestamp;
 
-class ThreadPool {
- public:
-  virtual ~ThreadPool() {}
+  EventCPU();
 
-  virtual void thread(size_t count, FunctionCPU::Type function,
-                      const std::vector<Attribute>& args) = 0;
-
-  virtual void sync() {}
-};
-
-class ThreadPoolDefault : public ThreadPool {
- public:
-  const DeviceCPU& dev;
-#if GHOST_USE_STD_THREAD
-  std::vector<std::thread> threads;
-  std::queue<ThreadWork> work;
-  std::mutex mutex;
-  std::condition_variable cv;
-#elif __APPLE_CC__
-  dispatch_queue_t queue;
-  dispatch_group_t group;
-#endif
-
-  ThreadPoolDefault(const DeviceCPU& dev_);
-  ~ThreadPoolDefault();
-
-  virtual void thread(size_t count, FunctionCPU::Type function,
-                      const std::vector<Attribute>& args) override;
-  virtual void sync() override;
-
- private:
-  void worker();
+  virtual void wait() override;
+  virtual bool isComplete() const override;
+  virtual double timestamp() const override;
 };
 
 class StreamCPU : public Stream {
  public:
-  std::shared_ptr<ThreadPool> pool;
+  std::shared_ptr<ghost::ThreadPool> pool;
 
-  StreamCPU(std::shared_ptr<ThreadPool> pool_);
+  StreamCPU(std::shared_ptr<ghost::ThreadPool> pool_);
   ~StreamCPU();
 
   virtual void sync() override;
+  virtual std::shared_ptr<Event> record() override;
+  virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
 };
 
 class BufferCPU : public Buffer {
+ protected:
+  BufferCPU(void* ptr_, size_t bytes);
+
  public:
   void* ptr;
-  size_t size;
+  size_t _size;
 
   BufferCPU(const DeviceCPU& dev, size_t bytes);
 
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
+  virtual size_t size() const override;
+
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     size_t bytes) override;
-  virtual void copy(const ghost::Stream& s, const void* src,
+  virtual void copy(const ghost::Encoder& s, const void* src,
                     size_t bytes) override;
-  virtual void copyTo(const ghost::Stream& s, void* dst,
+  virtual void copyTo(const ghost::Encoder& s, void* dst,
                       size_t bytes) const override;
+
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
+                    size_t srcOffset, size_t dstOffset, size_t bytes) override;
+  virtual void copy(const ghost::Encoder& s, const void* src, size_t dstOffset,
+                    size_t bytes) override;
+  virtual void copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
+                      size_t bytes) const override;
+
+  virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
+                    uint8_t value) override;
+  virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
+                    const void* pattern, size_t patternSize) override;
+
+  virtual std::shared_ptr<Buffer> createSubBuffer(
+      const std::shared_ptr<Buffer>& self, size_t offset, size_t size) override;
+};
+
+class MappedBufferCPU : public BufferCPU {
+ public:
+  MappedBufferCPU(const DeviceCPU& dev, size_t bytes);
+
+  virtual void* map(const ghost::Encoder& s, Access access,
+                    bool sync = true) override;
+  virtual void unmap(const ghost::Encoder& s) override;
+};
+
+class SubBufferCPU : public BufferCPU {
+ public:
+  std::shared_ptr<Buffer> _parent;
+
+  SubBufferCPU(std::shared_ptr<Buffer> parent, void* ptr_, size_t bytes);
 };
 
 class ImageCPU : public Image {
  public:
   ImageDescription descr;
+  void* data;
+  size_t rowBytes;
+  size_t depthBytes;
 
   ImageCPU(const DeviceCPU& dev, const ImageDescription& descr);
   ImageCPU(const DeviceCPU& dev, const ImageDescription& descr,
@@ -117,41 +112,65 @@ class ImageCPU : public Image {
   ImageCPU(const DeviceCPU& dev, const ImageDescription& descr,
            ImageCPU& image);
 
-  virtual void copy(const ghost::Stream& s, const ghost::Image& src) override;
-  virtual void copy(const ghost::Stream& s, const ghost::Buffer& src,
-                    const ImageDescription& descr) override;
-  virtual void copy(const ghost::Stream& s, const void* src,
-                    const ImageDescription& descr) override;
-  virtual void copyTo(const ghost::Stream& s, ghost::Buffer& dst,
-                      const ImageDescription& descr) const override;
-  virtual void copyTo(const ghost::Stream& s, void* dst,
-                      const ImageDescription& descr) const override;
+  virtual const ImageDescription& description() const override { return descr; }
+
+  virtual void copy(const ghost::Encoder& s, const ghost::Image& src) override;
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
+                    const BufferLayout& layout) override;
+  virtual void copy(const ghost::Encoder& s, const void* src,
+                    const BufferLayout& layout) override;
+  virtual void copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
+                      const BufferLayout& layout) const override;
+  virtual void copyTo(const ghost::Encoder& s, void* dst,
+                      const BufferLayout& layout) const override;
+  virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
+                    const BufferLayout& layout,
+                    const Origin3& imageOrigin) override;
+  virtual void copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
+                      const BufferLayout& layout,
+                      const Origin3& imageOrigin) const override;
+  virtual void copy(const ghost::Encoder& s, const ghost::Image& src,
+                    const Size3& region, const Origin3& srcOrigin,
+                    const Origin3& dstOrigin) override;
 };
 
 class DeviceCPU : public Device {
  public:
   size_t cores;
+  std::shared_ptr<ghost::ThreadPool> pool;
 
   DeviceCPU(const SharedContext& share);
+  DeviceCPU(const GpuInfo& info);
+  DeviceCPU(std::shared_ptr<ghost::ThreadPool> pool);
+
+  std::shared_ptr<ghost::ThreadPool> threadPool() const override {
+    return pool;
+  }
+
+  void setThreadPool(std::shared_ptr<ghost::ThreadPool> p) { pool = p; }
 
   virtual ghost::Library loadLibraryFromText(
-      const std::string& text, const std::string& options = "") const override;
+      const std::string& text,
+      const CompilerOptions& options = CompilerOptions(),
+      bool retainBinary = false) const override;
   virtual ghost::Library loadLibraryFromData(
       const void* data, size_t len,
-      const std::string& options = "") const override;
+      const CompilerOptions& options = CompilerOptions(),
+      bool retainBinary = false) const override;
   virtual ghost::Library loadLibraryFromFile(
-      const std::string& filename) const override;
+      const std::filesystem::path& filename) const override;
 
   virtual SharedContext shareContext() const override;
 
-  virtual ghost::Stream createStream() const override;
+  virtual ghost::Stream createStream(
+      const StreamOptions& options = {}) const override;
 
   virtual size_t getMemoryPoolSize() const override;
   virtual void setMemoryPoolSize(size_t bytes) override;
   virtual ghost::Buffer allocateBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::MappedBuffer allocateMappedBuffer(
-      size_t bytes, Access access = Access_ReadWrite) const override;
+      size_t bytes, const BufferOptions& opts = {}) const override;
   virtual ghost::Image allocateImage(
       const ImageDescription& descr) const override;
   virtual ghost::Image sharedImage(const ImageDescription& descr,
