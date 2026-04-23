@@ -90,6 +90,15 @@ cmake --build build
 
 Ghost supports [Conan](https://conan.io/) via the included `conanfile.py`.
 
+The CUDA Toolkit version can be set with Conan but this requires a custom `settings_user.yml`:
+
+```
+cuda:
+    nvcc:
+        version: [null, "8.0", "9.0", "9.1", "9.2", "10.0", "10.1", "10.2", "11.0", "11.1", "11.2", "11.3", "11.4", "11.5", "11.6", "11.7", "11.8", "12.0", "12.1", "12.2", "12.3", "12.4", "12.5", "12.6", "12.7", "12.8", "12.9", "13.0", "13.1", "13.2"]
+        cppstd: [null, 03, 11, 14, 17, 20]
+```
+
 ### Running Tests
 
 ```bash
