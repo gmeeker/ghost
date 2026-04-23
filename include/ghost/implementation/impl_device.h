@@ -72,6 +72,10 @@ enum DeviceAttributeId {
   /// Returns the maximum alignment requirement across all pixel formats.
   /// Safe to use when the format is not yet known; prefer
   /// Device::imageAlignment(descr) for format-specific queries.
+  ///
+  /// Returns 0 if the device does not support 2D images created from a
+  /// buffer (e.g., OpenCL devices without @c cl_khr_image2d_from_buffer
+  /// support).
   kDeviceMaxImageAlignment,
   /// @brief Whether integer image filtering is supported (bool).
   kDeviceSupportsImageIntegerFiltering,

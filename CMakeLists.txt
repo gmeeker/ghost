@@ -424,8 +424,8 @@ if(GTest_FOUND)
               -DINPUT_FILE=${CUDA_PTX_OUTPUT}
               -DOUTPUT_FILE=${CUDA_PTX_HEADER}
               -DVAR_NAME=ghost_test_cuda_ptx
-              -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
-          DEPENDS ${CUDA_PTX_OUTPUT} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2h.cmake
+              -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/txt2h.cmake
+          DEPENDS ${CUDA_PTX_OUTPUT} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/txt2h.cmake
           COMMENT "Generating CUDA PTX header")
       add_custom_target(ghost_test_ptx DEPENDS ${CUDA_PTX_HEADER})
       add_dependencies(TestGhostGTest ghost_test_ptx)

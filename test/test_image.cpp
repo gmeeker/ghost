@@ -225,8 +225,9 @@ TEST_P(ImageTest, UInt8ImageRoundTrip) {
 TEST_P(ImageTest, ImageAlignmentIsReasonable) {
   auto attr = device().getAttribute(kDeviceMaxImageAlignment);
   auto alignment = attr.asUInt64();
-  // Alignment must be at least 1 and a power of two.
-  EXPECT_GE(alignment, 1u);
+  if (alignment == 0) {
+    GTEST_SKIP() << "device does not support 2D images created from a buffer";
+  }
   EXPECT_EQ(alignment & (alignment - 1), 0u)
       << "alignment " << alignment << " is not a power of two";
   // All known backends return at least 16 bytes.
