@@ -569,6 +569,8 @@ Attribute DeviceCPU::getAttribute(DeviceAttributeId what) const {
       return true;
     case kDeviceSupportsProgramConstants:
       return false;
+    case kDeviceSupportsProgramGlobals:
+      return false;
     case kDeviceSupportsSubgroup:
       return true;
     case kDeviceSupportsSubgroupShuffle:

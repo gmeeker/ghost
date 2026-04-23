@@ -1145,6 +1145,8 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
     return true;
   case kDeviceSupportsProgramConstants:
     return true;
+  case kDeviceSupportsProgramGlobals:
+    return false;
   case kDeviceSupportsSubgroup:
   case kDeviceSupportsSubgroupShuffle:
     if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, macCatalyst 11.0, *)) {

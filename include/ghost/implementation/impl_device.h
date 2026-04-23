@@ -82,6 +82,15 @@ enum DeviceAttributeId {
   /// @brief Whether program constants / function specialization is supported
   /// (bool).
   kDeviceSupportsProgramConstants,
+  /// @brief Whether @c Library::setGlobals() is a real in-place operation on
+  /// an already-compiled program (bool).
+  ///
+  /// True only on backends where setGlobals writes directly to device memory
+  /// (e.g., CUDA @c __constant__ via @c cuMemcpyHtoD) without recompiling.
+  /// False on backends that don't expose globals at all or would have to
+  /// recompile from source — callers should use @c -D defines or program
+  /// constants instead.
+  kDeviceSupportsProgramGlobals,
   /// @brief Whether subgroup (SIMD/warp) operations are supported (bool).
   kDeviceSupportsSubgroup,
   /// @brief Whether subgroup shuffle operations are supported (bool).

@@ -1118,6 +1118,8 @@ Attribute DeviceOpenCL::getAttribute(DeviceAttributeId what) const {
       return true;
     case kDeviceSupportsProgramConstants:
       return false;
+    case kDeviceSupportsProgramGlobals:
+      return false;
     case kDeviceSupportsSubgroup:
       return checkExtension("cl_khr_subgroups");
     case kDeviceSupportsSubgroupShuffle:

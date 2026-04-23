@@ -401,8 +401,8 @@ kernel void specialized_fn(device float* out [[buffer(0)]],
 #endif
 }
 
-// OpenCL kernel for setGlobals testing.
-// SCALE_FACTOR is injected as a -D define by setGlobals().
+// OpenCL kernel for KernelSource -D define testing.
+// SCALE_FACTOR is injected as a -D define when constants are supplied.
 inline const char* setGlobalsKernelSource(Backend b) {
   if (b == Backend::OpenCL)
     return R"(

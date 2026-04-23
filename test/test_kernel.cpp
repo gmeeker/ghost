@@ -697,64 +697,6 @@ TEST_P(KernelTest, FunctionSpecialization) {
 }
 
 // ---------------------------------------------------------------------------
-// setGlobals — OpenCL recompilation with -D defines
-// ---------------------------------------------------------------------------
-
-TEST_P(KernelTest, SetGlobals) {
-  const char* src = setGlobalsKernelSource(backend());
-  if (!src) GTEST_SKIP() << "setGlobals not available for this backend";
-
-  const size_t N = 128;
-  const uint32_t localSize = 64;
-  const size_t safeN = N * localSize;
-  const float kSentinel = -1.0f;
-
-  std::vector<float> input(safeN, 0.0f);
-  std::vector<float> output(safeN, kSentinel);
-  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i + 1);
-
-  auto lib = device().loadLibraryFromText(src);
-
-  // Set SCALE_FACTOR to 3.0
-  lib.setGlobals({{"SCALE_FACTOR", Attribute(3.0f)}});
-
-  auto fn = lib.lookupFunction("scaled_fn");
-
-  auto inBuf = device().allocateBuffer(safeN * sizeof(float));
-  auto outBuf = device().allocateBuffer(safeN * sizeof(float));
-  inBuf.copy(stream(), input.data(), safeN * sizeof(float));
-  outBuf.copy(stream(), output.data(), safeN * sizeof(float));
-
-  LaunchArgs la;
-  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
-
-  fn(la, stream())(outBuf, inBuf, static_cast<uint32_t>(N));
-  outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
-  stream().sync();
-
-  for (size_t i = 0; i < N; i++) {
-    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i + 1) * 3.0f)
-        << "index " << i;
-  }
-
-  // Now set SCALE_FACTOR to 0.5 and re-lookup
-  lib.setGlobals({{"SCALE_FACTOR", Attribute(0.5f)}});
-  fn = lib.lookupFunction("scaled_fn");
-
-  std::fill(output.begin(), output.end(), kSentinel);
-  outBuf.copy(stream(), output.data(), safeN * sizeof(float));
-
-  fn(la, stream())(outBuf, inBuf, static_cast<uint32_t>(N));
-  outBuf.copyTo(stream(), output.data(), safeN * sizeof(float));
-  stream().sync();
-
-  for (size_t i = 0; i < N; i++) {
-    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i + 1) * 0.5f)
-        << "index " << i;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Subgroup sizing
 // ---------------------------------------------------------------------------
 

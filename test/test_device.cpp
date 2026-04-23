@@ -75,7 +75,8 @@ TEST_P(DeviceTest, QueryStringAttributes) {
 
 TEST_P(DeviceTest, QueryBoolAttributes) {
   for (auto id : {kDeviceUnifiedMemory, kDeviceSupportsMappedBuffer,
-                  kDeviceSupportsProgramConstants, kDeviceSupportsSubgroup}) {
+                  kDeviceSupportsProgramConstants,
+                  kDeviceSupportsProgramGlobals, kDeviceSupportsSubgroup}) {
     auto attr = device().getAttribute(id);
     EXPECT_EQ(attr.type(), Attribute::Type_Bool) << "Attribute id=" << id;
   }

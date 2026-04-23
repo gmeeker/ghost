@@ -143,13 +143,14 @@ std::vector<Attribute> KernelSource::constantsToPositional(
 
 // Text mode: OpenCL C, Metal Shading Language, CUDA NVRTC.
 //
-// Strategy selection (first call only):
-//   1. Metal/Vulkan (kDeviceSupportsProgramConstants): compile once,
+// Strategy selection (first call only) — chosen from device capability
+// attributes so no speculative compile is ever performed:
+//   1. kDeviceSupportsProgramConstants (Metal, Vulkan): compile once,
 //      specialize per variant via function/spec constants.
-//   2. CUDA NVRTC: compile once (retainBinary), extract cubin, then per
-//      variant: loadLibraryFromData + setGlobals. Avoids repeated NVRTC
-//      compilation.
-//   3. OpenCL (and fallback): compile per variant with -D defines.
+//   2. kDeviceSupportsProgramGlobals (CUDA): compile once with
+//      retainBinary, reuse the binary per variant via loadLibraryFromData
+//      + setGlobals. Avoids repeated source compilation.
+//   3. Otherwise (OpenCL, CPU, ...): compile per variant with -D defines.
 //
 // Strategy 3 is also used when useDefines=true is passed to the constructor.
 Function KernelSource::getFunctionFromText(
@@ -165,21 +166,16 @@ Function KernelSource::getFunctionFromText(
       _useSpecialization = true;
       _baseLibrary = device.loadLibraryFromText(_text, _baseOptions);
       _hasBaseLibrary = true;
-    } else {
-      // CUDA or others: try compile-once + binary reuse + setGlobals.
+    } else if (device.getAttribute(kDeviceSupportsProgramGlobals).asBool()) {
+      // CUDA: compile once, reuse binary per variant with setGlobals.
       Library base = device.loadLibraryFromText(_text, _baseOptions, true);
-      std::vector<uint8_t> binary = base.getBinary();
-      if (!binary.empty()) {
-        // CUDA NVRTC: compile once, reuse binary per variant.
-        _binaryData = std::move(binary);
-        _useSpecialization = false;
-        // For no-constants case, keep the base library.
-        _baseLibrary = base;
-        _hasBaseLibrary = true;
-      } else {
-        // OpenCL / other: no usable binary, use -D defines.
-        _useSpecialization = false;
-      }
+      _binaryData = base.getBinary();
+      _useSpecialization = false;
+      _baseLibrary = base;
+      _hasBaseLibrary = true;
+    } else {
+      // OpenCL / other: compile per variant with -D defines.
+      _useSpecialization = false;
     }
   }
 
@@ -202,26 +198,17 @@ Function KernelSource::getFunctionFromText(
     }
   }
 
-  // Path 2: binary reuse + setGlobals (CUDA NVRTC).
-  // If setGlobals throws unsupported_error (e.g. OpenCL binary), discard
-  // the cached binary and fall through to the defines path.
+  // Path 2: binary reuse + setGlobals (CUDA).
   if (!_binaryData.empty()) {
     if (constants.empty() && _hasBaseLibrary) {
       return _baseLibrary.lookupFunction(functionName);
     }
-    try {
-      Library lib = device.loadLibraryFromData(
-          _binaryData.data(), _binaryData.size(), _baseOptions);
-      if (!constants.empty()) {
-        lib.setGlobals(constants);
-      }
-      return lib.lookupFunction(functionName);
-    } catch (const ghost::unsupported_error&) {
-      // Backend doesn't support setGlobals on binary-loaded libraries
-      // (e.g. OpenCL). Discard binary and use defines.
-      _binaryData.clear();
-      _hasBaseLibrary = false;
+    Library lib = device.loadLibraryFromData(_binaryData.data(),
+                                             _binaryData.size(), _baseOptions);
+    if (!constants.empty()) {
+      lib.setGlobals(constants);
     }
+    return lib.lookupFunction(functionName);
   }
 
   // Path 3: compile per variant with -D defines (OpenCL, forced).

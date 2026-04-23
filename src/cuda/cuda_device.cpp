@@ -1114,6 +1114,8 @@ Attribute DeviceCUDA::getAttribute(DeviceAttributeId what) const {
     }
     case kDeviceSupportsProgramConstants:
       return false;
+    case kDeviceSupportsProgramGlobals:
+      return true;
     case kDeviceSupportsSubgroup:
       return true;
     case kDeviceSupportsSubgroupShuffle:

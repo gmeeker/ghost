@@ -1205,6 +1205,8 @@ Attribute DeviceDirectX::getAttribute(DeviceAttributeId what) const {
       return Attribute(true);
     case kDeviceSupportsProgramConstants:
       return Attribute(false);
+    case kDeviceSupportsProgramGlobals:
+      return Attribute(false);
     case kDeviceSupportsSubgroup:
       return Attribute(true);
     case kDeviceSupportsSubgroupShuffle:

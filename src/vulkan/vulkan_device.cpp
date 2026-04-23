@@ -1642,6 +1642,8 @@ Attribute DeviceVulkan::getAttribute(DeviceAttributeId what) const {
       return Attribute(true);
     case kDeviceSupportsProgramConstants:
       return Attribute(true);
+    case kDeviceSupportsProgramGlobals:
+      return Attribute(false);
     case kDeviceSupportsSubgroup:
       return Attribute(true);
     case kDeviceSupportsSubgroupShuffle:
