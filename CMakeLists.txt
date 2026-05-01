@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10...4.1)
-project(Ghost VERSION 1.0 LANGUAGES C CXX)
+project(Ghost VERSION 1.0.1 LANGUAGES C CXX)
 if(APPLE)
     enable_language(OBJC OBJCXX)
 endif()
