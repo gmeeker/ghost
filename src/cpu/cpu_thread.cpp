@@ -34,10 +34,11 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
-#include <queue>
 #include <thread>
 #include <utility>
 
@@ -118,27 +119,42 @@ thread_local size_t ThreadPoolDefault::_nestingDepth = 0;
 
 #else  // !__APPLE_CC__
 
-/// @brief Default ThreadPool implementation backed by @c std::thread workers.
+/// @brief Default ThreadPool implementation backed by @c std::thread workers
+/// using a spin-then-park barrier.
 ///
-/// Workers consume from a shared work queue. @ref parallel pushes @p count
-/// items, then blocks on a completion latch until all of them have run. Nested
-/// calls (those made from inside a worker callback) run inline on the calling
-/// thread to avoid deadlock.
+/// Each @ref parallel call publishes a static slice across @c min(count, W)
+/// workers and bumps a global epoch counter. Workers spin on the epoch for
+/// @c kSpinDuration after their previous task; if no new dispatch arrives in
+/// that window, they park on a condvar. The master spins on the remaining
+/// counter for the same window before parking on a per-dispatch condvar.
+///
+/// This avoids the futex round-trip per dispatch that plagued the original
+/// queue+notify_all design (~20 µs floor on Linux), making back-to-back
+/// fine-grained dispatches — the dominant ML-kernel pattern — competitive
+/// with @c libgomp's @c parallel @c for barrier (~1–2 µs/dispatch).
+///
+/// Nested @ref parallel calls (from inside @c fn, on either the master or a
+/// worker thread) run inline on the calling thread.
 class ThreadPoolDefault : public ghost::ThreadPool {
  public:
   explicit ThreadPoolDefault(size_t workers) {
     if (workers == 0) workers = DeviceCPU::getNumberOfCores();
     if (workers == 0) workers = 1;
-    _shouldStop = false;
+    _shouldStop.store(false, std::memory_order_relaxed);
+    _epoch.store(0, std::memory_order_relaxed);
+    _state.store(nullptr, std::memory_order_relaxed);
     for (size_t i = 0; i < workers; i++) {
-      _threads.emplace_back(&ThreadPoolDefault::worker, this);
+      _threads.emplace_back(&ThreadPoolDefault::worker, this, i);
     }
   }
 
   ~ThreadPoolDefault() override {
     {
       std::lock_guard<std::mutex> lk(_mutex);
-      _shouldStop = true;
+      _shouldStop.store(true, std::memory_order_relaxed);
+      // Release pairs with the worker's acquire load of _epoch and publishes
+      // _shouldStop along with the epoch bump.
+      _epoch.fetch_add(1, std::memory_order_release);
     }
     _cv.notify_all();
     for (auto& t : _threads) {
@@ -153,22 +169,35 @@ class ThreadPoolDefault : public ghost::ThreadPool {
       return;
     }
     _nestingDepth++;
-    auto state = std::make_shared<DispatchState>();
-    state->fn = std::move(fn);
-    state->total = count;
-    state->remaining = count;
+    // Serialize concurrent top-level dispatches from different threads.
+    std::lock_guard<std::mutex> dispatchLk(_dispatchMutex);
 
-    {
-      std::lock_guard<std::mutex> lk(_mutex);
-      for (size_t i = 0; i < count; i++) {
-        _work.push({state, i});
-      }
-    }
+    const size_t W = _threads.size();
+    const size_t numShards = std::min<size_t>(count, W);
+
+    DispatchState state;
+    state.fn = &fn;
+    state.total = count;
+    state.numShards = numShards;
+    state.remaining.store(numShards, std::memory_order_relaxed);
+
+    // Publish state, then bump epoch with release. Workers see _state and
+    // *state through the release-acquire pair on _epoch.
+    _state.store(&state, std::memory_order_relaxed);
+    _epoch.fetch_add(1, std::memory_order_release);
+    // Wake any parked workers. Workers still in their spin window observe
+    // the new epoch directly without paying the cv round-trip.
     _cv.notify_all();
 
-    // Wait until all items for this dispatch have completed.
-    std::unique_lock<std::mutex> lk(state->doneMutex);
-    state->doneCv.wait(lk, [&] { return state->remaining == 0; });
+    // Wait for all shards to finish: spin briefly, then park.
+    if (!spinWaitDone(state.remaining)) {
+      std::unique_lock<std::mutex> lk(state.doneMutex);
+      state.doneCv.wait(lk, [&] {
+        return state.remaining.load(std::memory_order_acquire) == 0;
+      });
+    }
+
+    _state.store(nullptr, std::memory_order_relaxed);
     _nestingDepth--;
   }
 
@@ -176,42 +205,103 @@ class ThreadPoolDefault : public ghost::ThreadPool {
 
  private:
   struct DispatchState {
-    std::function<void(size_t, size_t)> fn;
+    std::function<void(size_t, size_t)>* fn = nullptr;
     size_t total = 0;
+    size_t numShards = 0;
     std::atomic<size_t> remaining{0};
     std::mutex doneMutex;
     std::condition_variable doneCv;
   };
 
-  struct WorkItem {
-    std::shared_ptr<DispatchState> state;
-    size_t index;
-  };
+  // Spin window before parking. Sized to cover back-to-back fine-grained
+  // dispatches (for example, dozens of dispatches at <50 µs each).
+  // Calibrated by wall clock so it survives differences in `pause` latency
+  // across CPU vendors (Skylake+ pause is ~140 cycles, older x86 ~10).
+  static constexpr auto kSpinDuration = std::chrono::microseconds(200);
 
-  void worker() {
+  // Returns true if `remaining` reached 0 within the spin window.
+  static bool spinWaitDone(std::atomic<size_t>& remaining) {
+    if (remaining.load(std::memory_order_acquire) == 0) return true;
+    const auto deadline = std::chrono::steady_clock::now() + kSpinDuration;
+    int i = 0;
     for (;;) {
-      WorkItem item;
-      {
-        std::unique_lock<std::mutex> lk(_mutex);
-        _cv.wait(lk, [this] { return _shouldStop || !_work.empty(); });
-        if (_shouldStop && _work.empty()) return;
-        item = std::move(_work.front());
-        _work.pop();
-      }
-      item.state->fn(item.index, item.state->total);
-      // Signal completion
-      if (item.state->remaining.fetch_sub(1) == 1) {
-        std::lock_guard<std::mutex> lk(item.state->doneMutex);
-        item.state->doneCv.notify_one();
+      cpuPause();
+      if (remaining.load(std::memory_order_acquire) == 0) return true;
+      if ((++i & 31) == 0 && std::chrono::steady_clock::now() >= deadline) {
+        return remaining.load(std::memory_order_acquire) == 0;
       }
     }
   }
 
+  void worker(size_t workerId) {
+    uint64_t lastEpoch = 0;
+    for (;;) {
+      uint64_t epoch = _epoch.load(std::memory_order_acquire);
+      if (epoch == lastEpoch) {
+        const auto deadline = std::chrono::steady_clock::now() + kSpinDuration;
+        for (int i = 0;; ++i) {
+          cpuPause();
+          epoch = _epoch.load(std::memory_order_acquire);
+          if (epoch != lastEpoch) break;
+          if ((i & 31) == 0 && std::chrono::steady_clock::now() >= deadline) {
+            std::unique_lock<std::mutex> lk(_mutex);
+            _cv.wait(lk, [&] {
+              return _shouldStop.load(std::memory_order_relaxed) ||
+                     _epoch.load(std::memory_order_acquire) != lastEpoch;
+            });
+            epoch = _epoch.load(std::memory_order_acquire);
+            break;
+          }
+        }
+      }
+      lastEpoch = epoch;
+      // _shouldStop is published by the destructor via the release on _epoch
+      // we just acquired, so a relaxed load here is safe.
+      if (_shouldStop.load(std::memory_order_relaxed)) return;
+
+      DispatchState* state = _state.load(std::memory_order_relaxed);
+      if (!state) continue;
+      if (workerId >= state->numShards) continue;
+
+      const size_t total = state->total;
+      const size_t shards = state->numShards;
+      const size_t base = (total / shards) * workerId +
+                          std::min<size_t>(workerId, total % shards);
+      const size_t size =
+          (total / shards) + (workerId < total % shards ? 1u : 0u);
+
+      // Mark this thread as in a parallel region so any nested parallel()
+      // call from inside fn runs inline (avoids re-entering the pool).
+      _nestingDepth++;
+      for (size_t i = 0; i < size; ++i) {
+        (*state->fn)(base + i, total);
+      }
+      _nestingDepth--;
+
+      if (state->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        std::lock_guard<std::mutex> lk(state->doneMutex);
+        state->doneCv.notify_one();
+      }
+    }
+  }
+
+  static void cpuPause() {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    asm volatile("yield" ::: "memory");
+#else
+    std::this_thread::yield();
+#endif
+  }
+
   std::vector<std::thread> _threads;
-  std::queue<WorkItem> _work;
+  std::atomic<uint64_t> _epoch;
+  std::atomic<DispatchState*> _state;
+  std::mutex _dispatchMutex;
   std::mutex _mutex;
   std::condition_variable _cv;
-  bool _shouldStop;
+  std::atomic<bool> _shouldStop;
 
   static thread_local size_t _nestingDepth;
 };

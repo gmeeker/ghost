@@ -418,7 +418,7 @@ TEST_P(CommandBufferTest, BufferWrappersOutOfScope) {
   }
 }
 
-// Regression test for the second bug Inferency hit: storing Buffer wrappers
+// Regression test: storing Buffer wrappers
 // in a vector that reallocates mid-batch must not invalidate the recorded
 // dispatches.
 TEST_P(CommandBufferTest, BufferWrappersInReallocatingVector) {

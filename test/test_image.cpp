@@ -391,13 +391,11 @@ TEST_P(ImageTest, SharedImageFromBufferOddWidthUInt8) {
 }
 
 // ---------------------------------------------------------------------------
-// Shared image with tall narrow shapes (GHOST.md #14 regression)
+// Shared image with tall narrow shapes
 // ---------------------------------------------------------------------------
 
 TEST_P(ImageTest, SharedImageTallNarrow) {
-  // Single-channel R32Float, shapes matching Inferency's GlobalAveragePool
-  // image path. Bug #14 reported a hang at W=28 (row_bytes=112) on Apple
-  // Silicon. Test multiple widths to verify the fix.
+  // Single-channel R32Float. Test multiple widths.
   struct Shape {
     size_t w, h;
   };
