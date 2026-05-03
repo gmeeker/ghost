@@ -125,7 +125,7 @@ thread_local size_t ThreadPoolDefault::_nestingDepth = 0;
 /// Each @ref parallel call publishes a static slice across @c min(count, W)
 /// workers and bumps a global epoch counter. Workers spin on the epoch for
 /// @c kSpinDuration after their previous task; if no new dispatch arrives in
-/// that window, they park on a condvar. The master spins on the remaining
+/// that window, they park on a condvar. The parent spins on the remaining
 /// counter for the same window before parking on a per-dispatch condvar.
 ///
 /// This avoids the futex round-trip per dispatch that plagued the original
@@ -133,7 +133,7 @@ thread_local size_t ThreadPoolDefault::_nestingDepth = 0;
 /// fine-grained dispatches — the dominant ML-kernel pattern — competitive
 /// with @c libgomp's @c parallel @c for barrier (~1–2 µs/dispatch).
 ///
-/// Nested @ref parallel calls (from inside @c fn, on either the master or a
+/// Nested @ref parallel calls (from inside @c fn, on either the parent or a
 /// worker thread) run inline on the calling thread.
 class ThreadPoolDefault : public ghost::ThreadPool {
  public:
@@ -181,21 +181,51 @@ class ThreadPoolDefault : public ghost::ThreadPool {
     state.numShards = numShards;
     state.remaining.store(numShards, std::memory_order_relaxed);
 
-    // Publish state, then bump epoch with release. Workers see _state and
-    // *state through the release-acquire pair on _epoch.
-    _state.store(&state, std::memory_order_relaxed);
-    _epoch.fetch_add(1, std::memory_order_release);
-    // Wake any parked workers. Workers still in their spin window observe
-    // the new epoch directly without paying the cv round-trip.
+    // Publish state and bump epoch *under _mutex* so that a worker which
+    // is just entering _cv.wait cannot miss the notify_all below.
+    //
+    // The hazard if we publish without holding _mutex: a worker in the
+    // park path takes _mutex, evaluates the wait predicate (epoch ==
+    // lastEpoch), then atomically releases _mutex and registers itself
+    // on _cv. If the parent bumps epoch + notify_all after the worker's
+    // predicate read but before the cv-registration, the wakeup is
+    // lost and the worker sleeps forever — the parent then parks on
+    // _doneCv waiting for `remaining` to drop, and the pool deadlocks.
+    //
+    // Workers still in their spin window observe the new epoch directly
+    // (no _mutex involvement on either side), so this lock only matters
+    // for the rare park path.
+    {
+      std::lock_guard<std::mutex> lk(_mutex);
+      _state.store(&state, std::memory_order_relaxed);
+      _epoch.fetch_add(1, std::memory_order_release);
+    }
     _cv.notify_all();
 
     // Wait for all shards to finish: spin briefly, then park.
+    //
+    // The done-mutex / done-cv are pool-owned (not per-dispatch) so a
+    // worker that is mid-notify when the parent observes remaining==0
+    // cannot operate on a destroyed object. If they were members of the
+    // stack-local DispatchState, the parent could spin-observe
+    // remaining==0, return from parallel(), and unwind `state` while
+    // the last worker is still inside its lock_guard/notify_one — that
+    // is the use-after-free that produced the Linux deadlock at
+    // ~ThreadPoolDefault() (last worker stuck pthread_mutex_lock'ing
+    // a freed mutex, blocking std::thread::join).
     if (!spinWaitDone(state.remaining)) {
-      std::unique_lock<std::mutex> lk(state.doneMutex);
-      state.doneCv.wait(lk, [&] {
+      std::unique_lock<std::mutex> lk(_doneMutex);
+      _doneCv.wait(lk, [&] {
         return state.remaining.load(std::memory_order_acquire) == 0;
       });
     }
+    // Note: a worker that just observed remaining==0 may still be
+    // entering lock_guard(_doneMutex) + notify_all() at this point.
+    // That is safe because both are pool members and outlive `state`.
+    // The call to _state.store(nullptr) below is a relaxed publish — it
+    // does not synchronize with the worker, but the worker only reads
+    // `_state` at the *start* of a dispatch (after observing a new epoch),
+    // not after fetch_sub.
 
     _state.store(nullptr, std::memory_order_relaxed);
     _nestingDepth--;
@@ -209,8 +239,6 @@ class ThreadPoolDefault : public ghost::ThreadPool {
     size_t total = 0;
     size_t numShards = 0;
     std::atomic<size_t> remaining{0};
-    std::mutex doneMutex;
-    std::condition_variable doneCv;
   };
 
   // Spin window before parking. Sized to cover back-to-back fine-grained
@@ -279,8 +307,18 @@ class ThreadPoolDefault : public ghost::ThreadPool {
       _nestingDepth--;
 
       if (state->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        std::lock_guard<std::mutex> lk(state->doneMutex);
-        state->doneCv.notify_one();
+        // Use pool-owned _doneMutex/_doneCv (not state-owned). After the
+        // fetch_sub the parent may immediately observe remaining==0, return
+        // from parallel(), and destroy `state`. Operating on pool-owned
+        // sync objects keeps this worker safe even if `state` is gone by
+        // the time we land in lock_guard / notify_all below.
+        //
+        // Note: we read no fields of `state` between this fetch_sub and
+        // the next loop iteration — the lock_guard/notify_all touch only
+        // pool members. This is the invariant that lets parallel() race
+        // ahead of us safely.
+        std::lock_guard<std::mutex> lk(_doneMutex);
+        _doneCv.notify_all();
       }
     }
   }
@@ -301,6 +339,10 @@ class ThreadPoolDefault : public ghost::ThreadPool {
   std::mutex _dispatchMutex;
   std::mutex _mutex;
   std::condition_variable _cv;
+  // Pool-owned (not per-dispatch) so that a worker mid-notify cannot
+  // touch a destroyed object after the parent returns from parallel().
+  std::mutex _doneMutex;
+  std::condition_variable _doneCv;
   std::atomic<bool> _shouldStop;
 
   static thread_local size_t _nestingDepth;
