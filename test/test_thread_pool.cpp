@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <set>
 #include <thread>
@@ -81,6 +82,112 @@ TEST(ThreadPoolTest, NestedParallelDoesNotDeadlock) {
     pool->parallel(Inner, [&](size_t, size_t) { total.fetch_add(1); });
   });
   EXPECT_EQ(total.load(), Outer * Inner);
+}
+
+// Regression test for the dispatch-state publication race that produced
+// missed and double-dispatched shards under back-to-back varied-count
+// dispatches. The original failure mode: parent's stack-allocated dispatch
+// state was overwritten by the next parallel() call at the same address
+// while a worker from the previous dispatch was still reading
+// state->numShards / state->total, causing two workers to compute the
+// same shard range and one shard to go unprocessed. A single dispatch
+// like ParallelRunsAllIndices does not expose this — the bug requires
+// many back-to-back calls with varied counts so the stack is repeatedly
+// reused. Atomic hits detect the duplicate writes that non-atomic counters
+// would silently merge.
+//
+// Pre-fix this fired within the first ~10K dispatches reproducibly. The
+// 16K dispatches here keep CI under 2s while still catching regressions.
+TEST(ThreadPoolTest, NoMissedOrDoubleDispatchUnderVariedCounts) {
+  auto pool = ThreadPool::createDefault();
+  const std::vector<size_t> counts = {2, 4, 8, 12, 16, 24, 32, 64};
+  for (size_t iter = 0; iter < 2000; ++iter) {
+    for (size_t count : counts) {
+      std::vector<std::atomic<int>> hits(count);
+      for (auto& h : hits) h.store(0);
+      pool->parallel(count,
+                     [&hits](size_t i, size_t) { hits[i].fetch_add(1); });
+      for (size_t i = 0; i < count; ++i) {
+        ASSERT_EQ(hits[i].load(), 1)
+            << "iter=" << iter << " count=" << count << " idx=" << i;
+      }
+    }
+  }
+}
+
+// Helper: a small varied-count smoke test parameterised by spinDuration.
+// Same shape as the regression test above but smaller (the regression net
+// is the test above; these just verify the spin-duration knob plumbing
+// produces a working pool).
+namespace {
+void smokeTestPool(ThreadPool& pool) {
+  const std::vector<size_t> counts = {2, 4, 8, 16, 24};
+  for (size_t iter = 0; iter < 200; ++iter) {
+    for (size_t count : counts) {
+      std::vector<std::atomic<int>> hits(count);
+      for (auto& h : hits) h.store(0);
+      pool.parallel(count, [&hits](size_t i, size_t) { hits[i].fetch_add(1); });
+      for (size_t i = 0; i < count; ++i) {
+        ASSERT_EQ(hits[i].load(), 1)
+            << "iter=" << iter << " count=" << count << " idx=" << i;
+      }
+    }
+  }
+}
+}  // namespace
+
+// Passive mode: workers park immediately on idle. Verifies the
+// notify-when-parked path (parent's lock-gated isParked check, last-worker
+// _doneCv notify) is correct and not subject to lost wakeups, since
+// workers are always in cv.wait between dispatches.
+TEST(ThreadPoolTest, CreateDefault_Passive_NoSpin) {
+  auto pool = ThreadPool::createDefault(0, std::chrono::microseconds(0));
+  ASSERT_NE(pool, nullptr);
+  smokeTestPool(*pool);
+}
+
+// Active mode: workers effectively never park. Verifies the
+// skip-notify-when-spinning path (parent's lock-gated isParked check sees
+// false, no notify_one issued) is correct — workers must observe the new
+// assignedEpoch through their spin loop, not via cv signal.
+TEST(ThreadPoolTest, CreateDefault_Active_LongSpin) {
+  auto pool = ThreadPool::createDefault(0, std::chrono::hours(24));
+  ASSERT_NE(pool, nullptr);
+  smokeTestPool(*pool);
+}
+
+// Destruction while workers are parked must not hang. With spinDuration=0
+// the workers have already entered cv.wait by the time the test reaches
+// the closing brace, so the destructor's _shouldStop + epoch bump must
+// successfully wake all 24 workers under their per-slot mutex+cv. This
+// catches a regression where the destructor only signals the global stop
+// flag without waking the cvs.
+TEST(ThreadPoolTest, DestructorWakesParkedWorkers) {
+  // Wrap in a thread with a watchdog so a hang manifests as a test
+  // failure rather than a hung process.
+  std::atomic<bool> destroyed{false};
+  std::thread t([&] {
+    {
+      auto pool = ThreadPool::createDefault(0, std::chrono::microseconds(0));
+      // Issue one dispatch so workers have transitioned through park
+      // (their first-iteration spin window is 0, so they cv.wait
+      // immediately on construction; this dispatch wakes them once).
+      pool->parallel(4, [](size_t, size_t) {});
+      // Workers loop back, see no new epoch, and park again.
+      // pool falls out of scope here — destructor must wake them.
+    }
+    destroyed.store(true, std::memory_order_release);
+  });
+
+  // 5-second watchdog. Realistic destructor finishes in <1 ms; if it
+  // hangs we'd otherwise block the entire test binary indefinitely.
+  for (int i = 0; i < 5000; ++i) {
+    if (destroyed.load(std::memory_order_acquire)) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_TRUE(destroyed.load()) << "pool destructor hung — parked workers "
+                                   "not woken";
+  t.join();
 }
 
 // ---------------------------------------------------------------------------

@@ -38,6 +38,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -85,7 +87,11 @@ namespace {
 /// lifetimes.
 class ThreadPoolDefault : public ghost::ThreadPool {
  public:
-  explicit ThreadPoolDefault(size_t workers) : _workers(workers) {
+  // The spin-duration argument is ignored — libdispatch picks its own
+  // wait policy and is already low-overhead on Apple targets. We accept
+  // it only to share a constructor signature with the non-Apple impl.
+  ThreadPoolDefault(size_t workers, std::chrono::microseconds /*spinDuration*/)
+      : _workers(workers) {
     if (_workers == 0) _workers = DeviceCPU::getNumberOfCores();
   }
 
@@ -119,44 +125,92 @@ thread_local size_t ThreadPoolDefault::_nestingDepth = 0;
 
 #else  // !__APPLE_CC__
 
-/// @brief Default ThreadPool implementation backed by @c std::thread workers
-/// using a spin-then-park barrier.
+/// @brief Default ThreadPool implementation — OpenMP-style fork-join.
 ///
-/// Each @ref parallel call publishes a static slice across @c min(count, W)
-/// workers and bumps a global epoch counter. Workers spin on the epoch for
-/// @c kSpinDuration after their previous task; if no new dispatch arrives in
-/// that window, they park on a condvar. The parent spins on the remaining
-/// counter for the same window before parking on a per-dispatch condvar.
+/// Modeled on libgomp's `parallel for` and TBB's `task_arena`:
 ///
-/// This avoids the futex round-trip per dispatch that plagued the original
-/// queue+notify_all design (~20 µs floor on Linux), making back-to-back
-/// fine-grained dispatches — the dominant ML-kernel pattern — competitive
-/// with @c libgomp's @c parallel @c for barrier (~1–2 µs/dispatch).
+/// - **Calling thread participates.** Like libgomp's master thread and
+///   TBB's `task_arena` calling thread, the thread that calls
+///   @ref parallel does its own share of the work alongside helper
+///   threads. With `workers=N`, the pool has N-1 helper threads plus
+///   the caller — N total participants. This means `workers=N` matches
+///   N cores cleanly: no separate "dispatcher" core wasted, no need
+///   for the host to leave a spare core in their affinity mask.
 ///
-/// Nested @ref parallel calls (from inside @c fn, on either the parent or a
-/// worker thread) run inline on the calling thread.
+/// - **Static slicing** by default (`schedule(static)` analog). Each
+///   participant (caller + helpers) gets a fixed contiguous range of
+///   indices — no work-stealing, no `fetch_add` cache contention on
+///   the hot path. Balanced ML kernels (per-row, per-tile, per-channel)
+///   hit this cell.
+///
+/// - **Long spin window** (per-pool, ~10 ms by default, configurable via
+///   the `spinDuration` ctor parameter or the `GHOST_THREAD_SPINCOUNT_US`
+///   env var) before workers park. Comparable to libgomp's
+///   `GOMP_SPINCOUNT` — back-to-back dispatches in an active workload
+///   arrive within the window so workers never enter the kernel for
+///   fork/join. Truly idle pools still park, so the process can sleep
+///   when not under load. Pass `0` for `OMP_WAIT_POLICY=PASSIVE`-style
+///   immediate parking; pass a very large value for `ACTIVE`-style
+///   never-park behavior.
+///
+/// - **Per-worker spin slot** (`assignedEpoch` + `mu` + `cv`). Parent
+///   updates only participating workers' slots — non-participating
+///   workers stay parked or spinning idle and never touch `Job`. This
+///   avoids the thundering-herd cost of a single shared condvar.
+///
+/// - **isParked-flag-gated notify**. Parent skips `cv.notify_one` for
+///   workers that are spinning (the common case in active workloads),
+///   reducing per-dispatch overhead from N syscalls to N short
+///   uncontended lock acquisitions. Workers in spin observe the new
+///   `assignedEpoch` directly via cache coherence; workers that have
+///   parked still get woken correctly.
+///
+/// - **Heap-allocated Job + epoch tag** (the #43 correctness fix).
+///   Parent owns Job via `std::unique_ptr`; the per-job `epoch` field
+///   lets workers detect torn `(job, epoch)` reads across parent's
+///   publish without locking.
+///
+/// - **Cooperative spin yield**. After a brief tight-spin warmup
+///   (~1024 iters / ~10 µs), workers periodically call
+///   `std::this_thread::yield()` while spinning. This is the libgomp
+///   pattern: tight cpuPause inside the warmup window covers
+///   back-to-back dispatch (so a worker doesn't lose its core on a
+///   <10 µs gap), but past warmup the yield lets the OS schedule
+///   co-pinned threads — most notably the main thread, when the host
+///   pins `workers=N` to `N` cores. Without the yield, CFS waits for
+///   a worker's 3 ms time-slice to expire before scheduling main, so
+///   parallel() dispatch latency floors at ~3 ms in that affinity.
+///
+/// Nested `parallel` calls (from inside `fn`, on either parent or worker)
+/// run inline on the calling thread.
 class ThreadPoolDefault : public ghost::ThreadPool {
  public:
-  explicit ThreadPoolDefault(size_t workers) {
+  explicit ThreadPoolDefault(size_t workers,
+                             std::chrono::microseconds spinDuration) {
     if (workers == 0) workers = DeviceCPU::getNumberOfCores();
     if (workers == 0) workers = 1;
+    // `workers` is the team size (caller + helpers). Helpers count is
+    // workers - 1. With workers=1, there are no helpers — every
+    // parallel() call runs entirely on the caller.
+    const size_t helpers = workers - 1;
+    _spinDuration = resolveSpinDuration(spinDuration);
     _shouldStop.store(false, std::memory_order_relaxed);
-    _epoch.store(0, std::memory_order_relaxed);
-    _state.store(nullptr, std::memory_order_relaxed);
-    for (size_t i = 0; i < workers; i++) {
+    _perWorker = std::vector<PerWorker>(helpers);
+    for (size_t i = 0; i < helpers; i++) {
       _threads.emplace_back(&ThreadPoolDefault::worker, this, i);
     }
   }
 
   ~ThreadPoolDefault() override {
-    {
-      std::lock_guard<std::mutex> lk(_mutex);
-      _shouldStop.store(true, std::memory_order_relaxed);
-      // Release pairs with the worker's acquire load of _epoch and publishes
-      // _shouldStop along with the epoch bump.
-      _epoch.fetch_add(1, std::memory_order_release);
+    _shouldStop.store(true, std::memory_order_relaxed);
+    // Wake every worker — each has its own slot.
+    for (auto& w : _perWorker) {
+      {
+        std::lock_guard<std::mutex> lk(w.mu);
+        w.assignedEpoch.fetch_add(1, std::memory_order_release);
+      }
+      w.cv.notify_one();
     }
-    _cv.notify_all();
     for (auto& t : _threads) {
       if (t.joinable()) t.join();
     }
@@ -172,151 +226,254 @@ class ThreadPoolDefault : public ghost::ThreadPool {
     // Serialize concurrent top-level dispatches from different threads.
     std::lock_guard<std::mutex> dispatchLk(_dispatchMutex);
 
-    const size_t W = _threads.size();
-    const size_t numShards = std::min<size_t>(count, W);
+    // Total participants = caller + at most _threads.size() helpers,
+    // capped at count (no point firing helpers we have no shards for).
+    const size_t totalParticipants =
+        std::min<size_t>(count, _threads.size() + 1);
+    // Helpers we need to wake. Caller is participant 0 and runs its
+    // own slice inline — it doesn't ack `done`.
+    const size_t helpersToFire = totalParticipants - 1;
 
-    DispatchState state;
-    state.fn = &fn;
-    state.total = count;
-    state.numShards = numShards;
-    state.remaining.store(numShards, std::memory_order_relaxed);
+    auto job = std::make_unique<Job>();
+    job->fn = std::move(fn);
+    job->count = count;
+    job->totalParticipants = totalParticipants;
 
-    // Publish state and bump epoch *under _mutex* so that a worker which
-    // is just entering _cv.wait cannot miss the notify_all below.
+    const uint64_t newEpoch =
+        _globalEpoch.fetch_add(1, std::memory_order_relaxed) + 1;
+    job->epoch = newEpoch;
+
+    // Publish Job ptr with release. Helpers acquire-load _job and verify
+    // job->epoch matches their assigned epoch (catches torn reads across
+    // the two-step publish below).
+    _job.store(job.get(), std::memory_order_release);
+
+    // Bump assignedEpoch for the helpers we want firing. Helpers in
+    // their spin window observe this directly via cache coherence — no
+    // notify needed for them.
+    for (size_t i = 0; i < helpersToFire; ++i) {
+      _perWorker[i].assignedEpoch.store(newEpoch, std::memory_order_release);
+    }
+
+    // For each helper: take its per-slot mutex briefly. If the helper
+    // is parked (isParked == true), notify it. If the helper is
+    // spinning (isParked == false), skip notify — it will see the new
+    // assignedEpoch from its spin loop within nanoseconds.
     //
-    // The hazard if we publish without holding _mutex: a worker in the
-    // park path takes _mutex, evaluates the wait predicate (epoch ==
-    // lastEpoch), then atomically releases _mutex and registers itself
-    // on _cv. If the parent bumps epoch + notify_all after the worker's
-    // predicate read but before the cv-registration, the wakeup is
-    // lost and the worker sleeps forever — the parent then parks on
-    // _doneCv waiting for `remaining` to drop, and the pool deadlocks.
-    //
-    // Workers still in their spin window observe the new epoch directly
-    // (no _mutex involvement on either side), so this lock only matters
-    // for the rare park path.
+    // Taking the mutex (rather than just atomic-loading isParked) is
+    // what makes this race-free: a helper about to park sets
+    // isParked=true *under* mu and only then evaluates its cv.wait
+    // predicate. By holding mu here, parent serializes against that
+    // transition — either the helper has already entered cv.wait
+    // (parent sees isParked=true and notifies) or the helper hasn't
+    // taken mu yet and will see the new assignedEpoch on its predicate
+    // check (which happens under mu, sequenced after parent's release).
+    for (size_t i = 0; i < helpersToFire; ++i) {
+      auto& w = _perWorker[i];
+      std::lock_guard<std::mutex> lk(w.mu);
+      if (w.isParked.load(std::memory_order_relaxed)) {
+        w.cv.notify_one();
+      }
+    }
+
+    // Caller is participant 0 — run its slice inline alongside the
+    // helpers' slices.
     {
-      std::lock_guard<std::mutex> lk(_mutex);
-      _state.store(&state, std::memory_order_relaxed);
-      _epoch.fetch_add(1, std::memory_order_release);
+      const size_t total = count;
+      const size_t shards = totalParticipants;
+      const size_t base = 0;  // participant 0
+      const size_t size = (total / shards) + (0 < total % shards ? 1u : 0u);
+      auto& callerFn = job->fn;
+      for (size_t i = 0; i < size; ++i) {
+        callerFn(base + i, total);
+      }
     }
-    _cv.notify_all();
 
-    // Wait for all shards to finish: spin briefly, then park.
-    //
-    // The done-mutex / done-cv are pool-owned (not per-dispatch) so a
-    // worker that is mid-notify when the parent observes remaining==0
-    // cannot operate on a destroyed object. If they were members of the
-    // stack-local DispatchState, the parent could spin-observe
-    // remaining==0, return from parallel(), and unwind `state` while
-    // the last worker is still inside its lock_guard/notify_one — that
-    // is the use-after-free that produced the Linux deadlock at
-    // ~ThreadPoolDefault() (last worker stuck pthread_mutex_lock'ing
-    // a freed mutex, blocking std::thread::join).
-    if (!spinWaitDone(state.remaining)) {
-      std::unique_lock<std::mutex> lk(_doneMutex);
-      _doneCv.wait(lk, [&] {
-        return state.remaining.load(std::memory_order_acquire) == 0;
-      });
+    // Wait for helpers to ack `done`. With helpersToFire == 0 (e.g.,
+    // workers == 1), there's nothing to wait for.
+    if (helpersToFire > 0) {
+      if (!spinWaitDone(job->done, helpersToFire)) {
+        std::unique_lock<std::mutex> lk(_doneMutex);
+        _doneCv.wait(lk, [&] {
+          return job->done.load(std::memory_order_acquire) >= helpersToFire;
+        });
+      }
     }
-    // Note: a worker that just observed remaining==0 may still be
-    // entering lock_guard(_doneMutex) + notify_all() at this point.
-    // That is safe because both are pool members and outlive `state`.
-    // The call to _state.store(nullptr) below is a relaxed publish — it
-    // does not synchronize with the worker, but the worker only reads
-    // `_state` at the *start* of a dispatch (after observing a new epoch),
-    // not after fetch_sub.
 
-    _state.store(nullptr, std::memory_order_relaxed);
+    _job.store(nullptr, std::memory_order_release);
     _nestingDepth--;
+    // job (unique_ptr) destructor runs here, freeing Job's memory.
   }
 
-  size_t workerCount() const override { return _threads.size(); }
+  // Team size = caller + helpers. Matches libgomp's
+  // omp_get_max_threads() and TBB's task_arena's effective concurrency.
+  size_t workerCount() const override { return _threads.size() + 1; }
 
  private:
-  struct DispatchState {
-    std::function<void(size_t, size_t)>* fn = nullptr;
-    size_t total = 0;
-    size_t numShards = 0;
-    std::atomic<size_t> remaining{0};
+  struct Job {
+    // Owned by-value so the std::function's lifetime is tied to the Job's
+    // heap allocation, not parent's stack frame. Parent's stack frame
+    // gets reused across calls, so a stack-pointer would silently invoke
+    // the next dispatch's lambda from a slow worker.
+    std::function<void(size_t, size_t)> fn;
+    size_t count = 0;
+    // Total participants = caller (participant 0) + helpers
+    // (participants 1..totalParticipants-1). Used by helpers to compute
+    // their static slice and by the caller to size its wait predicate
+    // (helpersToFire = totalParticipants - 1).
+    size_t totalParticipants = 0;
+    // Generation tag — equals the assigned epoch at publish time. Lets
+    // workers detect torn (job, epoch) pairs across parent's two-step
+    // publish without locking. Original source of bug #43.
+    uint64_t epoch = 0;
+    std::atomic<size_t> done{0};
   };
 
-  // Spin window before parking. Sized to cover back-to-back fine-grained
-  // dispatches (for example, dozens of dispatches at <50 µs each).
-  // Calibrated by wall clock so it survives differences in `pause` latency
-  // across CPU vendors (Skylake+ pause is ~140 cycles, older x86 ~10).
-  static constexpr auto kSpinDuration = std::chrono::microseconds(200);
+  // Per-worker slot, cache-line aligned to avoid false sharing.
+  struct alignas(64) PerWorker {
+    std::atomic<uint64_t> assignedEpoch{0};
+    // True iff the worker is currently in cv.wait (or about to enter
+    // it). Set under `mu` right before the predicate check; cleared
+    // under `mu` after wait returns. Parent reads under `mu` to decide
+    // whether notify_one is needed.
+    std::atomic<bool> isParked{false};
+    std::mutex mu;
+    std::condition_variable cv;
+  };
 
-  // Returns true if `remaining` reached 0 within the spin window.
-  static bool spinWaitDone(std::atomic<size_t>& remaining) {
-    if (remaining.load(std::memory_order_acquire) == 0) return true;
-    const auto deadline = std::chrono::steady_clock::now() + kSpinDuration;
+  // Resolves the per-pool spin duration. If the caller passed a
+  // negative duration (the public API's "default" sentinel), check
+  // `GHOST_THREAD_SPINCOUNT_US` and fall back to ~10 ms.
+  static std::chrono::microseconds resolveSpinDuration(
+      std::chrono::microseconds explicitValue) {
+    if (explicitValue >= std::chrono::microseconds(0)) {
+      return explicitValue;
+    }
+    const char* env = std::getenv("GHOST_THREAD_SPINCOUNT_US");
+    if (env && *env) {
+      char* end = nullptr;
+      long long v = std::strtoll(env, &end, 10);
+      if (end != env && v >= 0) {
+        return std::chrono::microseconds(v);
+      }
+    }
+    // Default ~10 ms — covers any realistic inter-dispatch gap in an
+    // active ML pipeline while still letting the process sleep on
+    // sustained idle. Comparable to libgomp's GOMP_SPINCOUNT default
+    // (~30 ms) but smaller to be a touch friendlier to general-purpose
+    // hosts that didn't ask for OMP-active behavior.
+    return std::chrono::microseconds(10000);
+  }
+
+  // Spin window before parking; set per pool at construction time.
+  std::chrono::microseconds _spinDuration;
+
+  // Returns true if `done` reached `target` within the spin window.
+  bool spinWaitDone(std::atomic<size_t>& done, size_t target) const {
+    if (done.load(std::memory_order_acquire) >= target) return true;
+    const auto deadline = std::chrono::steady_clock::now() + _spinDuration;
     int i = 0;
     for (;;) {
       cpuPause();
-      if (remaining.load(std::memory_order_acquire) == 0) return true;
+      if (done.load(std::memory_order_acquire) >= target) return true;
       if ((++i & 31) == 0 && std::chrono::steady_clock::now() >= deadline) {
-        return remaining.load(std::memory_order_acquire) == 0;
+        return done.load(std::memory_order_acquire) >= target;
       }
     }
   }
 
   void worker(size_t workerId) {
+    auto& slot = _perWorker[workerId];
     uint64_t lastEpoch = 0;
     for (;;) {
-      uint64_t epoch = _epoch.load(std::memory_order_acquire);
+      uint64_t epoch = slot.assignedEpoch.load(std::memory_order_acquire);
       if (epoch == lastEpoch) {
-        const auto deadline = std::chrono::steady_clock::now() + kSpinDuration;
+        // Spin window — long enough to bridge active dispatch streams
+        // without parking.
+        //
+        // Two phases:
+        //  1. Tight phase (first kSpinTightIters iterations, ~10 µs):
+        //     pure cpuPause. Covers the back-to-back dispatch case where
+        //     the next parallel() call is microseconds away — yielding
+        //     here would push that dispatch off the worker's core onto
+        //     the kernel's runqueue and pessimise the common active
+        //     workload.
+        //  2. Yielding phase (after warmup, until deadline): cpuPause +
+        //     periodic std::this_thread::yield(). Required when workers
+        //     are pinned to the same core set as the main thread (the
+        //     usual `taskset -c 0..N-1` recipe with N workers): without
+        //     yielding, 100%-spinning workers prevent CFS from
+        //     scheduling the co-pinned main thread until its 3 ms
+        //     time-slice expires, blocking parallel() dispatch on a
+        //     full CFS tick. libgomp solves this the same way.
+        constexpr int kSpinTightIters = 1024;
+        constexpr int kYieldEveryIters = 512;
+        const auto deadline = std::chrono::steady_clock::now() + _spinDuration;
         for (int i = 0;; ++i) {
           cpuPause();
-          epoch = _epoch.load(std::memory_order_acquire);
+          epoch = slot.assignedEpoch.load(std::memory_order_acquire);
           if (epoch != lastEpoch) break;
+          if (i > kSpinTightIters && (i & (kYieldEveryIters - 1)) == 0) {
+            // Cooperative yield. When no thread is waiting on the
+            // worker's core, sched_yield returns immediately
+            // (~100–200 ns); when main is waiting, this is what lets
+            // CFS schedule it without a 3 ms time-slice eviction.
+            std::this_thread::yield();
+          }
           if ((i & 31) == 0 && std::chrono::steady_clock::now() >= deadline) {
-            std::unique_lock<std::mutex> lk(_mutex);
-            _cv.wait(lk, [&] {
+            // Park. isParked = true is set under mu so parent's notify
+            // gate (also under mu) sees the up-to-date value.
+            std::unique_lock<std::mutex> lk(slot.mu);
+            slot.isParked.store(true, std::memory_order_relaxed);
+            slot.cv.wait(lk, [&] {
               return _shouldStop.load(std::memory_order_relaxed) ||
-                     _epoch.load(std::memory_order_acquire) != lastEpoch;
+                     slot.assignedEpoch.load(std::memory_order_acquire) !=
+                         lastEpoch;
             });
-            epoch = _epoch.load(std::memory_order_acquire);
+            slot.isParked.store(false, std::memory_order_relaxed);
+            epoch = slot.assignedEpoch.load(std::memory_order_acquire);
             break;
           }
         }
       }
-      lastEpoch = epoch;
-      // _shouldStop is published by the destructor via the release on _epoch
-      // we just acquired, so a relaxed load here is safe.
       if (_shouldStop.load(std::memory_order_relaxed)) return;
 
-      DispatchState* state = _state.load(std::memory_order_relaxed);
-      if (!state) continue;
-      if (workerId >= state->numShards) continue;
+      Job* job = _job.load(std::memory_order_acquire);
+      if (!job || job->epoch != epoch) {
+        cpuPause();
+        continue;
+      }
+      lastEpoch = epoch;
 
-      const size_t total = state->total;
-      const size_t shards = state->numShards;
-      const size_t base = (total / shards) * workerId +
-                          std::min<size_t>(workerId, total % shards);
+      // Helper `workerId` is participant `workerId + 1` (caller is
+      // participant 0). If we fall outside the participating range
+      // (small count, fewer than _threads.size() helpers fired), skip.
+      const size_t partIdx = workerId + 1;
+      if (partIdx >= job->totalParticipants) continue;
+
+      // Static slice — fixed contiguous range for this participant,
+      // computed from immutable Job fields. Matches OpenMP's
+      // schedule(static). No fetch_add(next) cache-line bouncing.
+      const size_t total = job->count;
+      const size_t shards = job->totalParticipants;
+      const size_t base = (total / shards) * partIdx +
+                          std::min<size_t>(partIdx, total % shards);
       const size_t size =
-          (total / shards) + (workerId < total % shards ? 1u : 0u);
+          (total / shards) + (partIdx < total % shards ? 1u : 0u);
 
-      // Mark this thread as in a parallel region so any nested parallel()
-      // call from inside fn runs inline (avoids re-entering the pool).
       _nestingDepth++;
       for (size_t i = 0; i < size; ++i) {
-        (*state->fn)(base + i, total);
+        job->fn(base + i, total);
       }
       _nestingDepth--;
 
-      if (state->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        // Use pool-owned _doneMutex/_doneCv (not state-owned). After the
-        // fetch_sub the parent may immediately observe remaining==0, return
-        // from parallel(), and destroy `state`. Operating on pool-owned
-        // sync objects keeps this worker safe even if `state` is gone by
-        // the time we land in lock_guard / notify_all below.
-        //
-        // Note: we read no fields of `state` between this fetch_sub and
-        // the next loop iteration — the lock_guard/notify_all touch only
-        // pool members. This is the invariant that lets parallel() race
-        // ahead of us safely.
+      // Snapshot helpersToFire BEFORE the fetch_add. Reading it after
+      // is UAF: caller's wait predicate (done >= helpersToFire)
+      // synchronizes-with our fetch_add, so once we increment, caller
+      // may immediately observe completion and destroy Job.
+      const size_t helpersToFire = job->totalParticipants - 1;
+      if (job->done.fetch_add(1, std::memory_order_acq_rel) + 1 ==
+          helpersToFire) {
         std::lock_guard<std::mutex> lk(_doneMutex);
         _doneCv.notify_all();
       }
@@ -334,13 +491,15 @@ class ThreadPoolDefault : public ghost::ThreadPool {
   }
 
   std::vector<std::thread> _threads;
-  std::atomic<uint64_t> _epoch;
-  std::atomic<DispatchState*> _state;
+  std::vector<PerWorker> _perWorker;
+  std::atomic<uint64_t> _globalEpoch{0};
+  // Non-owning pointer to the current dispatch's Job. Parent owns the Job
+  // (heap-allocated unique_ptr local to parallel()). Workers acquire-load
+  // _job and verify job->epoch matches their assigned epoch.
+  std::atomic<Job*> _job{nullptr};
   std::mutex _dispatchMutex;
-  std::mutex _mutex;
-  std::condition_variable _cv;
-  // Pool-owned (not per-dispatch) so that a worker mid-notify cannot
-  // touch a destroyed object after the parent returns from parallel().
+  // Pool-owned so that a worker mid-notify cannot touch a destroyed object
+  // after the parent returns from parallel().
   std::mutex _doneMutex;
   std::condition_variable _doneCv;
   std::atomic<bool> _shouldStop;
@@ -355,8 +514,10 @@ thread_local size_t ThreadPoolDefault::_nestingDepth = 0;
 }  // namespace
 }  // namespace implementation
 
-std::shared_ptr<ThreadPool> ThreadPool::createDefault(size_t workers) {
-  return std::make_shared<implementation::ThreadPoolDefault>(workers);
+std::shared_ptr<ThreadPool> ThreadPool::createDefault(
+    size_t workers, std::chrono::microseconds spinDuration) {
+  return std::make_shared<implementation::ThreadPoolDefault>(workers,
+                                                             spinDuration);
 }
 
 }  // namespace ghost

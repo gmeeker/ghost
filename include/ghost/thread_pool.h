@@ -15,6 +15,7 @@
 #ifndef GHOST_THREAD_POOL_H
 #define GHOST_THREAD_POOL_H
 
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -52,12 +53,42 @@ class ThreadPool {
   /// thread.
   virtual size_t workerCount() const = 0;
 
-  /// @brief Construct Ghost's default thread pool.
+  /// @brief Construct Ghost's default thread pool — OpenMP-style fork-join
+  /// with static slicing, long-spin then condvar park.
   ///
-  /// @param workers Number of worker threads. Pass 0 to use
-  ///   @c std::thread::hardware_concurrency().
+  /// **Caller participates**: like libgomp's master thread and TBB's
+  /// `task_arena` calling thread, the thread that calls @ref parallel
+  /// runs one of the static slices alongside the helper threads. With
+  /// @c workers=N the pool maintains N-1 helper threads and the caller
+  /// fills the Nth slot at dispatch time, so @c workers=N is the right
+  /// recipe for an N-core affinity — no separate dispatcher core is
+  /// needed. This matches @c omp_set_num_threads(N) /
+  /// @c omp_get_max_threads() in libgomp.
+  ///
+  /// Per-dispatch overhead is ~5–10 µs at @c count==workers in the active
+  /// case (helpers stay in spin between dispatches). Truly idle pools
+  /// park on a per-worker condvar so the process can sleep. Static
+  /// slicing matches OpenMP's @c schedule(static) — each participant
+  /// gets a fixed contiguous index range, no work-stealing.
+  ///
+  /// @param workers Team size, including the calling thread. Pass 0 to
+  ///   use @c std::thread::hardware_concurrency(). The pool allocates
+  ///   @c workers-1 helper threads.
+  /// @param spinDuration How long workers spin before parking on a
+  ///   condvar, and how long the parent spins waiting for completion
+  ///   before parking. Passing a duration of `-1` (the default) uses
+  ///   the @c GHOST_THREAD_SPINCOUNT_US environment variable, falling
+  ///   back to ~10 ms if unset. Pass @c 0 for "passive" (park
+  ///   immediately) — minimum CPU usage when idle, ~50–100 µs/dispatch
+  ///   wake-up cost. Pass a large value (e.g., @c hours(24)) for
+  ///   "active" (effectively never park) — matches libgomp's
+  ///   @c OMP_WAIT_POLICY=ACTIVE behavior, lowest dispatch latency,
+  ///   workers consume full cores while pool is alive.
+  ///
   /// @return A shared pointer to a newly constructed default pool.
-  static std::shared_ptr<ThreadPool> createDefault(size_t workers = 0);
+  static std::shared_ptr<ThreadPool> createDefault(
+      size_t workers = 0,
+      std::chrono::microseconds spinDuration = std::chrono::microseconds(-1));
 };
 
 }  // namespace ghost
