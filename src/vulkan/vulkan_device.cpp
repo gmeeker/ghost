@@ -14,6 +14,7 @@
 
 #if WITH_VULKAN
 
+#include <ghost/allocator.h>
 #include <ghost/exception.h>
 #include <ghost/vulkan/device.h>
 #include <ghost/vulkan/exception.h>
@@ -261,6 +262,17 @@ BufferVulkan::BufferVulkan(VkDevice device, VkBuffer buf, VkDeviceMemory mem,
                            size_t bytes, bool owns)
     : buffer(device, buf, owns), memory(device, mem, owns), _size(bytes) {}
 
+BufferVulkan::~BufferVulkan() {
+  if (_allocator) {
+    // Release ownership of the wrapped VkBuffer/VkDeviceMemory so the
+    // vk::ptr destructors don't call vkDestroyBuffer / vkFreeMemory — the
+    // host's allocator owns those resources.
+    buffer.release();
+    memory.release();
+    _allocator->freeBuffer(_externalHandle, _size);
+  }
+}
+
 size_t BufferVulkan::size() const { return _size; }
 
 void BufferVulkan::copy(const ghost::Encoder& s, const ghost::Buffer& src,
@@ -465,6 +477,15 @@ void SubBufferVulkan::copyTo(const ghost::Encoder& s, void* dst,
 // MappedBufferVulkan
 // ---------------------------------------------------------------------------
 
+MappedBufferVulkan::~MappedBufferVulkan() {
+  if (_allocator) {
+    buffer.release();
+    memory.release();
+    _allocator->freeMappedBuffer(_externalHandle, _size);
+    _allocator = nullptr;  // suppress base BufferVulkan destructor
+  }
+}
+
 MappedBufferVulkan::MappedBufferVulkan(const DeviceVulkan& dev, size_t bytes,
                                        const BufferOptions& opts)
     : BufferVulkan(dev.device, VK_NULL_HANDLE, VK_NULL_HANDLE, bytes, true),
@@ -502,6 +523,38 @@ void MappedBufferVulkan::unmap(const ghost::Encoder& s) {
 // ---------------------------------------------------------------------------
 // ImageVulkan
 // ---------------------------------------------------------------------------
+
+ImageVulkan::~ImageVulkan() {
+  if (_allocator) {
+    image.release();
+    memory.release();
+    // imageView is always Ghost-owned (it's a thin view we created), so leave
+    // its vk::ptr destructor to run normally.
+    _allocator->freeImage(_externalHandle, descr);
+  }
+}
+
+ImageVulkan::ImageVulkan(const DeviceVulkan& dev, const ImageDescription& d,
+                         VkImage extImage, VkDeviceMemory extMemory)
+    : image(dev.device, extImage, /*retainObject=*/false),
+      memory(dev.device, extMemory, /*retainObject=*/false),
+      imageView(dev.device),
+      descr(d) {
+  VkFormat format = dev.getImageFormat(d);
+
+  VkImageViewCreateInfo viewInfo = {};
+  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  viewInfo.image = extImage;
+  viewInfo.viewType = getImageViewType(d);
+  viewInfo.format = format;
+  viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  viewInfo.subresourceRange.baseMipLevel = 0;
+  viewInfo.subresourceRange.levelCount = 1;
+  viewInfo.subresourceRange.baseArrayLayer = 0;
+  viewInfo.subresourceRange.layerCount = 1;
+
+  checkError(vkCreateImageView(dev.device, &viewInfo, nullptr, &imageView));
+}
 
 ImageVulkan::ImageVulkan(const DeviceVulkan& dev, const ImageDescription& d)
     : image(dev.device), memory(dev.device), imageView(dev.device), descr(d) {
@@ -1538,16 +1591,58 @@ ghost::Stream DeviceVulkan::createStream(const StreamOptions& options) const {
 
 ghost::Buffer DeviceVulkan::allocateBuffer(size_t bytes,
                                            const BufferOptions& opts) const {
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateBuffer(bytes, opts)) {
+      auto* h = static_cast<ghost::VulkanBufferHandle*>(handle);
+      auto ptr = std::make_shared<BufferVulkan>(device, h->buffer, h->memory,
+                                                bytes, /*owns=*/false);
+      ptr->_externalHandle = handle;
+      ptr->setAllocator(a);
+      return ghost::Buffer(ptr);
+    }
+  }
   return ghost::Buffer(std::make_shared<BufferVulkan>(*this, bytes, opts));
 }
 
 ghost::MappedBuffer DeviceVulkan::allocateMappedBuffer(
     size_t bytes, const BufferOptions& opts) const {
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateMappedBuffer(bytes, opts)) {
+      auto* h = static_cast<ghost::VulkanBufferHandle*>(handle);
+      // Build an empty MappedBufferVulkan then graft on the external handles.
+      // We can't use the standard ctor because it allocates a fresh buffer.
+      auto ptr = std::make_shared<MappedBufferVulkan>(
+          *this, /*bytes=*/0, opts);  // creates a 0-byte placeholder
+      // Replace placeholder buffer/memory with external ones.
+      ptr->buffer.release();
+      ptr->memory.release();
+      ptr->buffer =
+          vk::ptr<VkBuffer>(device, h->buffer, /*retainObject=*/false);
+      ptr->memory =
+          vk::ptr<VkDeviceMemory>(device, h->memory, /*retainObject=*/false);
+      ptr->_size = bytes;
+      // Re-map the external memory.
+      checkError(vkMapMemory(device, h->memory, 0, bytes, 0, &ptr->mappedPtr));
+      ptr->_externalHandle = handle;
+      ptr->setAllocator(a);
+      return ghost::MappedBuffer(ptr);
+    }
+  }
   return ghost::MappedBuffer(
       std::make_shared<MappedBufferVulkan>(*this, bytes, opts));
 }
 
 ghost::Image DeviceVulkan::allocateImage(const ImageDescription& descr) const {
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateImage(descr)) {
+      auto* h = static_cast<ghost::VulkanImageHandle*>(handle);
+      auto ptr =
+          std::make_shared<ImageVulkan>(*this, descr, h->image, h->memory);
+      ptr->_externalHandle = handle;
+      ptr->setAllocator(a);
+      return ghost::Image(ptr);
+    }
+  }
   return ghost::Image(std::make_shared<ImageVulkan>(*this, descr));
 }
 
@@ -1563,6 +1658,24 @@ ghost::Image DeviceVulkan::sharedImage(const ImageDescription& descr,
                                        ghost::Image& image) const {
   auto* vkImg = static_cast<ImageVulkan*>(image.impl().get());
   return ghost::Image(std::make_shared<ImageVulkan>(*this, descr, *vkImg));
+}
+
+ghost::Buffer DeviceVulkan::wrapBuffer(const SharedBuffer& shared) const {
+  // shared.handle points to a host-owned VulkanBufferHandle struct.
+  auto* h = static_cast<ghost::VulkanBufferHandle*>(shared.handle);
+  // owns=false: vk::ptr doesn't call vkDestroyBuffer / vkFreeMemory.
+  auto ptr = std::make_shared<BufferVulkan>(device, h->buffer, h->memory,
+                                            shared.bytes, /*owns=*/false);
+  return ghost::Buffer(ptr);
+}
+
+ghost::Image DeviceVulkan::wrapImage(const SharedImage& shared) const {
+  auto* h = static_cast<ghost::VulkanImageHandle*>(shared.handle);
+  // The external-image ctor wraps {image, memory} non-owning and creates a
+  // fresh imageView for use by Ghost (the view is owned by this Ghost Image).
+  auto ptr =
+      std::make_shared<ImageVulkan>(*this, shared.descr, h->image, h->memory);
+  return ghost::Image(ptr);
 }
 
 Attribute DeviceVulkan::getAttribute(DeviceAttributeId what) const {

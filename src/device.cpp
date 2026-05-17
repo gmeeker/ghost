@@ -12,6 +12,7 @@
 // License for the specific language governing permissions and limitations under
 // the License.
 
+#include <ghost/allocator.h>
 #include <ghost/command_buffer.h>
 #include <ghost/device.h>
 #include <ghost/exception.h>
@@ -77,9 +78,18 @@ ghost::Library Device::loadLibraryFromFile(
   throw ghost::unsupported_error();
 }
 
-void* Device::allocateHostMemory(size_t bytes) const { return ::malloc(bytes); }
+void* Device::allocateHostMemory(size_t bytes) const {
+  if (_allocator) {
+    if (void* p = _allocator->allocateHostMemory(bytes)) return p;
+  }
+  return ::malloc(bytes);
+}
 
 void Device::freeHostMemory(void* ptr) const {
+  if (_allocator) {
+    _allocator->freeHostMemory(ptr);
+    return;
+  }
   if (ptr) ::free(ptr);
 }
 
@@ -91,6 +101,14 @@ size_t Device::imageAlignment(const ImageDescription&) const {
   auto attr = getAttribute(kDeviceMaxImageAlignment);
   auto v = attr.asUInt64();
   return v > 0 ? static_cast<size_t>(v) : 1;
+}
+
+ghost::Buffer Device::wrapBuffer(const SharedBuffer&) const {
+  throw ghost::unsupported_error();
+}
+
+ghost::Image Device::wrapImage(const SharedImage&) const {
+  throw ghost::unsupported_error();
 }
 
 void Image::copy(const ghost::Encoder& s, const ghost::Buffer& src,
@@ -396,6 +414,12 @@ void* Device::allocateHostMemory(size_t bytes) const {
 
 void Device::freeHostMemory(void* ptr) const { _impl->freeHostMemory(ptr); }
 
+void Device::setAllocator(std::shared_ptr<Allocator> a) const {
+  _impl->setAllocator(std::move(a));
+}
+
+Allocator* Device::allocator() const { return _impl->allocator(); }
+
 Buffer Device::allocateBuffer(size_t bytes, BufferOptions opts) const {
   return _impl->allocateBuffer(bytes, opts);
 }
@@ -407,6 +431,14 @@ MappedBuffer Device::allocateMappedBuffer(size_t bytes,
 
 Image Device::allocateImage(const ImageDescription& descr) const {
   return _impl->allocateImage(descr);
+}
+
+Buffer Device::wrapBuffer(const SharedBuffer& shared) const {
+  return _impl->wrapBuffer(shared);
+}
+
+Image Device::wrapImage(const SharedImage& shared) const {
+  return _impl->wrapImage(shared);
 }
 
 Image Device::sharedImage(const ImageDescription& descr, Buffer& buffer) const {

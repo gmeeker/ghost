@@ -23,6 +23,31 @@
 #include <vector>
 
 namespace ghost {
+
+/// @brief Layout an @c Allocator must use when returning a Vulkan buffer.
+///
+/// Vulkan resources require two handles ( @c VkBuffer and the backing
+/// @c VkDeviceMemory ). Ghost cannot reconstruct that pair from a single
+/// opaque pointer, so on Vulkan the @c void* returned by
+/// @c Allocator::allocateBuffer / @c allocateMappedBuffer must point to a
+/// host-owned struct that begins with these two fields. The host retains
+/// ownership of the struct's storage and frees it from
+/// @c freeBuffer / @c freeMappedBuffer along with the underlying Vulkan
+/// resources.
+struct VulkanBufferHandle {
+  VkBuffer buffer;
+  VkDeviceMemory memory;
+};
+
+/// @brief Layout an @c Allocator must use when returning a Vulkan image.
+///
+/// Same conventions as @c VulkanBufferHandle. The optional @c imageView field
+/// is reserved for future use; Ghost currently creates its own view.
+struct VulkanImageHandle {
+  VkImage image;
+  VkDeviceMemory memory;
+};
+
 namespace implementation {
 class DeviceVulkan;
 
@@ -85,6 +110,10 @@ class BufferVulkan : public Buffer {
   vk::ptr<VkBuffer> buffer;
   vk::ptr<VkDeviceMemory> memory;
   size_t _size;
+  // Vulkan-only: opaque handle returned by an external @c Allocator. The
+  // {VkBuffer, VkDeviceMemory} pair cannot reconstruct the host's struct, so
+  // we hold the pointer the host returned and pass it back on free.
+  void* _externalHandle = nullptr;
 
   BufferVulkan(const DeviceVulkan& dev, size_t bytes,
                const BufferOptions& opts = {});
@@ -94,6 +123,7 @@ class BufferVulkan : public Buffer {
   // an empty base before populating in the derived ctor body.
   BufferVulkan(VkDevice device, VkBuffer buf, VkDeviceMemory mem, size_t bytes,
                bool owns = true);
+  ~BufferVulkan();
 
   virtual size_t size() const override;
 
@@ -144,6 +174,7 @@ class MappedBufferVulkan : public BufferVulkan {
 
   MappedBufferVulkan(const DeviceVulkan& dev_, size_t bytes,
                      const BufferOptions& opts = {});
+  ~MappedBufferVulkan();
 
   virtual void* map(const ghost::Encoder& s, Access access,
                     bool sync = true) override;
@@ -158,12 +189,20 @@ class ImageVulkan : public Image {
   // aliases (which create a fresh view into another image's memory).
   vk::ptr<VkImageView> imageView;
   ImageDescription descr;
+  // Vulkan-only: opaque handle from external @c Allocator (see BufferVulkan).
+  void* _externalHandle = nullptr;
 
   ImageVulkan(const DeviceVulkan& dev, const ImageDescription& descr);
   ImageVulkan(const DeviceVulkan& dev, const ImageDescription& descr,
               BufferVulkan& buffer);
   ImageVulkan(const DeviceVulkan& dev, const ImageDescription& descr,
               ImageVulkan& image);
+  /// @brief External-handle constructor used by the allocator path. Takes
+  /// host-owned @c VkImage / @c VkDeviceMemory (non-owning wrappers) and
+  /// creates a fresh @c VkImageView over the external image.
+  ImageVulkan(const DeviceVulkan& dev, const ImageDescription& descr,
+              VkImage extImage, VkDeviceMemory extMemory);
+  ~ImageVulkan();
 
   virtual const ImageDescription& description() const override { return descr; }
 
@@ -228,6 +267,9 @@ class DeviceVulkan : public Device {
                                    ghost::Buffer& buffer) const override;
   virtual ghost::Image sharedImage(const ImageDescription& descr,
                                    ghost::Image& image) const override;
+
+  virtual ghost::Buffer wrapBuffer(const SharedBuffer& shared) const override;
+  virtual ghost::Image wrapImage(const SharedImage& shared) const override;
 
   virtual Attribute getAttribute(DeviceAttributeId what) const override;
 

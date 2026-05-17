@@ -14,6 +14,7 @@
 
 #if WITH_OPENCL
 
+#include <ghost/allocator.h>
 #include <ghost/opencl/device.h>
 #include <ghost/opencl/exception.h>
 #include <ghost/opencl/impl_device.h>
@@ -283,6 +284,13 @@ void StreamOpenCL::waitForEvent(const std::shared_ptr<Event>& e) {
 BufferOpenCL::BufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes)
     : mem(mem_), _size(bytes) {}
 
+BufferOpenCL::~BufferOpenCL() {
+  if (_allocator) {
+    _allocator->freeBuffer((void*)mem.release(), _size);
+  }
+  // else: opencl::ptr destructor calls clReleaseMemObject normally
+}
+
 BufferOpenCL::BufferOpenCL(const DeviceOpenCL& dev, size_t bytes,
                            const BufferOptions& opts)
     : _size(bytes) {
@@ -424,6 +432,13 @@ MappedBufferOpenCL::MappedBufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes,
                                        size_t allocSize)
     : BufferOpenCL(mem_, allocSize), length(bytes), ptr(nullptr) {}
 
+MappedBufferOpenCL::~MappedBufferOpenCL() {
+  if (_allocator) {
+    _allocator->freeMappedBuffer((void*)mem.release(), _size);
+    _allocator = nullptr;  // suppress base BufferOpenCL destructor
+  }
+}
+
 MappedBufferOpenCL::MappedBufferOpenCL(const DeviceOpenCL& dev, size_t bytes,
                                        const BufferOptions& opts)
     : BufferOpenCL(opencl::ptr<cl_mem>(), bytes), length(bytes), ptr(nullptr) {
@@ -478,6 +493,12 @@ void MappedBufferOpenCL::unmap(const ghost::Encoder& s) {
 ImageOpenCL::ImageOpenCL(opencl::ptr<cl_mem> mem_,
                          const ImageDescription& descr_)
     : mem(mem_), descr(descr_) {}
+
+ImageOpenCL::~ImageOpenCL() {
+  if (_allocator) {
+    _allocator->freeImage((void*)mem.release(), descr);
+  }
+}
 
 ImageOpenCL::ImageOpenCL(const DeviceOpenCL& dev,
                          const ImageDescription& descr_)
@@ -1002,12 +1023,32 @@ ghost::Buffer DeviceOpenCL::allocateBuffer(size_t bytes,
     return ghost::Buffer(
         std::make_shared<PooledBufferOpenCL>(std::move(newMem), bytes, _pool));
   }
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateBuffer(bytes, opts)) {
+      // retainObject=true here means "I'm transferring ownership; no retain"
+      opencl::ptr<cl_mem> mem(reinterpret_cast<cl_mem>(handle),
+                              /*retainObject=*/true);
+      auto ptr = std::make_shared<implementation::BufferOpenCL>(mem, bytes);
+      ptr->setAllocator(a);
+      return ghost::Buffer(ptr);
+    }
+  }
   auto ptr = std::make_shared<implementation::BufferOpenCL>(*this, bytes, opts);
   return ghost::Buffer(ptr);
 }
 
 ghost::MappedBuffer DeviceOpenCL::allocateMappedBuffer(
     size_t bytes, const BufferOptions& opts) const {
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateMappedBuffer(bytes, opts)) {
+      opencl::ptr<cl_mem> mem(reinterpret_cast<cl_mem>(handle),
+                              /*retainObject=*/true);
+      auto ptr = std::make_shared<implementation::MappedBufferOpenCL>(
+          mem, bytes, bytes);
+      ptr->setAllocator(a);
+      return ghost::MappedBuffer(ptr);
+    }
+  }
   auto ptr =
       std::make_shared<implementation::MappedBufferOpenCL>(*this, bytes, opts);
   return ghost::MappedBuffer(ptr);
@@ -1033,6 +1074,15 @@ ghost::Image DeviceOpenCL::allocateImage(const ImageDescription& descr) const {
     return ghost::Image(std::make_shared<PooledImageOpenCL>(
         std::move(img->mem), descr, bytes, _pool));
   }
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateImage(descr)) {
+      opencl::ptr<cl_mem> mem(reinterpret_cast<cl_mem>(handle),
+                              /*retainObject=*/true);
+      auto ptr = std::make_shared<implementation::ImageOpenCL>(mem, descr);
+      ptr->setAllocator(a);
+      return ghost::Image(ptr);
+    }
+  }
   auto ptr = std::make_shared<implementation::ImageOpenCL>(*this, descr);
   return ghost::Image(ptr);
 }
@@ -1048,6 +1098,22 @@ ghost::Image DeviceOpenCL::sharedImage(const ImageDescription& descr,
                                        ghost::Image& image) const {
   auto i = static_cast<implementation::ImageOpenCL*>(image.impl().get());
   auto ptr = std::make_shared<implementation::ImageOpenCL>(*this, descr, *i);
+  return ghost::Image(ptr);
+}
+
+ghost::Buffer DeviceOpenCL::wrapBuffer(const SharedBuffer& shared) const {
+  // retainObject=false makes opencl::ptr call clRetainMemObject on construct
+  // and clReleaseMemObject on destroy: balanced, host's count unchanged.
+  opencl::ptr<cl_mem> mem(reinterpret_cast<cl_mem>(shared.handle),
+                          /*retainObject=*/false);
+  auto ptr = std::make_shared<implementation::BufferOpenCL>(mem, shared.bytes);
+  return ghost::Buffer(ptr);
+}
+
+ghost::Image DeviceOpenCL::wrapImage(const SharedImage& shared) const {
+  opencl::ptr<cl_mem> mem(reinterpret_cast<cl_mem>(shared.handle),
+                          /*retainObject=*/false);
+  auto ptr = std::make_shared<implementation::ImageOpenCL>(mem, shared.descr);
   return ghost::Image(ptr);
 }
 

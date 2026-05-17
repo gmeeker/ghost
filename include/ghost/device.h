@@ -33,6 +33,8 @@
 
 namespace ghost {
 
+class Allocator;
+
 /// @brief A GPU command queue for sequencing kernel dispatches and memory
 /// operations.
 ///
@@ -420,6 +422,23 @@ class Device {
   /// @param ptr Pointer to the memory to free.
   void freeHostMemory(void* ptr) const;
 
+  /// @brief Install a host-supplied @c Allocator on this device.
+  ///
+  /// Buffers, mapped buffers, images, and host memory allocated after this
+  /// call route through the allocator first. The allocator may return
+  /// @c nullptr from any allocation method to decline and let Ghost use its
+  /// default path. Pass @c nullptr to clear.
+  ///
+  /// Should be set before allocating any resources from this device. It is
+  /// not legal to swap the allocator while buffers or images allocated by a
+  /// previous allocator are still alive.
+  ///
+  /// See @c ghost::Allocator for the per-backend handle-type contract.
+  void setAllocator(std::shared_ptr<Allocator> a) const;
+
+  /// @brief Get the installed allocator, or @c nullptr.
+  Allocator* allocator() const;
+
   /// @brief Allocate a GPU buffer.
   /// @param bytes Size in bytes.
   /// @param opts Allocation options (access mode and lifetime hint). Implicitly
@@ -438,6 +457,43 @@ class Device {
   /// @param descr Image description specifying dimensions, format, and access.
   /// @return The allocated Image.
   Image allocateImage(const ImageDescription& descr) const;
+
+  /// @brief Wrap an externally-allocated native buffer in a Ghost @c Buffer.
+  ///
+  /// Lets a plugin host (OpenFX, AE, ...) hand Ghost a GPU buffer it already
+  /// owns and have Ghost use it as-is. The caller's code is identical across
+  /// backends; only @c SharedBuffer::handle's interpretation varies. The
+  /// host retains ownership and must keep the resource alive at least as
+  /// long as the returned @c Buffer.
+  ///
+  /// Per-backend @c handle contract:
+  /// - @b Metal:   @c (__bridge void*)id\<MTLBuffer>
+  /// - @b OpenCL:  @c cl_mem cast to @c void*
+  /// - @b CUDA:    @c CUdeviceptr cast to @c (void*)(uintptr_t)
+  /// - @b Vulkan:  pointer to a host-owned @c VulkanBufferHandle struct
+  /// - @b DirectX: @c ID3D12Resource*
+  /// - @b CPU:     @c void* heap pointer
+  ///
+  /// @param shared The host-supplied handle + size.
+  /// @return A @c Buffer that uses the host's resource.
+  Buffer wrapBuffer(const SharedBuffer& shared) const;
+
+  /// @brief Wrap an externally-allocated native image in a Ghost @c Image.
+  ///
+  /// See @ref wrapBuffer for ownership semantics. Per-backend @c handle
+  /// contract:
+  /// - @b Metal:   @c (__bridge void*)id\<MTLTexture>
+  /// - @b OpenCL:  @c cl_mem cast to @c void*
+  /// - @b CUDA:    @c CUdeviceptr cast to @c (void*)(uintptr_t)
+  /// - @b Vulkan:  pointer to a host-owned @c VulkanImageHandle struct
+  /// - @b DirectX: @c ID3D12Resource*
+  /// - @b CPU:     @c void* heap pointer
+  ///
+  /// The image's dimensions and pixel layout must match how the host
+  /// originally allocated the resource — Ghost trusts the description.
+  /// @param shared The host-supplied handle + image description.
+  /// @return An @c Image that uses the host's resource.
+  Image wrapImage(const SharedImage& shared) const;
 
   /// @brief Create an image that shares memory with an existing buffer.
   /// @param descr Image description specifying dimensions and format.

@@ -14,6 +14,7 @@
 
 #if WITH_CUDA
 
+#include <ghost/allocator.h>
 #include <ghost/cuda/device.h>
 #include <ghost/cuda/exception.h>
 #include <ghost/cuda/impl_device.h>
@@ -85,6 +86,13 @@ void StreamCUDA::waitForEvent(const std::shared_ptr<Event>& e) {
 
 BufferCUDA::BufferCUDA(cu::ptr<CUdeviceptr> mem_, size_t bytes)
     : mem(mem_), _size(bytes) {}
+
+BufferCUDA::~BufferCUDA() {
+  if (_allocator) {
+    _allocator->freeBuffer(
+        reinterpret_cast<void*>(static_cast<uintptr_t>(mem.release())), _size);
+  }
+}
 
 BufferCUDA::BufferCUDA(const DeviceCUDA& dev, size_t bytes,
                        const BufferOptions&)
@@ -205,6 +213,16 @@ MappedBufferCUDA::MappedBufferCUDA(cu::ptr<void*> ptr_)
   mem = cu::ptr<CUdeviceptr>(p, false);  // do not free the device pointer
 }
 
+MappedBufferCUDA::~MappedBufferCUDA() {
+  if (_allocator) {
+    // The base BufferCUDA destructor would also try to free `mem`, but
+    // `mem` is non-owning (cuMemHostGetDevicePointer derived). Clearing
+    // _allocator prevents BufferCUDA::~BufferCUDA from calling freeBuffer.
+    _allocator->freeMappedBuffer(ptr.release(), _size);
+    _allocator = nullptr;
+  }
+}
+
 MappedBufferCUDA::MappedBufferCUDA(const DeviceCUDA& dev, size_t bytes,
                                    const BufferOptions& opts)
     : BufferCUDA(cu::ptr<CUdeviceptr>(), bytes) {
@@ -232,6 +250,13 @@ void MappedBufferCUDA::unmap(const ghost::Encoder&) {}
 
 ImageCUDA::ImageCUDA(cu::ptr<CUdeviceptr> mem_, const ImageDescription& descr_)
     : mem(mem_), descr(descr_) {}
+
+ImageCUDA::~ImageCUDA() {
+  if (_allocator) {
+    _allocator->freeImage(
+        reinterpret_cast<void*>(static_cast<uintptr_t>(mem.release())), descr);
+  }
+}
 
 ImageCUDA::ImageCUDA(const DeviceCUDA& dev, const ImageDescription& descr_)
     : descr(descr_) {
@@ -968,21 +993,52 @@ ghost::Buffer DeviceCUDA::allocateBuffer(size_t bytes,
           cu::ptr<CUdeviceptr>(devPtr, false), bytes);
       return ghost::Buffer(ptr);
     }
-    // Pool allocation failed — fall through to standard allocation
+    // Pool allocation failed — fall through to allocator / standard
   }
 #endif
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateBuffer(bytes, opts)) {
+      CUdeviceptr devPtr =
+          static_cast<CUdeviceptr>(reinterpret_cast<uintptr_t>(handle));
+      auto ptr = std::make_shared<implementation::BufferCUDA>(
+          cu::ptr<CUdeviceptr>(devPtr, /*retainObject=*/true), bytes);
+      ptr->setAllocator(a);
+      return ghost::Buffer(ptr);
+    }
+  }
   auto ptr = std::make_shared<implementation::BufferCUDA>(*this, bytes, opts);
   return ghost::Buffer(ptr);
 }
 
 ghost::MappedBuffer DeviceCUDA::allocateMappedBuffer(
     size_t bytes, const BufferOptions& opts) const {
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateMappedBuffer(bytes, opts)) {
+      // For CUDA mapped buffers the host returns the host pointer; Ghost
+      // derives the device pointer via cuMemHostGetDevicePointer.
+      auto ptr = std::make_shared<implementation::MappedBufferCUDA>(
+          cu::ptr<void*>(handle, /*retainObject=*/true));
+      ptr->_size = bytes;
+      ptr->setAllocator(a);
+      return ghost::MappedBuffer(ptr);
+    }
+  }
   auto ptr =
       std::make_shared<implementation::MappedBufferCUDA>(*this, bytes, opts);
   return ghost::MappedBuffer(ptr);
 }
 
 ghost::Image DeviceCUDA::allocateImage(const ImageDescription& descr) const {
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateImage(descr)) {
+      CUdeviceptr devPtr =
+          static_cast<CUdeviceptr>(reinterpret_cast<uintptr_t>(handle));
+      auto ptr = std::make_shared<implementation::ImageCUDA>(
+          cu::ptr<CUdeviceptr>(devPtr, /*retainObject=*/true), descr);
+      ptr->setAllocator(a);
+      return ghost::Image(ptr);
+    }
+  }
   auto ptr = std::make_shared<implementation::ImageCUDA>(*this, descr);
   return ghost::Image(ptr);
 }
@@ -998,6 +1054,23 @@ ghost::Image DeviceCUDA::sharedImage(const ImageDescription& descr,
                                      ghost::Image& image) const {
   auto i = static_cast<implementation::ImageCUDA*>(image.impl().get());
   auto ptr = std::make_shared<implementation::ImageCUDA>(*this, descr, *i);
+  return ghost::Image(ptr);
+}
+
+ghost::Buffer DeviceCUDA::wrapBuffer(const SharedBuffer& shared) const {
+  CUdeviceptr devPtr =
+      static_cast<CUdeviceptr>(reinterpret_cast<uintptr_t>(shared.handle));
+  // owned=false: cu::ptr stores the value but never calls cuMemFree.
+  auto ptr = std::make_shared<implementation::BufferCUDA>(
+      cu::ptr<CUdeviceptr>(devPtr, /*retainObject=*/false), shared.bytes);
+  return ghost::Buffer(ptr);
+}
+
+ghost::Image DeviceCUDA::wrapImage(const SharedImage& shared) const {
+  CUdeviceptr devPtr =
+      static_cast<CUdeviceptr>(reinterpret_cast<uintptr_t>(shared.handle));
+  auto ptr = std::make_shared<implementation::ImageCUDA>(
+      cu::ptr<CUdeviceptr>(devPtr, /*retainObject=*/false), shared.descr);
   return ghost::Image(ptr);
 }
 

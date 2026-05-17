@@ -14,6 +14,7 @@
 
 #if WITH_DIRECTX
 
+#include <ghost/allocator.h>
 #include <ghost/directx/device.h>
 #include <ghost/directx/exception.h>
 #include <ghost/directx/impl_device.h>
@@ -382,7 +383,14 @@ BufferDirectX::BufferDirectX(ComPtr<ID3D12Resource> res, size_t bytes,
                              D3D12_RESOURCE_STATES state)
     : resource(res), _size(bytes), currentState(state) {}
 
-BufferDirectX::~BufferDirectX() {}
+BufferDirectX::~BufferDirectX() {
+  if (_allocator) {
+    // Hand the ID3D12Resource ownership back to the allocator without
+    // releasing our ComPtr's reference (Detach gives us the raw pointer and
+    // zeroes the ComPtr).
+    _allocator->freeBuffer(resource.Detach(), _size);
+  }
+}
 
 size_t BufferDirectX::size() const { return _size; }
 
@@ -559,6 +567,10 @@ MappedBufferDirectX::~MappedBufferDirectX() {
   if (mappedPtr && resource) {
     resource->Unmap(0, nullptr);
   }
+  if (_allocator) {
+    _allocator->freeMappedBuffer(resource.Detach(), _size);
+    _allocator = nullptr;  // suppress base BufferDirectX destructor
+  }
 }
 
 void* MappedBufferDirectX::map(const ghost::Encoder& s, Access access,
@@ -634,7 +646,11 @@ ImageDirectX::ImageDirectX(const DeviceDirectX& dev, const ImageDescription& d,
   (void)dev;
 }
 
-ImageDirectX::~ImageDirectX() {}
+ImageDirectX::~ImageDirectX() {
+  if (_allocator) {
+    _allocator->freeImage(resource.Detach(), descr);
+  }
+}
 
 void ImageDirectX::transitionTo(ID3D12GraphicsCommandList* cmdList,
                                 D3D12_RESOURCE_STATES newState) {
@@ -1121,16 +1137,48 @@ ghost::Stream DeviceDirectX::createStream(const StreamOptions& options) const {
 
 ghost::Buffer DeviceDirectX::allocateBuffer(size_t bytes,
                                             const BufferOptions& opts) const {
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateBuffer(bytes, opts)) {
+      ComPtr<ID3D12Resource> res;
+      res.Attach(static_cast<ID3D12Resource*>(handle));
+      auto ptr = std::make_shared<BufferDirectX>(res, bytes,
+                                                 D3D12_RESOURCE_STATE_COMMON);
+      ptr->setAllocator(a);
+      return ghost::Buffer(ptr);
+    }
+  }
   return ghost::Buffer(std::make_shared<BufferDirectX>(*this, bytes, opts));
 }
 
 ghost::MappedBuffer DeviceDirectX::allocateMappedBuffer(
     size_t bytes, const BufferOptions& opts) const {
+  // DirectX MappedBuffer has no separate "external" constructor today; default
+  // path. External allocator path can be added later — would need a ctor that
+  // accepts an ID3D12Resource and persistently maps it.
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateMappedBuffer(bytes, opts)) {
+      // Defensive: hand the handle straight back since we have no ctor path.
+      a->freeMappedBuffer(handle, bytes);
+    }
+  }
   return ghost::MappedBuffer(
       std::make_shared<MappedBufferDirectX>(*this, bytes, opts));
 }
 
 ghost::Image DeviceDirectX::allocateImage(const ImageDescription& descr) const {
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateImage(descr)) {
+      // ImageDirectX has no ctor that takes an external resource. Construct
+      // default and graft (we know currentState begins as COMMON for fresh
+      // resources; the host must also have created it in COMMON).
+      auto ptr = std::make_shared<ImageDirectX>(*this, descr);
+      ptr->resource.Reset();
+      ptr->resource.Attach(static_cast<ID3D12Resource*>(handle));
+      ptr->currentState = D3D12_RESOURCE_STATE_COMMON;
+      ptr->setAllocator(a);
+      return ghost::Image(ptr);
+    }
+  }
   return ghost::Image(std::make_shared<ImageDirectX>(*this, descr));
 }
 
@@ -1143,6 +1191,30 @@ ghost::Image DeviceDirectX::sharedImage(const ImageDescription& descr,
                                         ghost::Image& image) const {
   auto* dxImg = static_cast<ImageDirectX*>(image.impl().get());
   return ghost::Image(std::make_shared<ImageDirectX>(*this, descr, *dxImg));
+}
+
+ghost::Buffer DeviceDirectX::wrapBuffer(const SharedBuffer& shared) const {
+  // Attach takes the raw pointer without AddRef; we then AddRef so the
+  // ComPtr's destructor Release is balanced against this extra ref. The
+  // host's reference count is unaffected.
+  ComPtr<ID3D12Resource> res;
+  res.Attach(static_cast<ID3D12Resource*>(shared.handle));
+  res->AddRef();
+  auto ptr = std::make_shared<BufferDirectX>(res, shared.bytes,
+                                             D3D12_RESOURCE_STATE_COMMON);
+  return ghost::Buffer(ptr);
+}
+
+ghost::Image DeviceDirectX::wrapImage(const SharedImage& shared) const {
+  // ImageDirectX has no ctor that accepts an external resource directly;
+  // construct minimally and graft, mirroring the Allocator path.
+  auto ptr = std::make_shared<ImageDirectX>(*this, shared.descr);
+  ptr->resource.Reset();
+  ID3D12Resource* raw = static_cast<ID3D12Resource*>(shared.handle);
+  ptr->resource.Attach(raw);
+  ptr->resource->AddRef();
+  ptr->currentState = D3D12_RESOURCE_STATE_COMMON;
+  return ghost::Image(ptr);
 }
 
 Attribute DeviceDirectX::getAttribute(DeviceAttributeId what) const {

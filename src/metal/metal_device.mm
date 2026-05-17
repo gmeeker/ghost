@@ -14,6 +14,7 @@
 
 #if WITH_METAL
 
+#include <ghost/allocator.h>
 #include <ghost/metal/device.h>
 #include <ghost/metal/exception.h>
 #include <ghost/metal/impl_device.h>
@@ -245,6 +246,14 @@ void StreamMetal::waitForEvent(const std::shared_ptr<Event> &e) {
 
 BufferMetal::BufferMetal(objc::ptr<id<MTLBuffer>> mem_, size_t bytes)
     : mem(mem_), _size(bytes) {}
+
+BufferMetal::~BufferMetal() {
+  if (_allocator) {
+    void *handle = GHOST_OBJC_BRIDGE_RETAINED(void *, mem.release());
+    _allocator->freeBuffer(handle, _size);
+  }
+  // else: objc::ptr destructor releases mem normally
+}
 
 BufferMetal::BufferMetal(const DeviceMetal &dev, size_t bytes,
                          const BufferOptions &opts)
@@ -484,6 +493,14 @@ MappedBufferMetal::MappedBufferMetal(objc::ptr<id<MTLBuffer>> mem_,
                                      size_t bytes)
     : BufferMetal(mem_, bytes), length(bytes) {}
 
+MappedBufferMetal::~MappedBufferMetal() {
+  if (_allocator) {
+    void *handle = GHOST_OBJC_BRIDGE_RETAINED(void *, mem.release());
+    _allocator->freeMappedBuffer(handle, _size);
+    _allocator = nullptr; // suppress base BufferMetal destructor
+  }
+}
+
 MappedBufferMetal::MappedBufferMetal(const DeviceMetal &dev, size_t bytes,
                                      const BufferOptions &opts)
     : BufferMetal(objc::ptr<id<MTLBuffer>>(), bytes), length(bytes) {
@@ -516,6 +533,13 @@ void MappedBufferMetal::unmap(const ghost::Encoder &s) {
 ImageMetal::ImageMetal(objc::ptr<id<MTLTexture>> mem_,
                        const ImageDescription &descr_)
     : mem(mem_), descr(descr_) {}
+
+ImageMetal::~ImageMetal() {
+  if (_allocator) {
+    void *handle = GHOST_OBJC_BRIDGE_RETAINED(void *, mem.release());
+    _allocator->freeImage(handle, descr);
+  }
+}
 
 ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_)
     : descr(descr_) {
@@ -924,7 +948,17 @@ ghost::Buffer DeviceMetal::allocateBuffer(size_t bytes,
       auto ptr = std::make_shared<implementation::BufferMetal>(buf, bytes);
       return ghost::Buffer(ptr);
     }
-    // Heap full — fall through to individual allocation
+    // Heap full — fall through to external allocator / individual allocation
+  }
+  if (auto *a = allocator()) {
+    if (void *handle = a->allocateBuffer(bytes, opts)) {
+      id<MTLBuffer> mtlBuf = GHOST_OBJC_BRIDGE_TRANSFER(id<MTLBuffer>, handle);
+      // retainObject=true means "I'm taking ownership, don't retain again"
+      objc::ptr<id<MTLBuffer>> buf(mtlBuf, /*retainObject=*/true);
+      auto ptr = std::make_shared<implementation::BufferMetal>(buf, bytes);
+      ptr->setAllocator(a);
+      return ghost::Buffer(ptr);
+    }
   }
   auto ptr = std::make_shared<implementation::BufferMetal>(*this, bytes, opts);
   return ghost::Buffer(ptr);
@@ -933,6 +967,16 @@ ghost::Buffer DeviceMetal::allocateBuffer(size_t bytes,
 ghost::MappedBuffer
 DeviceMetal::allocateMappedBuffer(size_t bytes,
                                   const BufferOptions &opts) const {
+  if (auto *a = allocator()) {
+    if (void *handle = a->allocateMappedBuffer(bytes, opts)) {
+      id<MTLBuffer> mtlBuf = GHOST_OBJC_BRIDGE_TRANSFER(id<MTLBuffer>, handle);
+      objc::ptr<id<MTLBuffer>> buf(mtlBuf, /*retainObject=*/true);
+      auto ptr =
+          std::make_shared<implementation::MappedBufferMetal>(buf, bytes);
+      ptr->setAllocator(a);
+      return ghost::MappedBuffer(ptr);
+    }
+  }
   auto ptr =
       std::make_shared<implementation::MappedBufferMetal>(*this, bytes, opts);
   return ghost::MappedBuffer(ptr);
@@ -948,7 +992,17 @@ ghost::Image DeviceMetal::allocateImage(const ImageDescription &descr) const {
       auto ptr = std::make_shared<implementation::ImageMetal>(tex, descr);
       return ghost::Image(ptr);
     }
-    // Heap full — fall through to individual allocation
+    // Heap full — fall through to external allocator / individual allocation
+  }
+  if (auto *a = allocator()) {
+    if (void *handle = a->allocateImage(descr)) {
+      id<MTLTexture> mtlTex =
+          GHOST_OBJC_BRIDGE_TRANSFER(id<MTLTexture>, handle);
+      objc::ptr<id<MTLTexture>> tex(mtlTex, /*retainObject=*/true);
+      auto ptr = std::make_shared<implementation::ImageMetal>(tex, descr);
+      ptr->setAllocator(a);
+      return ghost::Image(ptr);
+    }
   }
   auto ptr = std::make_shared<implementation::ImageMetal>(*this, descr);
   return ghost::Image(ptr);
@@ -965,6 +1019,22 @@ ghost::Image DeviceMetal::sharedImage(const ImageDescription &descr,
                                       ghost::Image &image) const {
   auto i = static_cast<implementation::ImageMetal *>(image.impl().get());
   auto ptr = std::make_shared<implementation::ImageMetal>(*this, descr, *i);
+  return ghost::Image(ptr);
+}
+
+ghost::Buffer DeviceMetal::wrapBuffer(const SharedBuffer &shared) const {
+  id<MTLBuffer> buf = (__bridge id<MTLBuffer>)shared.handle;
+  // retainObject=false: ARC's strong-ivar assign in objc::ptr balances the
+  // dealloc release. Host's +1 is unaffected.
+  objc::ptr<id<MTLBuffer>> p(buf, /*retainObject=*/false);
+  auto ptr = std::make_shared<implementation::BufferMetal>(p, shared.bytes);
+  return ghost::Buffer(ptr);
+}
+
+ghost::Image DeviceMetal::wrapImage(const SharedImage &shared) const {
+  id<MTLTexture> tex = (__bridge id<MTLTexture>)shared.handle;
+  objc::ptr<id<MTLTexture>> p(tex, /*retainObject=*/false);
+  auto ptr = std::make_shared<implementation::ImageMetal>(p, shared.descr);
   return ghost::Image(ptr);
 }
 

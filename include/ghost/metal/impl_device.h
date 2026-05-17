@@ -66,6 +66,7 @@ class BufferMetal : public Buffer {
   BufferMetal(objc::ptr<id<MTLBuffer>> mem_, size_t bytes);
   BufferMetal(const DeviceMetal& dev, size_t bytes,
               const BufferOptions& opts = {});
+  ~BufferMetal();
 
   virtual size_t size() const override;
 
@@ -117,6 +118,7 @@ class MappedBufferMetal : public BufferMetal {
   MappedBufferMetal(objc::ptr<id<MTLBuffer>> mem_, size_t bytes);
   MappedBufferMetal(const DeviceMetal& dev, size_t bytes,
                     const BufferOptions& opts = {});
+  ~MappedBufferMetal();
 
   virtual void* map(const ghost::Encoder& s, Access access,
                     bool sync = true) override;
@@ -134,6 +136,7 @@ class ImageMetal : public Image {
              BufferMetal& buffer);
   ImageMetal(const DeviceMetal& dev, const ImageDescription& descr,
              ImageMetal& image);
+  ~ImageMetal();
 
   virtual const ImageDescription& description() const override { return descr; }
 
@@ -193,6 +196,9 @@ class DeviceMetal : public Device {
                                    ghost::Buffer& buffer) const override;
   virtual ghost::Image sharedImage(const ImageDescription& descr,
                                    ghost::Image& image) const override;
+
+  virtual ghost::Buffer wrapBuffer(const SharedBuffer& shared) const override;
+  virtual ghost::Image wrapImage(const SharedImage& shared) const override;
 
   virtual Attribute getAttribute(DeviceAttributeId what) const override;
   virtual size_t imageAlignment(const ImageDescription& descr) const override;

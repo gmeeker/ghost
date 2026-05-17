@@ -15,29 +15,46 @@
 #ifndef GHOST_OBJC_PTR_H
 #define GHOST_OBJC_PTR_H
 
+/// @brief Transfer a +1 retained Objective-C pointer to / from a @c void*.
+///
+/// Used at the boundary with @c ghost::Allocator, where the host returns a
+/// native handle as @c void* and Ghost wraps it in an @c objc::ptr (and vice
+/// versa at destruction). Under ARC the cast is @c __bridge_retained /
+/// @c __bridge_transfer; under MRC it's a plain @c (void*) / @c (T*) since the
+/// underlying retain count is already correctly accounted for.
+#if __has_feature(objc_arc)
+#define GHOST_OBJC_BRIDGE_RETAINED(type, expr) ((__bridge_retained type)(expr))
+#define GHOST_OBJC_BRIDGE_TRANSFER(type, expr) ((__bridge_transfer type)(expr))
+#else
+#define GHOST_OBJC_BRIDGE_RETAINED(type, expr) ((type)(expr))
+#define GHOST_OBJC_BRIDGE_TRANSFER(type, expr) ((type)(expr))
+#endif
+
 namespace ghost {
 namespace objc {
-template <typename T> class ptr {
-public:
+template <typename T>
+class ptr {
+ public:
   typedef T obj_type;
 
-protected:
+ protected:
   obj_type object_;
 
   void retain() {
 #if !__has_feature(objc_arc)
-    if (object_)
-      [object_ retain];
+    if (object_) [object_ retain];
 #endif
   }
 
-public:
+ public:
   explicit ptr(obj_type obj = nil, bool retainObject = true) : object_(obj) {
-    if (!retainObject)
-      retain();
+    if (!retainObject) retain();
   }
-  ptr(const ptr &rhs) : object_(rhs.object_) { retain(); }
-  ptr(ptr &&rhs) : object_(rhs.object_) { rhs.object_ = nil; }
+
+  ptr(const ptr& rhs) : object_(rhs.object_) { retain(); }
+
+  ptr(ptr&& rhs) : object_(rhs.object_) { rhs.object_ = nil; }
+
   ~ptr() { reset(); }
 
   void reset() {
@@ -56,15 +73,17 @@ public:
   }
 
   obj_type get() const { return object_; }
+
   operator obj_type() const { return object_; }
 
-  ptr &operator=(obj_type rhs) {
+  ptr& operator=(obj_type rhs) {
     reset();
     object_ = rhs;
     retain();
     return *this;
   }
-  ptr &operator=(const ptr &rhs) {
+
+  ptr& operator=(const ptr& rhs) {
     if (this != &rhs) {
       reset();
       object_ = rhs.object_;
@@ -72,7 +91,8 @@ public:
     }
     return *this;
   }
-  ptr &operator=(ptr &&rhs) {
+
+  ptr& operator=(ptr&& rhs) {
     if (this != &rhs) {
       reset();
       object_ = rhs.object_;
@@ -81,8 +101,8 @@ public:
     return *this;
   }
 };
-} // namespace objc
-} // namespace ghost
+}  // namespace objc
+}  // namespace ghost
 #endif
 
 // vim: ts=2:sw=2:et:ft=mm

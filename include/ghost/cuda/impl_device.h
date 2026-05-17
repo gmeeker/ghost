@@ -53,6 +53,7 @@ class BufferCUDA : public Buffer {
   BufferCUDA(cu::ptr<CUdeviceptr> mem_, size_t bytes);
   BufferCUDA(const DeviceCUDA& dev, size_t bytes,
              const BufferOptions& opts = {});
+  ~BufferCUDA();
 
   virtual size_t size() const override;
 
@@ -94,6 +95,7 @@ class MappedBufferCUDA : public BufferCUDA {
   MappedBufferCUDA(cu::ptr<void*> mem_);
   MappedBufferCUDA(const DeviceCUDA& dev, size_t bytes,
                    const BufferOptions& opts = {});
+  ~MappedBufferCUDA();
 
   virtual void* map(const ghost::Encoder& s, Access access,
                     bool sync = true) override;
@@ -111,6 +113,7 @@ class ImageCUDA : public Image {
             BufferCUDA& buffer);
   ImageCUDA(const DeviceCUDA& dev, const ImageDescription& descr_,
             ImageCUDA& image);
+  ~ImageCUDA();
 
   virtual const ImageDescription& description() const override { return descr; }
 
@@ -198,6 +201,9 @@ class DeviceCUDA : public Device {
                                    ghost::Buffer& buffer) const override;
   virtual ghost::Image sharedImage(const ImageDescription& descr,
                                    ghost::Image& image) const override;
+
+  virtual ghost::Buffer wrapBuffer(const SharedBuffer& shared) const override;
+  virtual ghost::Image wrapImage(const SharedImage& shared) const override;
 
   virtual Attribute getAttribute(DeviceAttributeId what) const override;
 };

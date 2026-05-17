@@ -12,9 +12,11 @@
 // License for the specific language governing permissions and limitations under
 // the License.
 
+#include <ghost/allocator.h>
 #include <ghost/cpu/device.h>
 #include <ghost/cpu/impl_device.h>
 #include <ghost/cpu/impl_function.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <chrono>
@@ -216,10 +218,24 @@ std::shared_ptr<Event> StreamCPU::record() {
 
 void StreamCPU::waitForEvent(const std::shared_ptr<Event>& e) { e->wait(); }
 
-BufferCPU::BufferCPU(void* ptr_, size_t bytes) : ptr(ptr_), _size(bytes) {}
+BufferCPU::BufferCPU(void* ptr_, size_t bytes)
+    : ptr(ptr_), _size(bytes), _owned(false) {}
 
-BufferCPU::BufferCPU(const DeviceCPU& dev, size_t bytes) : _size(bytes) {
-  ptr = dev.allocateHostMemory(bytes);
+BufferCPU::BufferCPU(const DeviceCPU& dev, size_t bytes)
+    : _size(bytes), _owned(true) {
+  (void)dev;
+  ptr = ::malloc(bytes);
+}
+
+BufferCPU::BufferCPU(void* externalPtr, size_t bytes, bool owned)
+    : ptr(externalPtr), _size(bytes), _owned(owned) {}
+
+BufferCPU::~BufferCPU() {
+  if (_allocator) {
+    _allocator->freeBuffer(ptr, _size);
+  } else if (_owned && ptr) {
+    ::free(ptr);
+  }
 }
 
 size_t BufferCPU::size() const { return _size; }
@@ -281,6 +297,19 @@ std::shared_ptr<Buffer> BufferCPU::createSubBuffer(
 MappedBufferCPU::MappedBufferCPU(const DeviceCPU& dev, size_t bytes)
     : BufferCPU(dev, bytes) {}
 
+MappedBufferCPU::MappedBufferCPU(void* externalPtr, size_t bytes, bool owned)
+    : BufferCPU(externalPtr, bytes, owned) {}
+
+MappedBufferCPU::~MappedBufferCPU() {
+  // Route through freeMappedBuffer when the allocator produced this buffer.
+  // Clear ptr and _allocator so the inherited BufferCPU destructor is a no-op.
+  if (_allocator) {
+    _allocator->freeMappedBuffer(ptr, _size);
+    ptr = nullptr;
+    _allocator = nullptr;
+  }
+}
+
 void* MappedBufferCPU::map(const ghost::Encoder& s, Access, bool sync) {
   if (sync) {
     auto* stream = dynamic_cast<implementation::Stream*>(s.impl().get());
@@ -340,18 +369,27 @@ void copyImageData(void* dst, size_t dstRow, size_t dstDepth, const void* src,
 }  // namespace
 
 ImageCPU::ImageCPU(const DeviceCPU& dev, const ImageDescription& descr_)
-    : descr(descr_) {
+    : descr(descr_), _owned(true) {
+  (void)dev;
   constexpr size_t kAlignment = 64;
   rowBytes = imageRowBytes(descr, kAlignment);
   depthBytes = imageDepthBytes(descr, rowBytes);
   size_t total = descr.size.z * depthBytes;
-  data = dev.allocateHostMemory(total);
+  data = ::malloc(total);
   memset(data, 0, total);
+}
+
+ImageCPU::ImageCPU(void* externalData, const ImageDescription& descr_,
+                   bool owned)
+    : descr(descr_), data(externalData), _owned(owned) {
+  constexpr size_t kAlignment = 64;
+  rowBytes = imageRowBytes(descr, kAlignment);
+  depthBytes = imageDepthBytes(descr, rowBytes);
 }
 
 ImageCPU::ImageCPU(const DeviceCPU& dev, const ImageDescription& descr_,
                    BufferCPU& buffer)
-    : descr(descr_), data(buffer.ptr) {
+    : descr(descr_), data(buffer.ptr), _owned(false) {
   rowBytes = layoutRowBytes(descr, descr.pixelSize());
   depthBytes = layoutDepthBytes(descr, rowBytes);
 }
@@ -361,7 +399,16 @@ ImageCPU::ImageCPU(const DeviceCPU& dev, const ImageDescription& descr_,
     : descr(descr_),
       data(image.data),
       rowBytes(image.rowBytes),
-      depthBytes(image.depthBytes) {}
+      depthBytes(image.depthBytes),
+      _owned(false) {}
+
+ImageCPU::~ImageCPU() {
+  if (_allocator) {
+    _allocator->freeImage(data, descr);
+  } else if (_owned && data) {
+    ::free(data);
+  }
+}
 
 void ImageCPU::copy(const ghost::Encoder& s, const ghost::Image& src) {
   auto srcImg = static_cast<const ImageCPU*>(src.impl().get());
@@ -493,18 +540,42 @@ void DeviceCPU::setMemoryPoolSize(size_t bytes) {
 }
 
 ghost::Buffer DeviceCPU::allocateBuffer(size_t bytes,
-                                        const BufferOptions&) const {
+                                        const BufferOptions& opts) const {
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateBuffer(bytes, opts)) {
+      auto ptr = std::make_shared<implementation::BufferCPU>(handle, bytes,
+                                                             /*owned=*/false);
+      ptr->setAllocator(a);
+      return ghost::Buffer(ptr);
+    }
+  }
   auto ptr = std::make_shared<implementation::BufferCPU>(*this, bytes);
   return ghost::Buffer(ptr);
 }
 
 ghost::MappedBuffer DeviceCPU::allocateMappedBuffer(
-    size_t bytes, const BufferOptions&) const {
+    size_t bytes, const BufferOptions& opts) const {
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateMappedBuffer(bytes, opts)) {
+      auto ptr = std::make_shared<implementation::MappedBufferCPU>(
+          handle, bytes, /*owned=*/false);
+      ptr->setAllocator(a);
+      return ghost::MappedBuffer(ptr);
+    }
+  }
   auto ptr = std::make_shared<implementation::MappedBufferCPU>(*this, bytes);
   return ghost::MappedBuffer(ptr);
 }
 
 ghost::Image DeviceCPU::allocateImage(const ImageDescription& descr) const {
+  if (auto* a = allocator()) {
+    if (void* handle = a->allocateImage(descr)) {
+      auto ptr = std::make_shared<implementation::ImageCPU>(handle, descr,
+                                                            /*owned=*/false);
+      ptr->setAllocator(a);
+      return ghost::Image(ptr);
+    }
+  }
   auto ptr = std::make_shared<implementation::ImageCPU>(*this, descr);
   return ghost::Image(ptr);
 }
@@ -520,6 +591,18 @@ ghost::Image DeviceCPU::sharedImage(const ImageDescription& descr,
                                     ghost::Image& image) const {
   auto i = static_cast<implementation::ImageCPU*>(image.impl().get());
   auto ptr = std::make_shared<implementation::ImageCPU>(*this, descr, *i);
+  return ghost::Image(ptr);
+}
+
+ghost::Buffer DeviceCPU::wrapBuffer(const SharedBuffer& shared) const {
+  auto ptr = std::make_shared<implementation::BufferCPU>(
+      shared.handle, shared.bytes, /*owned=*/false);
+  return ghost::Buffer(ptr);
+}
+
+ghost::Image DeviceCPU::wrapImage(const SharedImage& shared) const {
+  auto ptr = std::make_shared<implementation::ImageCPU>(
+      shared.handle, shared.descr, /*owned=*/false);
   return ghost::Image(ptr);
 }
 

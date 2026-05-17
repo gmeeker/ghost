@@ -64,6 +64,7 @@ class BufferOpenCL : public Buffer {
   BufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes);
   BufferOpenCL(const DeviceOpenCL& dev, size_t bytes,
                const BufferOptions& opts = {});
+  ~BufferOpenCL();
 
   virtual size_t size() const override;
 
@@ -110,6 +111,7 @@ class MappedBufferOpenCL : public BufferOpenCL {
   MappedBufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes, size_t allocSize);
   MappedBufferOpenCL(const DeviceOpenCL& dev, size_t bytes,
                      const BufferOptions& opts = {});
+  ~MappedBufferOpenCL();
 
   virtual void* map(const ghost::Encoder& s, Access access,
                     bool sync = true) override;
@@ -127,6 +129,7 @@ class ImageOpenCL : public Image {
               BufferOpenCL& buffer);
   ImageOpenCL(const DeviceOpenCL& dev, const ImageDescription& descr,
               ImageOpenCL& image);
+  ~ImageOpenCL();
 
   virtual const ImageDescription& description() const override { return descr; }
 
@@ -241,6 +244,9 @@ class DeviceOpenCL : public Device {
                                    ghost::Buffer& buffer) const override;
   virtual ghost::Image sharedImage(const ImageDescription& descr,
                                    ghost::Image& image) const override;
+
+  virtual ghost::Buffer wrapBuffer(const SharedBuffer& shared) const override;
+  virtual ghost::Image wrapImage(const SharedImage& shared) const override;
 
   virtual Attribute getAttribute(DeviceAttributeId what) const override;
   virtual size_t imageAlignment(const ImageDescription& descr) const override;

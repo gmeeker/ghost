@@ -255,6 +255,9 @@ class DeviceDirectX : public Device {
   virtual ghost::Image sharedImage(const ImageDescription& descr,
                                    ghost::Image& image) const override;
 
+  virtual ghost::Buffer wrapBuffer(const SharedBuffer& shared) const override;
+  virtual ghost::Image wrapImage(const SharedImage& shared) const override;
+
   virtual Attribute getAttribute(DeviceAttributeId what) const override;
 
   DXGI_FORMAT getImageFormat(const ImageDescription& descr) const;

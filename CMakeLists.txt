@@ -46,10 +46,14 @@ if(WITH_METAL AND APPLE)
         RESULT_VARIABLE METAL_TOOLCHAIN_RESULT
         OUTPUT_QUIET
         ERROR_QUIET)
-    if(NOT METAL_TOOLCHAIN_RESULT EQUAL 0)
-      message(FATAL_ERROR
-          "Metal Toolchain is not installed. "
-          "Install it with: xcodebuild -downloadComponent MetalToolchain")
+    if(METAL_TOOLCHAIN_RESULT EQUAL 0)
+      set(WITH_METAL_KERNELS ON)
+    else()
+      message(WARNING
+          "Metal Toolchain is not installed; the Ghost Metal backend will "
+          "still build, but Metal test kernels (.metal -> .metallib) will be "
+          "skipped. Install with: xcodebuild -downloadComponent MetalToolchain")
+      set(WITH_METAL_KERNELS OFF)
     endif()
   else()
     message(FATAL_ERROR "xcrun not found. Please install Xcode command line tools.")
@@ -360,6 +364,7 @@ endfunction()
 
 if(GTest_FOUND)
   add_executable(TestGhostGTest
+    test/test_allocator.cpp
     test/test_attribute.cpp
     test/test_binary_cache_access.cpp
     test/test_binary_load.cpp
@@ -372,6 +377,9 @@ if(GTest_FOUND)
     test/test_stream.cpp
     test/test_thread_pool.cpp
   )
+  if(WITH_METAL AND APPLE)
+    target_sources(TestGhostGTest PRIVATE test/test_allocator_metal.mm)
+  endif()
   target_link_libraries(TestGhostGTest ${PROJECT_NAME} GTest::gtest_main)
   include(GoogleTest)
   gtest_discover_tests(TestGhostGTest)
@@ -437,7 +445,7 @@ if(GTest_FOUND)
   # -----------------------------------------------------------------------
   # Metal metallib compilation (build-time)
   # -----------------------------------------------------------------------
-  if(WITH_METAL AND APPLE)
+  if(WITH_METAL AND APPLE AND WITH_METAL_KERNELS)
     # XCRUN_EXECUTABLE already found and Metal toolchain validated above
     set(METAL_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/test/kernels/test_kernel.metal)
     set(METAL_AIR ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel.air)

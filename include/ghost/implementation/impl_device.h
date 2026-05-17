@@ -30,6 +30,8 @@
 
 namespace ghost {
 
+class Allocator;
+
 /// @brief Identifiers for queryable device attributes.
 ///
 /// Pass these to Device::getAttribute() or
@@ -124,6 +126,43 @@ enum DeviceAttributeId {
   /// - Vulkan: VK_KHR_cooperative_matrix extension present
   /// - OpenCL/DirectX/CPU: false
   kDeviceSupportsCooperativeMatrix,
+};
+
+/// @brief Wrap an externally-allocated GPU buffer in a Ghost @c Buffer.
+///
+/// Filled by the host with whatever native handle it received from its
+/// platform (OpenFX, AE GPU suite, etc.) and passed to
+/// @c Device::wrapBuffer. The interpretation of @c handle is backend-specific;
+/// see @c Device::wrapBuffer for the per-backend contract.
+///
+/// **Ownership is borrowed**: Ghost never destroys / releases / frees the
+/// underlying resource. The host must keep it alive at least as long as any
+/// @c Buffer Ghost returned for it.
+struct SharedBuffer {
+  /// @brief Backend-specific native handle (see @c Device::wrapBuffer).
+  void* handle = nullptr;
+  /// @brief Size of the buffer in bytes.
+  size_t bytes = 0;
+
+  SharedBuffer() = default;
+
+  SharedBuffer(void* handle_, size_t bytes_) : handle(handle_), bytes(bytes_) {}
+};
+
+/// @brief Wrap an externally-allocated GPU image in a Ghost @c Image.
+///
+/// Same conventions as @c SharedBuffer. The @c descr tells Ghost the
+/// dimensions / pixel layout the host's resource was created with.
+struct SharedImage {
+  /// @brief Backend-specific native handle (see @c Device::wrapImage).
+  void* handle = nullptr;
+  /// @brief Description matching how the host allocated the image.
+  ImageDescription descr;
+
+  SharedImage() : descr(Size3(0, 0, 0), 0u, DataType_UInt8, Stride2(0, 0)) {}
+
+  SharedImage(void* handle_, const ImageDescription& descr_)
+      : handle(handle_), descr(descr_) {}
 };
 
 /// @brief Opaque container for backend-specific context handles, used to share
@@ -273,7 +312,23 @@ class Buffer {
 
   Buffer& operator=(const Buffer& rhs) = delete;
 
+  /// @brief External allocator that produced this buffer's native handle.
+  ///
+  /// Non-null means this buffer was allocated by an external
+  /// @c ghost::Allocator and its native handle must be returned to that
+  /// allocator on destruction. Raw pointer is safe: the Device owns a
+  /// @c shared_ptr to the Allocator and the Device outlives this Buffer.
+  ghost::Allocator* _allocator = nullptr;
+
  public:
+  /// @brief Mark this buffer as externally allocated. Called by the backend
+  /// device immediately after constructing the buffer from a host-supplied
+  /// native handle.
+  void setAllocator(ghost::Allocator* a) { _allocator = a; }
+
+  /// @brief Whether this buffer was produced by an external @c Allocator.
+  bool hasAllocator() const { return _allocator != nullptr; }
+
   virtual size_t size() const = 0;
 
   /// @brief Get the base offset for sub-buffers.
@@ -339,7 +394,17 @@ class Image {
 
   Image& operator=(const Image& rhs) = delete;
 
+  /// @brief External allocator that produced this image's native handle.
+  /// Same semantics as @c Buffer::_allocator.
+  ghost::Allocator* _allocator = nullptr;
+
  public:
+  /// @brief Mark this image as externally allocated.
+  void setAllocator(ghost::Allocator* a) { _allocator = a; }
+
+  /// @brief Whether this image was produced by an external @c Allocator.
+  bool hasAllocator() const { return _allocator != nullptr; }
+
   /// @brief Get the image description this image was allocated with.
   virtual const ImageDescription& description() const = 0;
 
@@ -378,7 +443,21 @@ class Device {
 
   Device& operator=(const Device& rhs) = delete;
 
+  /// @brief External allocator. When non-null, backend allocate paths consult
+  /// it before falling back to the device's default allocator, and Device's
+  /// host-memory routing goes through it as well.
+  std::shared_ptr<ghost::Allocator> _allocator;
+
  public:
+  /// @brief Install an external allocator. Should be set before any buffers
+  /// or images are allocated. Pass @c nullptr to clear.
+  void setAllocator(std::shared_ptr<ghost::Allocator> a) {
+    _allocator = std::move(a);
+  }
+
+  /// @brief Get the installed allocator, or @c nullptr.
+  ghost::Allocator* allocator() const { return _allocator.get(); }
+
   static BinaryCache& binaryCache();
   virtual ghost::Library loadLibraryFromText(
       const std::string& text,
@@ -426,6 +505,16 @@ class Device {
   virtual ghost::MappedBuffer allocateMappedBuffer(
       size_t bytes, const BufferOptions& opts = {}) const = 0;
   virtual ghost::Image allocateImage(const ImageDescription& descr) const = 0;
+
+  /// @brief Wrap a host-supplied native buffer handle in a Ghost @c Buffer.
+  ///
+  /// The default implementation throws @c ghost::unsupported_error. Backends
+  /// implement the per-backend handle interpretation; see @c
+  /// Device::wrapBuffer.
+  virtual ghost::Buffer wrapBuffer(const SharedBuffer& shared) const;
+
+  /// @brief Wrap a host-supplied native image handle in a Ghost @c Image.
+  virtual ghost::Image wrapImage(const SharedImage& shared) const;
   virtual ghost::Image sharedImage(const ImageDescription& descr,
                                    ghost::Buffer& buffer) const = 0;
   virtual ghost::Image sharedImage(const ImageDescription& descr,

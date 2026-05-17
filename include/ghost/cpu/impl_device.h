@@ -55,8 +55,11 @@ class BufferCPU : public Buffer {
  public:
   void* ptr;
   size_t _size;
+  bool _owned;
 
   BufferCPU(const DeviceCPU& dev, size_t bytes);
+  BufferCPU(void* externalPtr, size_t bytes, bool owned);
+  ~BufferCPU();
 
   virtual size_t size() const override;
 
@@ -86,6 +89,8 @@ class BufferCPU : public Buffer {
 class MappedBufferCPU : public BufferCPU {
  public:
   MappedBufferCPU(const DeviceCPU& dev, size_t bytes);
+  MappedBufferCPU(void* externalPtr, size_t bytes, bool owned);
+  ~MappedBufferCPU();
 
   virtual void* map(const ghost::Encoder& s, Access access,
                     bool sync = true) override;
@@ -105,12 +110,15 @@ class ImageCPU : public Image {
   void* data;
   size_t rowBytes;
   size_t depthBytes;
+  bool _owned;
 
   ImageCPU(const DeviceCPU& dev, const ImageDescription& descr);
+  ImageCPU(void* externalData, const ImageDescription& descr, bool owned);
   ImageCPU(const DeviceCPU& dev, const ImageDescription& descr,
            BufferCPU& buffer);
   ImageCPU(const DeviceCPU& dev, const ImageDescription& descr,
            ImageCPU& image);
+  ~ImageCPU();
 
   virtual const ImageDescription& description() const override { return descr; }
 
@@ -177,6 +185,9 @@ class DeviceCPU : public Device {
                                    ghost::Buffer& buffer) const override;
   virtual ghost::Image sharedImage(const ImageDescription& descr,
                                    ghost::Image& image) const override;
+
+  virtual ghost::Buffer wrapBuffer(const SharedBuffer& shared) const override;
+  virtual ghost::Image wrapImage(const SharedImage& shared) const override;
 
   virtual Attribute getAttribute(DeviceAttributeId what) const override;
 
