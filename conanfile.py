@@ -21,6 +21,7 @@ class GhostConan(ConanFile):
     options = {"shared": [True, False],
                "fPIC": [True, False],
                "with_cuda": [True, False],
+               "with_cuda_link": [False, True, "delaylib"],
                "with_cuda_nvrtc": [True, False],
                "static_nvrtc": [True, False],
                "with_directx": [True, False],
@@ -32,6 +33,7 @@ class GhostConan(ConanFile):
                "shared": False,
                "fPIC": True,
                "with_cuda": True,
+               "with_cuda_link": False,
                "with_cuda_nvrtc": False,
                "static_nvrtc": False,
                "with_directx": False,
@@ -73,7 +75,14 @@ class GhostConan(ConanFile):
             self.options.rm_safe("fPIC")
         if not (self._supports_cuda() and self.settings.cuda):
             self.options.rm_safe("with_cuda")
+            self.options.rm_safe("with_cuda_link")
             self.options.rm_safe("with_cuda_nvrtc")
+        # delaylib is a Windows-only linker construct; collapse to False elsewhere
+        # rather than silently promoting to True, so the user's runtime-dependency
+        # surface only grows when they explicitly opted in for Windows.
+        if (self.settings.os != "Windows"
+                and self.options.get_safe("with_cuda_link") == "delaylib"):
+            self.options.with_cuda_link = False
         if not self._supports_directx():
             self.options.rm_safe("with_directx")
         if not is_apple_os(self):
@@ -106,7 +115,10 @@ class GhostConan(ConanFile):
 
         if self.options.get_safe("with_cuda", False):
             tc.variables['WITH_CUDA'] = 'ON'
-            tc.variables['WITH_CUDA_DRIVER'] = 'ON'
+            if self.options.get_safe("with_cuda_link"):
+                tc.variables['WITH_CUDA_LINK'] = 'ON'
+                if self.options.with_cuda_link == "delaylib":
+                    tc.variables['WITH_CUDA_DELAYLOAD'] = 'ON'
             if self.options.get_safe("with_cuda_nvrtc", False):
                 tc.variables['WITH_CUDA_NVRTC'] = 'ON'
             if self.options.get_safe("static_nvrtc", False):
@@ -155,6 +167,22 @@ class GhostConan(ConanFile):
         self.cpp_info.set_property("cmake_target_name", "Ghost::Ghost")
         self.cpp_info.set_property("pkg_config_name", "ghost")
         self.cpp_info.libs = ["Ghost"]
+        # When Ghost is a static lib that links cuda.lib directly, the cuda
+        # import lib and (for delaylib mode) the delay-load helper need to
+        # propagate to the consumer's link line. For shared Ghost, these are
+        # already resolved inside Ghost.dll.
+        if (self.options.get_safe("with_cuda_link")
+                and not self.options.shared
+                and self.settings.os == "Windows"):
+            self.cpp_info.libs.append("cuda")
+            cuda_toolkit = self.cuda_toolkit_path
+            if cuda_toolkit:
+                self.cpp_info.libdirs.append(
+                    os.path.join(cuda_toolkit, "lib", "x64"))
+            if self.options.with_cuda_link == "delaylib":
+                self.cpp_info.system_libs.append("delayimp")
+                self.cpp_info.sharedlinkflags.append("/DELAYLOAD:nvcuda.dll")
+                self.cpp_info.exelinkflags.append("/DELAYLOAD:nvcuda.dll")
         if self.options.get_safe("with_cuda_nvrtc", False) and not self.options.shared:
             if self.options.get_safe("static_nvrtc", False):
                 self.cpp_info.libs += ['nvrtc_static', 'nvrtc-builtins_static', 'nvptxcompiler_static']

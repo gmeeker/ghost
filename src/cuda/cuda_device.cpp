@@ -24,7 +24,48 @@
 #include <sstream>
 #include <vector>
 
+#if defined(WITH_CUDA_DELAYLOAD) && defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <delayimp.h>
+#include <windows.h>
+#endif
+
 namespace ghost {
+namespace {
+#if defined(WITH_CUDA_DELAYLOAD) && defined(_WIN32)
+// Probe whether nvcuda.dll can be loaded without crashing the first
+// delay-loaded thunk call. SEH is required because the helper raises a
+// Windows exception (ERROR_MOD_NOT_FOUND) when the DLL is absent, which
+// would unwind through C++ frames with no destructor support.
+bool probeCudaDriverOnce() {
+  bool ok = true;
+  __try {
+    if (FAILED(__HrLoadAllImportsForDll("nvcuda.dll"))) {
+      ok = false;
+    }
+  } __except (GetExceptionCode() ==
+                      VcppException(ERROR_SEVERITY_ERROR, ERROR_MOD_NOT_FOUND)
+                  ? EXCEPTION_EXECUTE_HANDLER
+                  : EXCEPTION_CONTINUE_SEARCH) {
+    ok = false;
+  }
+  return ok;
+}
+
+bool isCudaDriverAvailable() {
+  static const bool available = probeCudaDriverOnce();
+  return available;
+}
+#else
+inline bool isCudaDriverAvailable() { return true; }
+#endif
+}  // namespace
+
 namespace implementation {
 using namespace cu;
 
@@ -836,6 +877,9 @@ void CU_CurrentContext::pop() {
 }
 
 DeviceCUDA::DeviceCUDA(const SharedContext& share) {
+  if (!isCudaDriverAvailable()) {
+    checkError(CUDA_ERROR_NOT_INITIALIZED);
+  }
   CUresult err = cuInit(0);
   checkError(err);
   context =
@@ -871,6 +915,9 @@ DeviceCUDA::DeviceCUDA(const SharedContext& share) {
 DeviceCUDA::DeviceCUDA(const GpuInfo& info) : DeviceCUDA(info.index) {}
 
 DeviceCUDA::DeviceCUDA(int deviceOrdinal) {
+  if (!isCudaDriverAvailable()) {
+    checkError(CUDA_ERROR_NOT_INITIALIZED);
+  }
   CUresult err;
   err = cuInit(0);
   checkError(err);
@@ -1251,6 +1298,7 @@ DeviceCUDA::DeviceCUDA(const GpuInfo& info)
 
 std::vector<GpuInfo> DeviceCUDA::enumerateDevices() {
   std::vector<GpuInfo> result;
+  if (!isCudaDriverAvailable()) return result;
   CUresult err = cuInit(0);
   if (err != CUDA_SUCCESS) return result;
 
