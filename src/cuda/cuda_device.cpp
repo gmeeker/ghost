@@ -14,6 +14,29 @@
 
 #if WITH_CUDA
 
+// Windows + delay-load headers must come before any header that might
+// pull in <cuda.h> or other Windows-touching code. <delayimp.h> documents
+// "include immediately after <windows.h>" — once other ghost/cuda headers
+// are processed first, that contract is no longer safely guaranteed.
+// Rather than include <delayimp.h> at all, we forward-declare the single
+// delayimp.lib helper we use and define VcppException locally.
+#if defined(WITH_CUDA_DELAYLOAD) && defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+extern "C" HRESULT __stdcall __HrLoadAllImportsForDll(const char* szDll);
+#ifndef FACILITY_VISUALCPP
+#define FACILITY_VISUALCPP 0x6d
+#endif
+#ifndef VcppException
+#define VcppException(sev, code) ((sev) | (FACILITY_VISUALCPP << 16) | (code))
+#endif
+#endif
+
 #include <ghost/allocator.h>
 #include <ghost/cuda/device.h>
 #include <ghost/cuda/exception.h>
@@ -23,17 +46,6 @@
 #include <cstring>
 #include <sstream>
 #include <vector>
-
-#if defined(WITH_CUDA_DELAYLOAD) && defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <delayimp.h>
-#include <windows.h>
-#endif
 
 namespace ghost {
 namespace {

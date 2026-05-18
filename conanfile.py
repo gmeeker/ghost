@@ -69,6 +69,15 @@ class GhostConan(ConanFile):
     def configure(self):
         if not self._supports_cuda() or not self.options.get_safe("with_cuda", False):
             self.settings.rm_safe("cuda")
+        # delaylib is a Windows-only linker construct; collapse to False elsewhere
+        # rather than silently promoting to True, so the user's runtime-dependency
+        # surface only grows when they explicitly opted in for Windows. This must
+        # run in configure() (not config_options()) so that a user-supplied
+        # `-o ghost:with_cuda_link=delaylib` from a multi-platform parent recipe
+        # is normalized on non-Windows builds.
+        if (self.settings.os != "Windows"
+                and self.options.get_safe("with_cuda_link") == "delaylib"):
+            self.options.with_cuda_link = False
 
     def config_options(self):
         if self.settings.os == 'Windows':
@@ -77,12 +86,6 @@ class GhostConan(ConanFile):
             self.options.rm_safe("with_cuda")
             self.options.rm_safe("with_cuda_link")
             self.options.rm_safe("with_cuda_nvrtc")
-        # delaylib is a Windows-only linker construct; collapse to False elsewhere
-        # rather than silently promoting to True, so the user's runtime-dependency
-        # surface only grows when they explicitly opted in for Windows.
-        if (self.settings.os != "Windows"
-                and self.options.get_safe("with_cuda_link") == "delaylib"):
-            self.options.with_cuda_link = False
         if not self._supports_directx():
             self.options.rm_safe("with_directx")
         if not is_apple_os(self):
