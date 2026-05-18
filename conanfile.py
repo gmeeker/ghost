@@ -69,15 +69,10 @@ class GhostConan(ConanFile):
     def configure(self):
         if not self._supports_cuda() or not self.options.get_safe("with_cuda", False):
             self.settings.rm_safe("cuda")
-        # delaylib is a Windows-only linker construct; collapse to False elsewhere
-        # rather than silently promoting to True, so the user's runtime-dependency
-        # surface only grows when they explicitly opted in for Windows. This must
-        # run in configure() (not config_options()) so that a user-supplied
-        # `-o ghost:with_cuda_link=delaylib` from a multi-platform parent recipe
-        # is normalized on non-Windows builds.
+        # delaylib is MSVC-specific; drop on other platforms.
         if (self.settings.os != "Windows"
                 and self.options.get_safe("with_cuda_link") == "delaylib"):
-            self.options.with_cuda_link = False
+            self.options.rm_safe("with_cuda_link")
 
     def config_options(self):
         if self.settings.os == 'Windows':
@@ -170,10 +165,6 @@ class GhostConan(ConanFile):
         self.cpp_info.set_property("cmake_target_name", "Ghost::Ghost")
         self.cpp_info.set_property("pkg_config_name", "ghost")
         self.cpp_info.libs = ["Ghost"]
-        # When Ghost is a static lib that links cuda.lib directly, the cuda
-        # import lib and (for delaylib mode) the delay-load helper need to
-        # propagate to the consumer's link line. For shared Ghost, these are
-        # already resolved inside Ghost.dll.
         if (self.options.get_safe("with_cuda_link")
                 and not self.options.shared
                 and self.settings.os == "Windows"):

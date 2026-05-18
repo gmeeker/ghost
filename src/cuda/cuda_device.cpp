@@ -14,12 +14,9 @@
 
 #if WITH_CUDA
 
-// Windows + delay-load headers must come before any header that might
-// pull in <cuda.h> or other Windows-touching code. <delayimp.h> documents
-// "include immediately after <windows.h>" — once other ghost/cuda headers
-// are processed first, that contract is no longer safely guaranteed.
-// Rather than include <delayimp.h> at all, we forward-declare the single
-// delayimp.lib helper we use and define VcppException locally.
+// <delayimp.h> requires immediate-after-<windows.h> ordering, which the
+// transitive <cuda.h> include downstream breaks. Forward-declare the one
+// helper we use instead of including it.
 #if defined(WITH_CUDA_DELAYLOAD) && defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -50,10 +47,8 @@ extern "C" HRESULT __stdcall __HrLoadAllImportsForDll(const char* szDll);
 namespace ghost {
 namespace {
 #if defined(WITH_CUDA_DELAYLOAD) && defined(_WIN32)
-// Probe whether nvcuda.dll can be loaded without crashing the first
-// delay-loaded thunk call. SEH is required because the helper raises a
-// Windows exception (ERROR_MOD_NOT_FOUND) when the DLL is absent, which
-// would unwind through C++ frames with no destructor support.
+// SEH-required: __HrLoadAllImportsForDll raises a Win32 exception
+// (ERROR_MOD_NOT_FOUND) when nvcuda.dll is absent, not a C++ throw.
 bool probeCudaDriverOnce() {
   bool ok = true;
   __try {
