@@ -24,6 +24,7 @@ class GhostConan(ConanFile):
                "with_cuda_nvrtc": [True, False],
                "static_nvrtc": [True, False],
                "with_directx": [True, False],
+               "with_gcd": [True, False],
                "with_metal": [True, False],
                "with_opencl": [True, False],
                "with_vulkan": [True, False]}
@@ -34,6 +35,7 @@ class GhostConan(ConanFile):
                "with_cuda_nvrtc": False,
                "static_nvrtc": False,
                "with_directx": False,
+               "with_gcd": False,
                "with_metal": True,
                "with_opencl": True,
                "with_vulkan": False}
@@ -75,6 +77,7 @@ class GhostConan(ConanFile):
         if not self._supports_directx():
             self.options.rm_safe("with_directx")
         if not is_apple_os(self):
+            self.options.rm_safe("with_gcd")
             self.options.rm_safe("with_metal")
         if not self._supports_opencl():
             self.options.rm_safe("with_opencl")
@@ -122,6 +125,8 @@ class GhostConan(ConanFile):
                                 break
         if self.options.get_safe("with_directx", False):
             tc.variables['WITH_DIRECTX'] = 'ON'
+        if self.options.get_safe("with_gcd", False):
+            tc.variables['WITH_GCD'] = 'ON'
         tc.variables['WITH_OPENCL'] = 'ON' if self.options.get_safe("with_opencl", False) else 'OFF'
         if self.options.get_safe("with_metal", False):
             tc.variables['WITH_METAL'] = 'ON'

@@ -44,7 +44,7 @@
 #include <thread>
 #include <utility>
 
-#ifdef __APPLE_CC__
+#ifdef WITH_GCD
 #include <dispatch/dispatch.h>
 #endif
 
@@ -76,7 +76,7 @@ size_t DeviceCPU::getNumberOfCores() {
 
 namespace {
 
-#ifdef __APPLE_CC__
+#ifdef WITH_GCD
 
 /// @brief Default ThreadPool implementation backed by libdispatch on Apple
 /// platforms.
