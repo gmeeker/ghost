@@ -403,6 +403,10 @@ TEST_P(CommandBufferTest, BufferWrappersOutOfScope) {
     LaunchArgs la;
     la.global_size(N).local_size(1);
     fn(la, cb)(outBuf, inBuf, static_cast<float>(iter + 1));
+    // Each iteration writes to the same outBuf; insert a barrier so the
+    // "last wins" check below isn't racing with the prior iteration.
+    // (CommandBuffer defaults to concurrent dispatches.)
+    cb.barrier();
     // inBuf wrapper destroyed at end of this iteration.
   }
 
@@ -459,4 +463,434 @@ TEST_P(CommandBufferTest, BufferWrappersInReallocatingVector) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Concurrency policy: chained dispatches with default vs concurrent(false)
+// ---------------------------------------------------------------------------
+
+// Chained dependent dispatches without an explicit barrier. With the default
+// CommandBufferOptions (concurrent=true), backends do NOT insert a
+// per-dispatch barrier and the second dispatch may race with the first's
+// writes. With concurrent(false) the backend restores the auto-barrier and
+// the chain runs correctly without explicit cb.barrier() calls.
+TEST_P(CommandBufferTest, AutoBarrierOptInChainedDispatches) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, -1.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  auto buf1 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf2 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf3 = device().allocateBuffer(safeN * sizeof(float));
+  buf1.copy(stream(), input.data(), safeN * sizeof(float));
+  stream().sync();
+
+  LaunchArgs la;
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
+
+  // Opt into auto-barriers so chained dispatches without cb.barrier() work.
+  CommandBuffer cb(device(), CommandBufferOptions{/*concurrent=*/false});
+  fn(la, cb)(buf2, buf1, 2.0f);
+  fn(la, cb)(buf3, buf2, 3.0f);  // depends on buf2 written above
+  cb.submit(stream());
+
+  buf3.copyTo(stream(), output.data(), safeN * sizeof(float));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 6.0f) << "index " << i;
+  }
+}
+
+// Symmetric test of StreamOptions::concurrent: verify the option plumbs
+// through without breaking simple independent dispatches. (Correctness of
+// the concurrent semantics for dependent dispatches is the caller's
+// responsibility; this just exercises the option path.)
+TEST_P(CommandBufferTest, StreamConcurrentOptionIndependentDispatch) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+
+  std::vector<float> input(N, 0.0f);
+  std::vector<float> output(N, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  auto inBuf = device().allocateBuffer(N * sizeof(float));
+  auto outBuf = device().allocateBuffer(N * sizeof(float));
+
+  // Stream with concurrent=true skips the per-dispatch auto-barrier. Use
+  // independent buffers (single dispatch) so the test result is
+  // deterministic regardless.
+  Stream s = device().createStream(StreamOptions{/*profiling=*/false,
+                                                 /*forceEventChain=*/false,
+                                                 /*concurrent=*/true});
+  inBuf.copy(s, input.data(), N * sizeof(float));
+
+  LaunchArgs la;
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
+  fn(la, s)(outBuf, inBuf, 1.5f);
+
+  outBuf.copyTo(s, output.data(), N * sizeof(float));
+  s.sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 1.5f) << "index " << i;
+  }
+}
+
 GHOST_INSTANTIATE_KERNEL_TESTS(CommandBufferTest);
+
+// ---------------------------------------------------------------------------
+// Vulkan native CommandBuffer smoke test
+//
+// CommandBufferTest is parameterized over kernelBackends() which excludes
+// Vulkan (no runtime text-to-SPIRV path). This standalone test exercises
+// the native CommandBufferVulkan submit / fence / barrier path with
+// kernel-free ops (copy + fill) so the native cb is at least minimally
+// validated on Vulkan.
+// ---------------------------------------------------------------------------
+
+#if WITH_VULKAN
+TEST(CommandBufferVulkanSmoke, CopyAndFillAndBarrier) {
+  std::unique_ptr<ghost::Device> devPtr;
+  try {
+    devPtr = ghost::createDevice(ghost::Backend::Vulkan);
+  } catch (...) {
+  }
+  if (!devPtr) GTEST_SKIP() << "No Vulkan device available";
+  ghost::Device& dev = *devPtr;
+  ghost::Stream s = dev.defaultStream();
+
+  const size_t N = 16;
+  std::vector<float> input(N), output(N, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto src = dev.allocateBuffer(N * sizeof(float));
+  auto mid = dev.allocateBuffer(N * sizeof(float));
+  auto dst = dev.allocateBuffer(N * sizeof(float));
+  src.copy(s, input.data(), N * sizeof(float));
+  s.sync();
+
+  ghost::CommandBuffer cb(dev);
+  mid.copy(cb, src, N * sizeof(float));
+  cb.barrier();
+  dst.copy(cb, mid, N * sizeof(float));
+  cb.submit(s);
+  s.sync();
+
+  dst.copyTo(s, output.data(), N * sizeof(float));
+  s.sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i)) << "index " << i;
+  }
+
+  // Reset and reuse the same cb.
+  cb.reset();
+  dst.copy(cb, src, N * sizeof(float));
+  cb.submit(s);
+  s.sync();
+  std::fill(output.begin(), output.end(), 0.0f);
+  dst.copyTo(s, output.data(), N * sizeof(float));
+  s.sync();
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i)) << "reuse index " << i;
+  }
+}
+
+// Submit-then-sync ordering: cb.submit() followed immediately by
+// stream.sync() with no intervening stream ops. Stream.sync must wait
+// for the cb's submission. We use a host-visible mapped buffer so the
+// host can observe the GPU's writes directly — going through another
+// stream op for the readback would mask the bug because queue FIFO
+// would drag the cb's work along anyway.
+TEST(CommandBufferVulkanSmoke, SubmitThenSyncWaitsForCommandBuffer) {
+  std::unique_ptr<ghost::Device> devPtr;
+  try {
+    devPtr = ghost::createDevice(ghost::Backend::Vulkan);
+  } catch (...) {
+  }
+  if (!devPtr) GTEST_SKIP() << "No Vulkan device available";
+  ghost::Device& dev = *devPtr;
+  ghost::Stream s = dev.defaultStream();
+
+  // 1 MiB — large enough that the GPU fill is unlikely to complete
+  // synchronously, so the bug-or-not state is observable.
+  const size_t N = 256 * 1024;
+  auto mapped = dev.allocateMappedBuffer(
+      N * sizeof(uint32_t), ghost::BufferOptions{ghost::Access::ReadWrite,
+                                                 ghost::AllocHint::Staging});
+
+  // Pre-fill the mapped buffer with a sentinel via the host. Use map
+  // with sync=true to be sure all prior GPU work has drained first.
+  auto* hostPtr =
+      static_cast<uint32_t*>(mapped.map(s, ghost::Access::ReadWrite));
+  ASSERT_NE(hostPtr, nullptr);
+  const uint32_t sentinel = 0xDEADBEEFu;
+  for (size_t i = 0; i < N; i++) hostPtr[i] = sentinel;
+  mapped.unmap(s);
+  s.sync();
+
+  // Record a fill into a CommandBuffer and submit+sync. After sync the
+  // host MUST see the pattern, not the sentinel.
+  ghost::CommandBuffer cb(dev);
+  const uint8_t pattern = 0x5A;  // vkCmdFillBuffer fills 32-bit lanes,
+                                 // every byte = 0x5A → 0x5A5A5A5A.
+  mapped.fill(cb, 0, N * sizeof(uint32_t), pattern);
+  cb.submit(s);
+  s.sync();
+
+  hostPtr = static_cast<uint32_t*>(mapped.map(s, ghost::Access::ReadOnly));
+  ASSERT_NE(hostPtr, nullptr);
+  const uint32_t expected = 0x5A5A5A5Au;
+  // Sample a few positions across the buffer — if sync returned early,
+  // at least the tail of the buffer is likely to still hold the sentinel.
+  EXPECT_EQ(hostPtr[0], expected) << "head still " << std::hex << hostPtr[0];
+  EXPECT_EQ(hostPtr[N / 2], expected)
+      << "mid still " << std::hex << hostPtr[N / 2];
+  EXPECT_EQ(hostPtr[N - 1], expected)
+      << "tail still " << std::hex << hostPtr[N - 1];
+  mapped.unmap(s);
+}
+#endif  // WITH_VULKAN
+
+// ---------------------------------------------------------------------------
+// DirectX native CommandBuffer smoke test
+//
+// Written blind on Linux. The Windows agent runs this to validate the
+// CommandBufferDirectX path end-to-end. Mirrors the Vulkan smoke tests:
+// copy / barrier / reset, plus the submit-then-sync ordering case. On
+// DirectX the ordering case should pass without further work because
+// StreamDirectX::executeOnQueue already bumps the stream's monotonic
+// fence (see src/directx/directx_device.cpp).
+// ---------------------------------------------------------------------------
+
+#if WITH_DIRECTX
+TEST(CommandBufferDirectXSmoke, CopyAndFillAndBarrier) {
+  std::unique_ptr<ghost::Device> devPtr;
+  try {
+    devPtr = ghost::createDevice(ghost::Backend::DirectX);
+  } catch (...) {
+  }
+  if (!devPtr) GTEST_SKIP() << "No DirectX device available";
+  ghost::Device& dev = *devPtr;
+  ghost::Stream s = dev.defaultStream();
+
+  const size_t N = 16;
+  std::vector<float> input(N), output(N, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto src = dev.allocateBuffer(N * sizeof(float));
+  auto mid = dev.allocateBuffer(N * sizeof(float));
+  auto dst = dev.allocateBuffer(N * sizeof(float));
+  src.copy(s, input.data(), N * sizeof(float));
+  s.sync();
+
+  ghost::CommandBuffer cb(dev);
+  mid.copy(cb, src, N * sizeof(float));
+  cb.barrier();
+  dst.copy(cb, mid, N * sizeof(float));
+  cb.submit(s);
+  s.sync();
+
+  dst.copyTo(s, output.data(), N * sizeof(float));
+  s.sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i)) << "index " << i;
+  }
+
+  // Reset and reuse the same cb.
+  cb.reset();
+  dst.copy(cb, src, N * sizeof(float));
+  cb.submit(s);
+  s.sync();
+  std::fill(output.begin(), output.end(), 0.0f);
+  dst.copyTo(s, output.data(), N * sizeof(float));
+  s.sync();
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i)) << "reuse index " << i;
+  }
+}
+
+// Submit-then-sync ordering on DirectX. The cb does a copy from a
+// host-uploaded src to a readback dst, then submit + sync. After sync
+// the host MUST see the uploaded data in dst, because dst was zero
+// before the cb's copy. If StreamDirectX::executeOnQueue ever stops
+// bumping the stream's fence, this test will start failing.
+//
+// Uses MappedBuffer with Access::ReadWrite (UPLOAD heap on D3D12) for
+// the src so the host can write directly; Access::WriteOnly (READBACK
+// heap) for the dst so the host can read what the cb wrote.
+TEST(CommandBufferDirectXSmoke, SubmitThenSyncWaitsForCommandBuffer) {
+  std::unique_ptr<ghost::Device> devPtr;
+  try {
+    devPtr = ghost::createDevice(ghost::Backend::DirectX);
+  } catch (...) {
+  }
+  if (!devPtr) GTEST_SKIP() << "No DirectX device available";
+  ghost::Device& dev = *devPtr;
+  ghost::Stream s = dev.defaultStream();
+
+  // 1 MiB — large enough that the GPU copy is unlikely to be free.
+  const size_t N = 256 * 1024;
+  auto src = dev.allocateMappedBuffer(
+      N * sizeof(uint32_t), ghost::BufferOptions{ghost::Access::ReadWrite,
+                                                 ghost::AllocHint::Staging});
+  auto dst = dev.allocateMappedBuffer(
+      N * sizeof(uint32_t), ghost::BufferOptions{ghost::Access::WriteOnly,
+                                                 ghost::AllocHint::Staging});
+
+  // Host-write a recognizable pattern into the UPLOAD-heap src.
+  auto* srcPtr = static_cast<uint32_t*>(src.map(s, ghost::Access::ReadWrite));
+  ASSERT_NE(srcPtr, nullptr);
+  const uint32_t pattern = 0xCAFEBABEu;
+  for (size_t i = 0; i < N; i++) srcPtr[i] = pattern;
+  src.unmap(s);
+
+  // Read dst's current state (should be zero or uninitialized) to
+  // contrast against the post-cb state.
+  auto* dstPtr = static_cast<uint32_t*>(dst.map(s, ghost::Access::ReadOnly));
+  ASSERT_NE(dstPtr, nullptr);
+  // Don't assert on pre-state — just snapshot the head value as a
+  // sanity baseline; D3D12 READBACK heap initial contents aren't
+  // formally specified, but with a fresh allocation it's almost
+  // certainly zero on every implementation we care about.
+  uint32_t preHead = dstPtr[0];
+  dst.unmap(s);
+
+  // Record a copy through a CommandBuffer and submit+sync.
+  ghost::CommandBuffer cb(dev);
+  dst.copy(cb, src, N * sizeof(uint32_t));
+  cb.submit(s);
+  s.sync();
+
+  // After sync, the host MUST see the pattern in dst.
+  dstPtr = static_cast<uint32_t*>(dst.map(s, ghost::Access::ReadOnly));
+  ASSERT_NE(dstPtr, nullptr);
+  EXPECT_EQ(dstPtr[0], pattern)
+      << "head: pre=" << std::hex << preHead << " post=" << dstPtr[0];
+  EXPECT_EQ(dstPtr[N / 2], pattern) << "mid: " << std::hex << dstPtr[N / 2];
+  EXPECT_EQ(dstPtr[N - 1], pattern) << "tail: " << std::hex << dstPtr[N - 1];
+  dst.unmap(s);
+}
+#endif  // WITH_DIRECTX
+
+// ---------------------------------------------------------------------------
+// Metal native CommandBuffer smoke test
+//
+// Mirrors the Vulkan/DirectX smoke tests. Validates the
+// CommandBufferMetal path: native cb allocated per-submit on the stream's
+// queue, recorded variants replayed into it, barrier between dispatches
+// realised as encoder boundary, and stream.sync() waits for the submitted
+// cb via the StreamMetal::attachCommitted hook.
+// ---------------------------------------------------------------------------
+
+#if WITH_METAL
+TEST(CommandBufferMetalSmoke, CopyAndFillAndBarrier) {
+  std::unique_ptr<ghost::Device> devPtr;
+  try {
+    devPtr = ghost::createDevice(ghost::Backend::Metal);
+  } catch (...) {
+  }
+  if (!devPtr) GTEST_SKIP() << "No Metal device available";
+  ghost::Device& dev = *devPtr;
+  ghost::Stream s = dev.defaultStream();
+
+  const size_t N = 16;
+  std::vector<float> input(N), output(N, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto src = dev.allocateBuffer(N * sizeof(float));
+  auto mid = dev.allocateBuffer(N * sizeof(float));
+  auto dst = dev.allocateBuffer(N * sizeof(float));
+  src.copy(s, input.data(), N * sizeof(float));
+  s.sync();
+
+  ghost::CommandBuffer cb(dev);
+  mid.copy(cb, src, N * sizeof(float));
+  cb.barrier();
+  dst.copy(cb, mid, N * sizeof(float));
+  cb.submit(s);
+  s.sync();
+
+  dst.copyTo(s, output.data(), N * sizeof(float));
+  s.sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i)) << "index " << i;
+  }
+
+  // Reset and reuse the same cb.
+  cb.reset();
+  dst.copy(cb, src, N * sizeof(float));
+  cb.submit(s);
+  s.sync();
+  std::fill(output.begin(), output.end(), 0.0f);
+  dst.copyTo(s, output.data(), N * sizeof(float));
+  s.sync();
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i)) << "reuse index " << i;
+  }
+}
+
+// Submit-then-sync ordering on Metal. The cb fills a host-visible mapped
+// buffer with a pattern; submit + sync must observe the pattern (not the
+// pre-filled sentinel) from the host afterwards. Without
+// StreamMetal::attachCommitted wiring CommandBufferMetal's cb into the
+// stream's _lastCommitted, sync() would short-circuit.
+TEST(CommandBufferMetalSmoke, SubmitThenSyncWaitsForCommandBuffer) {
+  std::unique_ptr<ghost::Device> devPtr;
+  try {
+    devPtr = ghost::createDevice(ghost::Backend::Metal);
+  } catch (...) {
+  }
+  if (!devPtr) GTEST_SKIP() << "No Metal device available";
+  ghost::Device& dev = *devPtr;
+  ghost::Stream s = dev.defaultStream();
+
+  // 1 MiB — large enough that the GPU fill is unlikely to finish
+  // synchronously with submit.
+  const size_t N = 256 * 1024;
+  auto mapped = dev.allocateMappedBuffer(
+      N * sizeof(uint32_t), ghost::BufferOptions{ghost::Access::ReadWrite,
+                                                 ghost::AllocHint::Staging});
+
+  auto* hostPtr =
+      static_cast<uint32_t*>(mapped.map(s, ghost::Access::ReadWrite));
+  ASSERT_NE(hostPtr, nullptr);
+  const uint32_t sentinel = 0xDEADBEEFu;
+  for (size_t i = 0; i < N; i++) hostPtr[i] = sentinel;
+  mapped.unmap(s);
+  s.sync();
+
+  ghost::CommandBuffer cb(dev);
+  const uint8_t pattern = 0x5A;  // every byte = 0x5A → 0x5A5A5A5A
+  mapped.fill(cb, 0, N * sizeof(uint32_t), pattern);
+  cb.submit(s);
+  s.sync();
+
+  hostPtr = static_cast<uint32_t*>(mapped.map(s, ghost::Access::ReadOnly));
+  ASSERT_NE(hostPtr, nullptr);
+  const uint32_t expected = 0x5A5A5A5Au;
+  EXPECT_EQ(hostPtr[0], expected) << "head still " << std::hex << hostPtr[0];
+  EXPECT_EQ(hostPtr[N / 2], expected)
+      << "mid still " << std::hex << hostPtr[N / 2];
+  EXPECT_EQ(hostPtr[N - 1], expected)
+      << "tail still " << std::hex << hostPtr[N - 1];
+  mapped.unmap(s);
+}
+#endif  // WITH_METAL

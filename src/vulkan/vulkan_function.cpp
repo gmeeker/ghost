@@ -293,7 +293,7 @@ void FunctionVulkan::createPipeline() {
 void FunctionVulkan::execute(const ghost::Encoder& s,
                              const LaunchArgs& launchArgs,
                              const std::vector<Attribute>& args) {
-  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto& stream = vulkanEncoder(s);
 
   stream.begin();
 
@@ -602,16 +602,21 @@ void FunctionVulkan::execute(const ghost::Encoder& s,
                     : 1;
   vkCmdDispatch(stream.commandBuffer, gx, gy, gz);
 
-  // Memory barrier for compute shader writes.
-  VkMemoryBarrier barrier = {};
-  barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  barrier.dstAccessMask =
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
-  vkCmdPipelineBarrier(
-      stream.commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-      1, &barrier, 0, nullptr, 0, nullptr);
+  if (!stream.concurrent) {
+    // Memory barrier for compute shader writes — consecutive dispatches
+    // (or follow-on transfers) see this dispatch's writes. CommandBuffer
+    // callers can opt out via CommandBufferOptions::concurrent and use
+    // explicit cb.barrier() instead.
+    VkMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask =
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(
+        stream.commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 1, &barrier, 0, nullptr, 0, nullptr);
+  }
 }
 
 Attribute FunctionVulkan::getAttribute(FunctionAttributeId what) const {

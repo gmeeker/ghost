@@ -21,6 +21,7 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <ghost/device.h>
+#include <ghost/implementation/recorded_command_buffer.h>
 #include <wrl/client.h>
 
 #include <vector>
@@ -46,7 +47,16 @@ class EventDirectX : public Event {
   UINT64 _fenceValue;
 };
 
-class StreamDirectX : public Stream {
+/// @brief State and lifecycle shared by every DirectX encoder (Stream and
+/// CommandBuffer).
+///
+/// BufferDirectX / ImageDirectX / FunctionDirectX downcast a
+/// @c ghost::Encoder to this type to find the @c ID3D12GraphicsCommandList
+/// to record into, plus the per-cb shader-visible descriptor heaps used by
+/// compute dispatches. Both @c StreamDirectX and @c CommandBufferDirectX
+/// inherit from this mixin. Use @c directxEncoder(s) to perform the
+/// cross-cast.
+class DirectXEncoder {
  public:
   struct StagingResource {
     ComPtr<ID3D12Resource> resource;
@@ -86,6 +96,19 @@ class StreamDirectX : public Stream {
   UINT srvHeapCapacity = 0;
   UINT samplerHeapCapacity = 0;
 
+  // When true, @c FunctionDirectX::execute skips its post-dispatch global
+  // UAV barrier so consecutive dispatches in this cb may run concurrently —
+  // caller takes responsibility for inter-dispatch hazards. Set once at
+  // construction by StreamDirectX / CommandBufferDirectX.
+  bool concurrent = false;
+
+  explicit DirectXEncoder(const DeviceDirectX& dev_) : dev(dev_) {}
+
+  virtual ~DirectXEncoder() = default;
+
+  /// @brief Ensure @c commandList is in the recording state. Idempotent.
+  virtual void begin() = 0;
+
   /// @brief Allocate @p count consecutive CBV/SRV/UAV heap slots and return
   /// the CPU and GPU handles of the first slot. Creates the heap on first
   /// use. Throws if the bump allocator would overflow the heap.
@@ -97,17 +120,27 @@ class StreamDirectX : public Stream {
   /// command-list recording; safe to call multiple times (no-op if both are
   /// already the active heaps).
   void bindDescriptorHeaps();
+};
 
-  StreamDirectX(const DeviceDirectX& dev_);
+class StreamDirectX : public Stream, public DirectXEncoder {
+ public:
+  StreamDirectX(const DeviceDirectX& dev_, const StreamOptions& options = {});
   ~StreamDirectX();
 
   virtual void sync() override;
   virtual std::shared_ptr<Event> record() override;
   virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
 
-  void begin();
+  void begin() override;
   void submit();
   void cleanupStaging();
+
+  /// @brief Execute a pre-recorded command list (e.g. from a
+  /// @ref CommandBufferDirectX) on this stream's queue, signaling @p fence
+  /// at @p fenceValue. Flushes any in-flight stream recording first so
+  /// the externally-recorded list runs after the stream's prior work.
+  void executeOnQueue(ID3D12CommandList* const* lists, UINT count,
+                      ID3D12Fence* fence, UINT64 fenceValue);
 
  private:
   ComPtr<ID3D12CommandQueue> _commandQueue;
@@ -117,6 +150,46 @@ class StreamDirectX : public Stream {
   UINT64 _fenceValue;
   bool _recording;
   bool _submitted;
+};
+
+/// @brief Cross-cast a @c ghost::Encoder to its underlying @c DirectXEncoder.
+///
+/// Throws @c ghost::unsupported_error if the encoder's impl is not a
+/// DirectX encoder.
+DirectXEncoder& directxEncoder(const ghost::Encoder& s);
+
+/// @brief Native DirectX @c CommandBuffer wrapping its own
+/// @c ID3D12GraphicsCommandList, @c ID3D12CommandAllocator, fence value,
+/// and per-cb descriptor heaps.
+///
+/// Inherits the variant-recording machinery from @ref RecordedCommandBuffer
+/// and the encoder interface from @ref DirectXEncoder. On @c submit() the
+/// variants are replayed into the owned @c ID3D12GraphicsCommandList, then
+/// submitted via @c ExecuteCommandLists on the target Stream's queue with
+/// this CommandBuffer's fence value. Resources captured by the variants
+/// stay live until @c reset() (which waits on the fence first) or
+/// destruction.
+class CommandBufferDirectX : public RecordedCommandBuffer,
+                             public DirectXEncoder {
+ public:
+  CommandBufferDirectX(const DeviceDirectX& dev_,
+                       const CommandBufferOptions& options = {});
+  ~CommandBufferDirectX();
+
+  void begin() override;
+  void submit(const ghost::Stream& stream) override;
+  void reset() override;
+
+ private:
+  ComPtr<ID3D12CommandAllocator> _commandAllocator;
+  ComPtr<ID3D12Fence> _fence;
+  HANDLE _fenceEvent = nullptr;
+  UINT64 _fenceValue = 0;
+  bool _recording = false;
+  bool _submitted = false;
+
+  /// @brief Wait on @c _fence if a submission is in flight. Idempotent.
+  void waitForCompletion();
 };
 
 class BufferDirectX : public Buffer {
@@ -243,6 +316,9 @@ class DeviceDirectX : public Device {
 
   virtual ghost::Stream createStream(
       const StreamOptions& options = {}) const override;
+
+  virtual std::shared_ptr<CommandBuffer> createCommandBuffer(
+      const CommandBufferOptions& options = {}) const override;
 
   virtual ghost::Buffer allocateBuffer(
       size_t bytes, const BufferOptions& opts = {}) const override;

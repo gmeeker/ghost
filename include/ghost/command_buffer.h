@@ -125,7 +125,8 @@ class CommandBuffer : public Encoder {
  public:
   /// @brief Create a command buffer for the given device.
   /// @param device The device whose backend determines the recording strategy.
-  CommandBuffer(const Device& device);
+  /// @param options Backend-encoder configuration (see CommandBufferOptions).
+  CommandBuffer(const Device& device, const CommandBufferOptions& options = {});
 
   /// @brief Construct from a backend implementation.
   /// @param impl Shared pointer to the backend-specific implementation.

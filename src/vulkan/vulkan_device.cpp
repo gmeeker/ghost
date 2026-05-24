@@ -85,13 +85,14 @@ double EventVulkan::elapsed(const Event& other) const {
 // StreamVulkan
 // ---------------------------------------------------------------------------
 
-StreamVulkan::StreamVulkan(const DeviceVulkan& dev_)
-    : dev(dev_),
-      commandBuffer(VK_NULL_HANDLE),
+StreamVulkan::StreamVulkan(const DeviceVulkan& dev_,
+                           const StreamOptions& options)
+    : VulkanEncoder(dev_),
       _commandPool(dev_.device),
       _fence(dev_.device),
       _recording(false),
       _submitted(false) {
+  concurrent = options.concurrent;
   // Create command pool
   VkCommandPoolCreateInfo poolInfo = {};
   poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -176,9 +177,19 @@ void StreamVulkan::submit() {
 
 void StreamVulkan::sync() {
   if (_recording) submit();
+
+  // Wait on the stream's own fence (if there's pending stream work) and
+  // every attachment fence from externally-submitted CommandBuffers.
+  std::vector<VkFence> wait;
+  if (_submitted) wait.push_back(_fence);
+  for (auto& f : _attachedFences) wait.push_back(f);
+  if (!wait.empty()) {
+    vkWaitForFences(dev.device, (uint32_t)wait.size(), wait.data(), VK_TRUE,
+                    UINT64_MAX);
+  }
+  _attachedFences.clear();
+
   if (_submitted) {
-    VkFence f = _fence;
-    vkWaitForFences(dev.device, 1, &f, VK_TRUE, UINT64_MAX);
     _submitted = false;
 
     // Process deferred reads
@@ -193,6 +204,10 @@ void StreamVulkan::sync() {
     deferredReads.clear();
     cleanupStaging();
   }
+}
+
+void StreamVulkan::attachFence(vk::ptr<VkFence> fence) {
+  _attachedFences.push_back(std::move(fence));
 }
 
 std::shared_ptr<Event> StreamVulkan::record() {
@@ -229,9 +244,12 @@ void StreamVulkan::cleanupStaging() {
   // begin() process the host reads first and clear it themselves.
 }
 
-void StreamVulkan::addStagingResource(vk::ptr<VkBuffer> buf,
-                                      vk::ptr<VkDeviceMemory> mem) {
-  _pendingStaging.push_back({std::move(buf), std::move(mem)});
+// addStagingResource lives on VulkanEncoder (the shared base).
+
+VulkanEncoder& vulkanEncoder(const ghost::Encoder& s) {
+  auto* p = dynamic_cast<VulkanEncoder*>(s.impl().get());
+  if (!p) throw ghost::unsupported_error();
+  return *p;
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +310,7 @@ void BufferVulkan::copyTo(const ghost::Encoder& s, void* dst,
 
 void BufferVulkan::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                         size_t srcOffset, size_t dstOffset, size_t bytes) {
-  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto& stream = vulkanEncoder(s);
   auto* srcBuf = static_cast<BufferVulkan*>(src.impl().get());
 
   stream.begin();
@@ -317,7 +335,7 @@ void BufferVulkan::copy(const ghost::Encoder& s, const ghost::Buffer& src,
 
 void BufferVulkan::copy(const ghost::Encoder& s, const void* src,
                         size_t dstOffset, size_t bytes) {
-  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto& stream = vulkanEncoder(s);
 
   // Create staging buffer (uses the stream's device, since BufferVulkan no
   // longer holds a parent-device reference itself).
@@ -358,7 +376,7 @@ void BufferVulkan::copy(const ghost::Encoder& s, const void* src,
 
 void BufferVulkan::copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
                           size_t bytes) const {
-  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto& stream = vulkanEncoder(s);
 
   // Create staging buffer for readback (via stream's device — see copy()).
   vk::ptr<VkBuffer> staging(stream.dev.device);
@@ -398,7 +416,7 @@ void BufferVulkan::copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
 
 void BufferVulkan::fill(const ghost::Encoder& s, size_t offset, size_t sz,
                         uint8_t value) {
-  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto& stream = vulkanEncoder(s);
   stream.begin();
 
   // vkCmdFillBuffer takes a uint32_t data value
@@ -510,8 +528,11 @@ MappedBufferVulkan::MappedBufferVulkan(const DeviceVulkan& dev, size_t bytes,
 void* MappedBufferVulkan::map(const ghost::Encoder& s, Access access,
                               bool doSync) {
   if (doSync) {
-    auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
-    stream.sync();
+    // Sync only makes sense on a Stream (block until GPU has drained).
+    // If a CommandBuffer is passed, the caller must submit and sync that
+    // stream themselves before relying on the mapped pointer.
+    auto* stream = dynamic_cast<implementation::Stream*>(s.impl().get());
+    if (stream) stream->sync();
   }
   return mappedPtr;
 }
@@ -691,7 +712,7 @@ ImageVulkan::ImageVulkan(const DeviceVulkan& dev, const ImageDescription& d,
 // handle and destroys appropriately.
 
 void ImageVulkan::copy(const ghost::Encoder& s, const ghost::Image& src) {
-  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto& stream = vulkanEncoder(s);
   auto* srcImg = static_cast<ImageVulkan*>(src.impl().get());
 
   stream.begin();
@@ -766,7 +787,7 @@ void ImageVulkan::copy(const ghost::Encoder& s, const ghost::Image& src) {
 
 void ImageVulkan::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                        const BufferLayout& layout) {
-  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto& stream = vulkanEncoder(s);
   auto* srcBuf = static_cast<BufferVulkan*>(src.impl().get());
 
   stream.begin();
@@ -812,7 +833,7 @@ void ImageVulkan::copy(const ghost::Encoder& s, const ghost::Buffer& src,
 
 void ImageVulkan::copy(const ghost::Encoder& s, const void* src,
                        const BufferLayout& layout) {
-  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto& stream = vulkanEncoder(s);
 
   size_t dataSize = descr.dataSize();
 
@@ -876,7 +897,7 @@ void ImageVulkan::copy(const ghost::Encoder& s, const void* src,
 
 void ImageVulkan::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                          const BufferLayout& layout) const {
-  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto& stream = vulkanEncoder(s);
   auto* dstBuf = static_cast<BufferVulkan*>(dst.impl().get());
 
   stream.begin();
@@ -923,7 +944,7 @@ void ImageVulkan::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
 
 void ImageVulkan::copyTo(const ghost::Encoder& s, void* dst,
                          const BufferLayout& layout) const {
-  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto& stream = vulkanEncoder(s);
 
   size_t dataSize = descr.dataSize();
 
@@ -997,7 +1018,7 @@ void ImageVulkan::copyTo(const ghost::Encoder& s, void* dst,
 
 void ImageVulkan::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                        const BufferLayout& layout, const Origin3& imageOrigin) {
-  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto& stream = vulkanEncoder(s);
   auto* srcBuf = static_cast<BufferVulkan*>(src.impl().get());
 
   stream.begin();
@@ -1047,7 +1068,7 @@ void ImageVulkan::copy(const ghost::Encoder& s, const ghost::Buffer& src,
 void ImageVulkan::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                          const BufferLayout& layout,
                          const Origin3& imageOrigin) const {
-  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto& stream = vulkanEncoder(s);
   auto* dstBuf = static_cast<BufferVulkan*>(dst.impl().get());
 
   stream.begin();
@@ -1098,7 +1119,7 @@ void ImageVulkan::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
 void ImageVulkan::copy(const ghost::Encoder& s, const ghost::Image& src,
                        const Size3& region, const Origin3& srcOrigin,
                        const Origin3& dstOrigin) {
-  auto& stream = *static_cast<StreamVulkan*>(s.impl().get());
+  auto& stream = vulkanEncoder(s);
   auto* srcImg = static_cast<ImageVulkan*>(src.impl().get());
 
   stream.begin();
@@ -1173,6 +1194,185 @@ void ImageVulkan::copy(const ghost::Encoder& s, const ghost::Image& src,
   vkCmdPipelineBarrier(stream.commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
                        nullptr, 2, postBarriers);
+}
+
+// ---------------------------------------------------------------------------
+// CommandBufferVulkan
+// ---------------------------------------------------------------------------
+
+CommandBufferVulkan::CommandBufferVulkan(const DeviceVulkan& dev_,
+                                         const CommandBufferOptions& options)
+    : VulkanEncoder(dev_), _commandPool(dev_.device), _fence(dev_.device) {
+  concurrent = options.concurrent;
+  // TRANSIENT hint: cb is short-lived; pool allocations may be optimised.
+  // RESET_COMMAND_BUFFER lets us recycle the cb across submit/reset cycles
+  // without resetting the whole pool.
+  VkCommandPoolCreateInfo poolInfo = {};
+  poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT |
+                   VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  poolInfo.queueFamilyIndex = dev.computeQueueFamily;
+  checkError(
+      vkCreateCommandPool(dev.device, &poolInfo, nullptr, &_commandPool));
+
+  VkCommandBufferAllocateInfo allocInfo = {};
+  allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  allocInfo.commandPool = _commandPool;
+  allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  allocInfo.commandBufferCount = 1;
+  checkError(vkAllocateCommandBuffers(dev.device, &allocInfo, &commandBuffer));
+
+  // Created signaled so the first begin()/reset() wait is a no-op.
+  VkFenceCreateInfo fenceInfo = {};
+  fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+  checkError(vkCreateFence(dev.device, &fenceInfo, nullptr, &_fence));
+}
+
+CommandBufferVulkan::~CommandBufferVulkan() {
+  try {
+    waitForCompletion();
+  } catch (...) {
+  }
+}
+
+void CommandBufferVulkan::waitForCompletion() {
+  if (_submitted) {
+    VkFence f = _fence;
+    vkWaitForFences(dev.device, 1, &f, VK_TRUE, UINT64_MAX);
+    _submitted = false;
+  }
+}
+
+void CommandBufferVulkan::begin() {
+  if (_recording) return;
+  waitForCompletion();
+
+  VkFence f = _fence;
+  vkResetFences(dev.device, 1, &f);
+  vkResetCommandBuffer(commandBuffer, 0);
+
+  VkCommandBufferBeginInfo beginInfo = {};
+  beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  checkError(vkBeginCommandBuffer(commandBuffer, &beginInfo));
+
+  _recording = true;
+}
+
+void CommandBufferVulkan::submit(const ghost::Stream& stream) {
+  begin();
+
+  // Replay recorded variants onto our own cb. Same shape as
+  // RecordedCommandBuffer::replayInto except: BarrierCmd inserts a native
+  // pipeline barrier within the cb instead of draining the stream, and
+  // WaitEventCmd / RecordEventCmd are not currently supported on a Vulkan
+  // CommandBuffer (semaphore wiring would be needed).
+  ghost::Encoder enc(std::shared_ptr<implementation::Encoder>(
+      static_cast<implementation::Encoder*>(this), [](auto*) {}));
+
+  ghost::Buffer srcWrap(nullptr);
+  ghost::Buffer dstWrap(nullptr);
+  ghost::Image srcImgWrap(nullptr);
+  ghost::Image dstImgWrap(nullptr);
+
+  for (auto& command : commands) {
+    std::visit(
+        [&](auto& cmd) {
+          using T = std::decay_t<decltype(cmd)>;
+          if constexpr (std::is_same_v<T, DispatchCmd>) {
+            cmd.function->execute(enc, cmd.launchArgs, cmd.args);
+          } else if constexpr (std::is_same_v<T, DispatchIndirectCmd>) {
+            cmd.function->executeIndirect(enc, cmd.indirectBuffer,
+                                          cmd.indirectOffset, cmd.args);
+          } else if constexpr (std::is_same_v<T, CopyBufferCmd>) {
+            dstWrap.impl() = cmd.dst;
+            srcWrap.impl() =
+                std::const_pointer_cast<implementation::Buffer>(cmd.src);
+            cmd.dst->copy(enc, srcWrap, cmd.srcOffset, cmd.dstOffset,
+                          cmd.bytes);
+          } else if constexpr (std::is_same_v<T, CopyBufferRawCmd>) {
+            cmd.dst->copy(enc, cmd.src, cmd.dstOffset, cmd.bytes);
+          } else if constexpr (std::is_same_v<T, ReadBufferCmd>) {
+            cmd.src->copyTo(enc, cmd.dst, cmd.srcOffset, cmd.bytes);
+          } else if constexpr (std::is_same_v<T, FillBufferCmd>) {
+            cmd.dst->fill(enc, cmd.offset, cmd.size, cmd.value);
+          } else if constexpr (std::is_same_v<T, FillBufferPatternCmd>) {
+            cmd.dst->fill(enc, cmd.offset, cmd.size, cmd.pattern.data(),
+                          cmd.pattern.size());
+          } else if constexpr (std::is_same_v<T, CopyImageCmd>) {
+            dstImgWrap.impl() =
+                std::const_pointer_cast<implementation::Image>(cmd.dst);
+            srcImgWrap.impl() =
+                std::const_pointer_cast<implementation::Image>(cmd.src);
+            cmd.dst->copy(enc, srcImgWrap);
+          } else if constexpr (std::is_same_v<T, CopyImageFromBufferCmd>) {
+            srcWrap.impl() = cmd.src;
+            cmd.dst->copy(enc, srcWrap, cmd.layout);
+          } else if constexpr (std::is_same_v<T, CopyImageFromHostCmd>) {
+            cmd.dst->copy(enc, cmd.src, cmd.layout);
+          } else if constexpr (std::is_same_v<T, CopyImageToBufferCmd>) {
+            dstWrap.impl() = cmd.dst;
+            cmd.src->copyTo(enc, dstWrap, cmd.layout);
+          } else if constexpr (std::is_same_v<T, CopyImageToHostCmd>) {
+            cmd.src->copyTo(enc, cmd.dst, cmd.layout);
+          } else if constexpr (std::is_same_v<T, BarrierCmd>) {
+            VkMemoryBarrier b = {};
+            b.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            b.srcAccessMask =
+                VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+            b.dstAccessMask =
+                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(commandBuffer,
+                                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &b,
+                                 0, nullptr, 0, nullptr);
+          } else if constexpr (std::is_same_v<T, WaitEventCmd>) {
+            throw ghost::unsupported_error();
+          } else if constexpr (std::is_same_v<T, RecordEventCmd>) {
+            throw ghost::unsupported_error();
+          }
+        },
+        command);
+  }
+
+  checkError(vkEndCommandBuffer(commandBuffer));
+  _recording = false;
+
+  auto* streamVk = dynamic_cast<StreamVulkan*>(stream.impl().get());
+  if (!streamVk) throw ghost::unsupported_error();
+
+  VkSubmitInfo submitInfo = {};
+  submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submitInfo.commandBufferCount = 1;
+  submitInfo.pCommandBuffers = &commandBuffer;
+  checkError(vkQueueSubmit(streamVk->dev.computeQueue, 1, &submitInfo, _fence));
+  _submitted = true;
+
+  // Vulkan binary fences can only be signaled by one submission at a
+  // time, so we cannot signal both our own _fence (for reset() to wait
+  // on) and the stream's fence with the same submit. Instead, queue a
+  // tiny empty submission whose only purpose is to signal a fresh
+  // attachment fence. Queue FIFO guarantees it fires after the cb's
+  // work above. Ownership of the fence transfers to the stream; it
+  // drains the list in sync().
+  vk::ptr<VkFence> attachFence(dev.device);
+  VkFenceCreateInfo fci = {};
+  fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  checkError(vkCreateFence(dev.device, &fci, nullptr, &attachFence));
+  VkSubmitInfo emptySubmit = {};
+  emptySubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  checkError(
+      vkQueueSubmit(streamVk->dev.computeQueue, 1, &emptySubmit, attachFence));
+  streamVk->attachFence(std::move(attachFence));
+}
+
+void CommandBufferVulkan::reset() {
+  waitForCompletion();
+  commands.clear();
+  _pendingStaging.clear();
+  deferredReads.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -1586,7 +1786,12 @@ SharedContext DeviceVulkan::shareContext() const {
 }
 
 ghost::Stream DeviceVulkan::createStream(const StreamOptions& options) const {
-  return ghost::Stream(std::make_shared<StreamVulkan>(*this));
+  return ghost::Stream(std::make_shared<StreamVulkan>(*this, options));
+}
+
+std::shared_ptr<CommandBuffer> DeviceVulkan::createCommandBuffer(
+    const CommandBufferOptions& options) const {
+  return std::make_shared<CommandBufferVulkan>(*this, options);
 }
 
 ghost::Buffer DeviceVulkan::allocateBuffer(size_t bytes,

@@ -95,7 +95,7 @@ FunctionDirectX::~FunctionDirectX() {}
 void FunctionDirectX::execute(const ghost::Encoder& s,
                               const LaunchArgs& launchArgs,
                               const std::vector<Attribute>& args) {
-  auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
+  auto& stream = directxEncoder(s);
 
   stream.begin();
   auto* cmdList = stream.commandList.Get();
@@ -350,11 +350,16 @@ void FunctionDirectX::execute(const ghost::Encoder& s,
                 : 1;
   cmdList->Dispatch(gx, gy, gz);
 
-  // UAV barrier for compute shader writes
-  D3D12_RESOURCE_BARRIER uavBarrier = {};
-  uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-  uavBarrier.UAV.pResource = nullptr;  // Barrier on all UAVs
-  cmdList->ResourceBarrier(1, &uavBarrier);
+  if (!stream.concurrent) {
+    // Global UAV barrier so consecutive dispatches see this dispatch's
+    // writes. CommandBuffer callers can opt out via
+    // CommandBufferOptions::concurrent and use explicit cb.barrier()
+    // instead.
+    D3D12_RESOURCE_BARRIER uavBarrier = {};
+    uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    uavBarrier.UAV.pResource = nullptr;  // Barrier on all UAVs
+    cmdList->ResourceBarrier(1, &uavBarrier);
+  }
 }
 
 Attribute FunctionDirectX::getAttribute(FunctionAttributeId what) const {

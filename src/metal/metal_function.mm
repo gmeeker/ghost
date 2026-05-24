@@ -312,19 +312,8 @@ FunctionMetal::FunctionMetal(
 void FunctionMetal::execute(const ghost::Encoder &s,
                             const LaunchArgs &launchArgs,
                             const std::vector<Attribute> &args) {
-  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
-  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
-  commandBuffer.label = @"Ghost";
-  stream_impl->encodeWait(commandBuffer);
-  id<MTLComputeCommandEncoder> computeEncoder = nil;
-  if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, macCatalyst 13.0, *)) {
-    computeEncoder = [commandBuffer
-        computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
-  }
-  if (!computeEncoder) {
-    computeEncoder = [commandBuffer computeCommandEncoder];
-  }
-  // wait
+  auto &enc = metalEncoder(s);
+  id<MTLComputeCommandEncoder> computeEncoder = enc.getComputeEncoder();
   [computeEncoder setComputePipelineState:pipeline];
 
   ProgramParams params;
@@ -418,26 +407,13 @@ void FunctionMetal::execute(const ghost::Encoder &s,
                              launchArgs.local_size()[2]};
   [computeEncoder dispatchThreadgroups:threadgroupCount
                  threadsPerThreadgroup:threadgroupSize];
-
-  [computeEncoder endEncoding];
-  stream_impl->commitAndTrack(commandBuffer);
 }
 
 void FunctionMetal::executeIndirect(
     const ghost::Encoder &s, const std::shared_ptr<Buffer> &indirectBuffer,
     size_t indirectOffset, const std::vector<Attribute> &args) {
-  auto stream_impl = static_cast<implementation::StreamMetal *>(s.impl().get());
-  id<MTLCommandBuffer> commandBuffer = [stream_impl->queue.get() commandBuffer];
-  commandBuffer.label = @"Ghost";
-  stream_impl->encodeWait(commandBuffer);
-  id<MTLComputeCommandEncoder> computeEncoder = nil;
-  if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, macCatalyst 13.0, *)) {
-    computeEncoder = [commandBuffer
-        computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
-  }
-  if (!computeEncoder) {
-    computeEncoder = [commandBuffer computeCommandEncoder];
-  }
+  auto &enc = metalEncoder(s);
+  id<MTLComputeCommandEncoder> computeEncoder = enc.getComputeEncoder();
   [computeEncoder setComputePipelineState:pipeline];
 
   ProgramParams params;
@@ -534,9 +510,6 @@ void FunctionMetal::executeIndirect(
       dispatchThreadgroupsWithIndirectBuffer:metalBuf->mem.get()
                         indirectBufferOffset:(NSUInteger)indirectOffset
                        threadsPerThreadgroup:threadgroupSize];
-
-  [computeEncoder endEncoding];
-  stream_impl->commitAndTrack(commandBuffer);
 }
 
 Attribute FunctionMetal::getAttribute(FunctionAttributeId what) const {

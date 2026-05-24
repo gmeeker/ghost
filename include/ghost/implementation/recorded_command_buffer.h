@@ -1,0 +1,238 @@
+// Copyright (c) 2025 Digital Anarchy, Inc. All rights reserved.
+//
+// Licensed under the BSD 3-Clause License (the "License"); you may not use this
+// file except in compliance with the License. You may obtain a copy of the
+// License at
+//
+// https://opensource.org/licenses/BSD-3-Clause
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+// WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+// License for the specific language governing permissions and limitations under
+// the License.
+
+#ifndef GHOST_IMPLEMENTATION_RECORDED_COMMAND_BUFFER_H
+#define GHOST_IMPLEMENTATION_RECORDED_COMMAND_BUFFER_H
+
+#include <ghost/command_buffer.h>
+
+#include <variant>
+#include <vector>
+
+namespace ghost {
+namespace implementation {
+
+/// @brief Tagged command records used by @ref RecordedCommandBuffer.
+///
+/// One struct per public CommandBuffer entry point. Each captures
+/// @c shared_ptr to the involved impl resources, which keeps those resources
+/// alive for the lifetime of this record (until the @c commands vector is
+/// cleared by @c reset() or the @c RecordedCommandBuffer is destroyed).
+struct DispatchCmd {
+  std::shared_ptr<implementation::Function> function;
+  LaunchArgs launchArgs;
+  std::vector<Attribute> args;
+};
+
+struct DispatchIndirectCmd {
+  std::shared_ptr<implementation::Function> function;
+  std::shared_ptr<implementation::Buffer> indirectBuffer;
+  size_t indirectOffset;
+  std::vector<Attribute> args;
+};
+
+struct CopyBufferCmd {
+  std::shared_ptr<implementation::Buffer> dst;
+  std::shared_ptr<implementation::Buffer> src;
+  size_t srcOffset;
+  size_t dstOffset;
+  size_t bytes;
+};
+
+struct CopyBufferRawCmd {
+  std::shared_ptr<implementation::Buffer> dst;
+  const void* src;
+  size_t dstOffset;
+  size_t bytes;
+};
+
+struct ReadBufferCmd {
+  std::shared_ptr<const implementation::Buffer> src;
+  void* dst;
+  size_t srcOffset;
+  size_t bytes;
+};
+
+struct FillBufferCmd {
+  std::shared_ptr<implementation::Buffer> dst;
+  size_t offset;
+  size_t size;
+  uint8_t value;
+};
+
+struct FillBufferPatternCmd {
+  std::shared_ptr<implementation::Buffer> dst;
+  size_t offset;
+  size_t size;
+  std::vector<uint8_t> pattern;
+};
+
+struct CopyImageCmd {
+  std::shared_ptr<implementation::Image> dst;
+  std::shared_ptr<const implementation::Image> src;
+};
+
+struct CopyImageFromBufferCmd {
+  std::shared_ptr<implementation::Image> dst;
+  std::shared_ptr<implementation::Buffer> src;
+  BufferLayout layout;
+};
+
+struct CopyImageFromHostCmd {
+  std::shared_ptr<implementation::Image> dst;
+  const void* src;
+  BufferLayout layout;
+};
+
+struct CopyImageToBufferCmd {
+  std::shared_ptr<const implementation::Image> src;
+  std::shared_ptr<implementation::Buffer> dst;
+  BufferLayout layout;
+};
+
+struct CopyImageToHostCmd {
+  std::shared_ptr<const implementation::Image> src;
+  void* dst;
+  BufferLayout layout;
+};
+
+struct BarrierCmd {};
+
+struct WaitEventCmd {
+  std::shared_ptr<implementation::Event> event;
+};
+
+struct RecordEventCmd {
+  std::shared_ptr<implementation::Event> event;
+};
+
+using Command =
+    std::variant<DispatchCmd, DispatchIndirectCmd, CopyBufferCmd,
+                 CopyBufferRawCmd, ReadBufferCmd, FillBufferCmd,
+                 FillBufferPatternCmd, CopyImageCmd, CopyImageFromBufferCmd,
+                 CopyImageFromHostCmd, CopyImageToBufferCmd, CopyImageToHostCmd,
+                 BarrierCmd, WaitEventCmd, RecordEventCmd>;
+
+/// @brief Record-and-replay @ref CommandBuffer used as the fallback for
+/// backends without a native command-buffer concept (CUDA, OpenCL, CPU).
+///
+/// Each public dispatch/copy/fill call appends a tagged @ref Command record
+/// to @c commands. On @c submit() the records are replayed in order by
+/// invoking the same operation against the target encoder.
+///
+/// Backends with a native command-buffer wrap this class to reuse the
+/// variant-recording machinery and override @ref submit (and any other
+/// methods that need backend-native handling) to record the replayed
+/// operations into their native object instead of replaying onto the
+/// stream's queue directly.
+class RecordedCommandBuffer : public CommandBuffer {
+ public:
+  std::vector<Command> commands;
+
+  void dispatch(std::shared_ptr<implementation::Function> function,
+                const LaunchArgs& launchArgs,
+                const std::vector<Attribute>& args) override {
+    commands.push_back(DispatchCmd{function, launchArgs, args});
+  }
+
+  void dispatchIndirect(std::shared_ptr<implementation::Function> function,
+                        std::shared_ptr<implementation::Buffer> indirectBuffer,
+                        size_t indirectOffset,
+                        const std::vector<Attribute>& args) override {
+    commands.push_back(
+        DispatchIndirectCmd{function, indirectBuffer, indirectOffset, args});
+  }
+
+  void copyBuffer(std::shared_ptr<implementation::Buffer> dst,
+                  std::shared_ptr<implementation::Buffer> src, size_t srcOffset,
+                  size_t dstOffset, size_t bytes) override {
+    commands.push_back(CopyBufferCmd{dst, src, srcOffset, dstOffset, bytes});
+  }
+
+  void copyBufferRaw(std::shared_ptr<implementation::Buffer> dst,
+                     const void* src, size_t dstOffset, size_t bytes) override {
+    commands.push_back(CopyBufferRawCmd{dst, src, dstOffset, bytes});
+  }
+
+  void readBuffer(std::shared_ptr<const implementation::Buffer> src, void* dst,
+                  size_t srcOffset, size_t bytes) override {
+    commands.push_back(ReadBufferCmd{src, dst, srcOffset, bytes});
+  }
+
+  void fillBuffer(std::shared_ptr<implementation::Buffer> dst, size_t offset,
+                  size_t size, uint8_t value) override {
+    commands.push_back(FillBufferCmd{dst, offset, size, value});
+  }
+
+  void fillBufferPattern(std::shared_ptr<implementation::Buffer> dst,
+                         size_t offset, size_t size, const void* pattern,
+                         size_t patternSize) override {
+    std::vector<uint8_t> p(static_cast<const uint8_t*>(pattern),
+                           static_cast<const uint8_t*>(pattern) + patternSize);
+    commands.push_back(FillBufferPatternCmd{dst, offset, size, std::move(p)});
+  }
+
+  void copyImage(std::shared_ptr<implementation::Image> dst,
+                 std::shared_ptr<const implementation::Image> src) override {
+    commands.push_back(CopyImageCmd{dst, src});
+  }
+
+  void copyImageFromBuffer(std::shared_ptr<implementation::Image> dst,
+                           std::shared_ptr<implementation::Buffer> src,
+                           const BufferLayout& layout) override {
+    commands.push_back(CopyImageFromBufferCmd{dst, src, layout});
+  }
+
+  void copyImageFromHost(std::shared_ptr<implementation::Image> dst,
+                         const void* src, const BufferLayout& layout) override {
+    commands.push_back(CopyImageFromHostCmd{dst, src, layout});
+  }
+
+  void copyImageToBuffer(std::shared_ptr<const implementation::Image> src,
+                         std::shared_ptr<implementation::Buffer> dst,
+                         const BufferLayout& layout) override {
+    commands.push_back(CopyImageToBufferCmd{src, dst, layout});
+  }
+
+  void copyImageToHost(std::shared_ptr<const implementation::Image> src,
+                       void* dst, const BufferLayout& layout) override {
+    commands.push_back(CopyImageToHostCmd{src, dst, layout});
+  }
+
+  void addBarrier() override { commands.push_back(BarrierCmd{}); }
+
+  void addWaitForEvent(std::shared_ptr<implementation::Event> e) override {
+    commands.push_back(WaitEventCmd{e});
+  }
+
+  std::shared_ptr<implementation::Event> addRecordEvent(
+      const ghost::Stream& stream) override;
+
+  void submit(const ghost::Stream& stream) override;
+
+  void reset() override { commands.clear(); }
+
+ protected:
+  /// @brief Replay the recorded @c commands sequence onto @p enc.
+  ///
+  /// Default behavior: each command invokes the corresponding native
+  /// operation on the encoder. Used by the fallback @c submit and by
+  /// backend subclasses that want to replay onto their own native cb.
+  void replayInto(const ghost::Encoder& enc, const ghost::Stream& stream);
+};
+
+}  // namespace implementation
+}  // namespace ghost
+
+#endif

@@ -131,12 +131,14 @@ double EventDirectX::elapsed(const Event& other) const { return 0.0; }
 // StreamDirectX
 // ---------------------------------------------------------------------------
 
-StreamDirectX::StreamDirectX(const DeviceDirectX& dev_)
-    : dev(dev_),
+StreamDirectX::StreamDirectX(const DeviceDirectX& dev_,
+                             const StreamOptions& options)
+    : DirectXEncoder(dev_),
       _fenceEvent(nullptr),
       _fenceValue(0),
       _recording(false),
       _submitted(false) {
+  concurrent = options.concurrent;
   // Create compute command queue
   D3D12_COMMAND_QUEUE_DESC queueDesc = {};
   queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
@@ -279,6 +281,23 @@ void StreamDirectX::waitForEvent(const std::shared_ptr<Event>& e) {
   evt->wait();
 }
 
+void StreamDirectX::executeOnQueue(ID3D12CommandList* const* lists, UINT count,
+                                   ID3D12Fence* fence, UINT64 fenceValue) {
+  // Flush our own in-flight recording first so the external list runs
+  // after any prior stream work.
+  if (_recording) submit();
+  _commandQueue->ExecuteCommandLists(count, lists);
+  // Signal the caller's fence so the external owner (e.g. a
+  // CommandBufferDirectX) can wait on its own submission.
+  checkHR(_commandQueue->Signal(fence, fenceValue));
+  // Also bump our own fence so stream.sync() waits for the external
+  // submission too. Both signals enqueue after the same ExecuteCommandLists
+  // and fire in queue order once that list completes.
+  _fenceValue++;
+  checkHR(_commandQueue->Signal(_fence.Get(), _fenceValue));
+  _submitted = true;
+}
+
 void StreamDirectX::cleanupStaging() {
   pendingStaging.clear();
   // DeferredRead cleanup handled separately after reads complete
@@ -306,9 +325,9 @@ void ensureHeap(ID3D12Device* device, ComPtr<ID3D12DescriptorHeap>& heap,
 
 }  // namespace
 
-void StreamDirectX::allocSrvSlots(UINT count,
-                                  D3D12_CPU_DESCRIPTOR_HANDLE& cpuOut,
-                                  D3D12_GPU_DESCRIPTOR_HANDLE& gpuOut) {
+void DirectXEncoder::allocSrvSlots(UINT count,
+                                   D3D12_CPU_DESCRIPTOR_HANDLE& cpuOut,
+                                   D3D12_GPU_DESCRIPTOR_HANDLE& gpuOut) {
   ensureHeap(dev.device.Get(), srvHeap, srvHandleSize, srvHeapCapacity,
              D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4096);
   if (srvNextSlot + count > srvHeapCapacity) {
@@ -324,9 +343,9 @@ void StreamDirectX::allocSrvSlots(UINT count,
   srvNextSlot += count;
 }
 
-void StreamDirectX::allocSamplerSlots(UINT count,
-                                      D3D12_CPU_DESCRIPTOR_HANDLE& cpuOut,
-                                      D3D12_GPU_DESCRIPTOR_HANDLE& gpuOut) {
+void DirectXEncoder::allocSamplerSlots(UINT count,
+                                       D3D12_CPU_DESCRIPTOR_HANDLE& cpuOut,
+                                       D3D12_GPU_DESCRIPTOR_HANDLE& gpuOut) {
   ensureHeap(dev.device.Get(), samplerHeap, samplerHandleSize,
              samplerHeapCapacity, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 512);
   if (samplerNextSlot + count > samplerHeapCapacity) {
@@ -342,7 +361,7 @@ void StreamDirectX::allocSamplerSlots(UINT count,
   samplerNextSlot += count;
 }
 
-void StreamDirectX::bindDescriptorHeaps() {
+void DirectXEncoder::bindDescriptorHeaps() {
   // Bind whichever heaps exist. D3D12 allows at most one of each type
   // bound simultaneously; unused heaps stay null-pointered.
   ID3D12DescriptorHeap* heaps[2];
@@ -350,6 +369,165 @@ void StreamDirectX::bindDescriptorHeaps() {
   if (srvHeap) heaps[count++] = srvHeap.Get();
   if (samplerHeap) heaps[count++] = samplerHeap.Get();
   if (count) commandList->SetDescriptorHeaps(count, heaps);
+}
+
+DirectXEncoder& directxEncoder(const ghost::Encoder& s) {
+  auto* p = dynamic_cast<DirectXEncoder*>(s.impl().get());
+  if (!p) throw ghost::unsupported_error();
+  return *p;
+}
+
+// ---------------------------------------------------------------------------
+// CommandBufferDirectX
+// ---------------------------------------------------------------------------
+
+CommandBufferDirectX::CommandBufferDirectX(const DeviceDirectX& dev_,
+                                           const CommandBufferOptions& options)
+    : DirectXEncoder(dev_) {
+  concurrent = options.concurrent;
+  // Each CommandBuffer owns its own allocator + fence so independent cbs can
+  // be submitted to the same queue without colliding on allocator reset.
+  checkHR(dev.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE,
+                                             IID_PPV_ARGS(&_commandAllocator)));
+  checkHR(dev.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE,
+                                        _commandAllocator.Get(), nullptr,
+                                        IID_PPV_ARGS(&commandList)));
+  commandList->Close();
+
+  checkHR(
+      dev.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&_fence)));
+  _fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+}
+
+CommandBufferDirectX::~CommandBufferDirectX() {
+  try {
+    waitForCompletion();
+  } catch (...) {
+  }
+  if (_fenceEvent) CloseHandle(_fenceEvent);
+}
+
+void CommandBufferDirectX::waitForCompletion() {
+  if (_submitted) {
+    if (_fence->GetCompletedValue() < _fenceValue) {
+      _fence->SetEventOnCompletion(_fenceValue, _fenceEvent);
+      WaitForSingleObject(_fenceEvent, INFINITE);
+    }
+    _submitted = false;
+  }
+}
+
+void CommandBufferDirectX::begin() {
+  if (_recording) return;
+  waitForCompletion();
+
+  // Reset the descriptor heap bump-allocator. Previous descriptors are
+  // retired because waitForCompletion drained the GPU's prior use.
+  srvNextSlot = 0;
+  samplerNextSlot = 0;
+
+  checkHR(_commandAllocator->Reset());
+  checkHR(commandList->Reset(_commandAllocator.Get(), nullptr));
+  _recording = true;
+}
+
+void CommandBufferDirectX::submit(const ghost::Stream& stream) {
+  begin();
+
+  // Replay variants onto our own command list. Same shape as
+  // RecordedCommandBuffer::replayInto, with BarrierCmd → native UAV
+  // barrier, WaitEventCmd / RecordEventCmd unsupported on a native
+  // DirectX CommandBuffer (cross-queue semaphore wiring would be needed).
+  ghost::Encoder enc(std::shared_ptr<implementation::Encoder>(
+      static_cast<implementation::Encoder*>(this), [](auto*) {}));
+
+  ghost::Buffer srcWrap(nullptr);
+  ghost::Buffer dstWrap(nullptr);
+  ghost::Image srcImgWrap(nullptr);
+  ghost::Image dstImgWrap(nullptr);
+
+  for (auto& command : commands) {
+    std::visit(
+        [&](auto& cmd) {
+          using T = std::decay_t<decltype(cmd)>;
+          if constexpr (std::is_same_v<T, DispatchCmd>) {
+            cmd.function->execute(enc, cmd.launchArgs, cmd.args);
+          } else if constexpr (std::is_same_v<T, DispatchIndirectCmd>) {
+            cmd.function->executeIndirect(enc, cmd.indirectBuffer,
+                                          cmd.indirectOffset, cmd.args);
+          } else if constexpr (std::is_same_v<T, CopyBufferCmd>) {
+            dstWrap.impl() = cmd.dst;
+            srcWrap.impl() =
+                std::const_pointer_cast<implementation::Buffer>(cmd.src);
+            cmd.dst->copy(enc, srcWrap, cmd.srcOffset, cmd.dstOffset,
+                          cmd.bytes);
+          } else if constexpr (std::is_same_v<T, CopyBufferRawCmd>) {
+            cmd.dst->copy(enc, cmd.src, cmd.dstOffset, cmd.bytes);
+          } else if constexpr (std::is_same_v<T, ReadBufferCmd>) {
+            cmd.src->copyTo(enc, cmd.dst, cmd.srcOffset, cmd.bytes);
+          } else if constexpr (std::is_same_v<T, FillBufferCmd>) {
+            cmd.dst->fill(enc, cmd.offset, cmd.size, cmd.value);
+          } else if constexpr (std::is_same_v<T, FillBufferPatternCmd>) {
+            cmd.dst->fill(enc, cmd.offset, cmd.size, cmd.pattern.data(),
+                          cmd.pattern.size());
+          } else if constexpr (std::is_same_v<T, CopyImageCmd>) {
+            dstImgWrap.impl() =
+                std::const_pointer_cast<implementation::Image>(cmd.dst);
+            srcImgWrap.impl() =
+                std::const_pointer_cast<implementation::Image>(cmd.src);
+            cmd.dst->copy(enc, srcImgWrap);
+          } else if constexpr (std::is_same_v<T, CopyImageFromBufferCmd>) {
+            srcWrap.impl() = cmd.src;
+            cmd.dst->copy(enc, srcWrap, cmd.layout);
+          } else if constexpr (std::is_same_v<T, CopyImageFromHostCmd>) {
+            cmd.dst->copy(enc, cmd.src, cmd.layout);
+          } else if constexpr (std::is_same_v<T, CopyImageToBufferCmd>) {
+            dstWrap.impl() = cmd.dst;
+            cmd.src->copyTo(enc, dstWrap, cmd.layout);
+          } else if constexpr (std::is_same_v<T, CopyImageToHostCmd>) {
+            cmd.src->copyTo(enc, cmd.dst, cmd.layout);
+          } else if constexpr (std::is_same_v<T, BarrierCmd>) {
+            D3D12_RESOURCE_BARRIER b = {};
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            b.UAV.pResource = nullptr;
+            commandList->ResourceBarrier(1, &b);
+          } else if constexpr (std::is_same_v<T, WaitEventCmd>) {
+            throw ghost::unsupported_error();
+          } else if constexpr (std::is_same_v<T, RecordEventCmd>) {
+            throw ghost::unsupported_error();
+          }
+        },
+        command);
+  }
+
+  checkHR(commandList->Close());
+  _recording = false;
+
+  auto* streamDx = dynamic_cast<StreamDirectX*>(stream.impl().get());
+  if (!streamDx) throw ghost::unsupported_error();
+
+  // Submit on the stream's queue. The stream owns the queue; we own the
+  // allocator + cb + fence. We need access to the queue — read it via the
+  // friend hook below (we don't expose _commandQueue publicly today; the
+  // Stream's submit/sync routines use it directly, so we mirror that
+  // pattern by submitting through StreamDirectX::executeOnQueue).
+  //
+  // For now, mirror the StreamDirectX::submit() pattern inline: extract the
+  // queue from the Stream and call ExecuteCommandLists directly. This
+  // requires the queue to be accessible — see the StreamDirectX header
+  // refactor below if this is gated by privacy.
+  ID3D12CommandList* cmdLists[] = {commandList.Get()};
+  streamDx->executeOnQueue(cmdLists, 1, _fence.Get(), ++_fenceValue);
+  _submitted = true;
+}
+
+void CommandBufferDirectX::reset() {
+  waitForCompletion();
+  commands.clear();
+  pendingStaging.clear();
+  deferredReads.clear();
+  srvNextSlot = 0;
+  samplerNextSlot = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -426,7 +604,7 @@ void BufferDirectX::copyTo(const ghost::Encoder& s, void* dst,
 
 void BufferDirectX::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                          size_t srcOffset, size_t dstOffset, size_t bytes) {
-  auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
+  auto& stream = directxEncoder(s);
   auto* srcBuf = static_cast<BufferDirectX*>(src.impl().get());
 
   stream.begin();
@@ -445,7 +623,7 @@ void BufferDirectX::copy(const ghost::Encoder& s, const ghost::Buffer& src,
 
 void BufferDirectX::copy(const ghost::Encoder& s, const void* src,
                          size_t dstOffset, size_t bytes) {
-  auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
+  auto& stream = directxEncoder(s);
 
   // Create upload buffer
   auto uploadBuf = stream.dev.createCommittedBuffer(
@@ -474,7 +652,7 @@ void BufferDirectX::copy(const ghost::Encoder& s, const void* src,
 
 void BufferDirectX::copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
                            size_t bytes) const {
-  auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
+  auto& stream = directxEncoder(s);
 
   // Create readback buffer
   auto readbackBuf = stream.dev.createCommittedBuffer(
@@ -576,8 +754,11 @@ MappedBufferDirectX::~MappedBufferDirectX() {
 void* MappedBufferDirectX::map(const ghost::Encoder& s, Access access,
                                bool doSync) {
   if (doSync) {
-    auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
-    stream.sync();
+    // Sync only makes sense on a Stream (drain GPU work). If a
+    // CommandBuffer is passed, the caller must submit and sync that
+    // stream themselves before relying on the mapped pointer.
+    auto* stream = dynamic_cast<implementation::Stream*>(s.impl().get());
+    if (stream) stream->sync();
   }
   return mappedPtr;
 }
@@ -668,7 +849,7 @@ void ImageDirectX::transitionTo(ID3D12GraphicsCommandList* cmdList,
 }
 
 void ImageDirectX::copy(const ghost::Encoder& s, const ghost::Image& src) {
-  auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
+  auto& stream = directxEncoder(s);
   auto* srcImg = static_cast<ImageDirectX*>(src.impl().get());
 
   stream.begin();
@@ -686,7 +867,7 @@ void ImageDirectX::copy(const ghost::Encoder& s, const ghost::Image& src) {
 void ImageDirectX::copy(const ghost::Encoder& s, const ghost::Image& src,
                         const Size3& region, const Origin3& srcOrigin,
                         const Origin3& dstOrigin) {
-  auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
+  auto& stream = directxEncoder(s);
   auto* srcImg = static_cast<ImageDirectX*>(src.impl().get());
 
   stream.begin();
@@ -722,7 +903,7 @@ void ImageDirectX::copy(const ghost::Encoder& s, const ghost::Image& src,
 
 void ImageDirectX::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                         const BufferLayout& layout) {
-  auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
+  auto& stream = directxEncoder(s);
   auto* srcBuf = static_cast<BufferDirectX*>(src.impl().get());
 
   stream.begin();
@@ -761,7 +942,7 @@ void ImageDirectX::copy(const ghost::Encoder& s, const ghost::Buffer& src,
 
 void ImageDirectX::copy(const ghost::Encoder& s, const void* src,
                         const BufferLayout& layout) {
-  auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
+  auto& stream = directxEncoder(s);
 
   size_t rowPitch =
       layout.stride.x > 0 ? layout.stride.x : layout.size.x * descr.pixelSize();
@@ -822,7 +1003,7 @@ void ImageDirectX::copy(const ghost::Encoder& s, const void* src,
 
 void ImageDirectX::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                           const BufferLayout& layout) const {
-  auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
+  auto& stream = directxEncoder(s);
   auto* dstBuf = static_cast<BufferDirectX*>(dst.impl().get());
 
   stream.begin();
@@ -861,7 +1042,7 @@ void ImageDirectX::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
 
 void ImageDirectX::copyTo(const ghost::Encoder& s, void* dst,
                           const BufferLayout& layout) const {
-  auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
+  auto& stream = directxEncoder(s);
 
   size_t rowPitch =
       layout.stride.x > 0 ? layout.stride.x : layout.size.x * descr.pixelSize();
@@ -917,7 +1098,7 @@ void ImageDirectX::copyTo(const ghost::Encoder& s, void* dst,
 void ImageDirectX::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                         const BufferLayout& layout,
                         const Origin3& imageOrigin) {
-  auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
+  auto& stream = directxEncoder(s);
   auto* srcBuf = static_cast<BufferDirectX*>(src.impl().get());
 
   stream.begin();
@@ -957,7 +1138,7 @@ void ImageDirectX::copy(const ghost::Encoder& s, const ghost::Buffer& src,
 void ImageDirectX::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                           const BufferLayout& layout,
                           const Origin3& imageOrigin) const {
-  auto& stream = *static_cast<StreamDirectX*>(s.impl().get());
+  auto& stream = directxEncoder(s);
   auto* dstBuf = static_cast<BufferDirectX*>(dst.impl().get());
 
   stream.begin();
@@ -1132,7 +1313,12 @@ SharedContext DeviceDirectX::shareContext() const {
 }
 
 ghost::Stream DeviceDirectX::createStream(const StreamOptions& options) const {
-  return ghost::Stream(std::make_shared<StreamDirectX>(*this));
+  return ghost::Stream(std::make_shared<StreamDirectX>(*this, options));
+}
+
+std::shared_ptr<CommandBuffer> DeviceDirectX::createCommandBuffer(
+    const CommandBufferOptions& options) const {
+  return std::make_shared<CommandBufferDirectX>(*this, options);
 }
 
 ghost::Buffer DeviceDirectX::allocateBuffer(size_t bytes,

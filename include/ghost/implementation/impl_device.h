@@ -202,6 +202,30 @@ class Buffer;
 struct StreamOptions {
   bool profiling = false;
   bool forceEventChain = false;
+  /// @brief Allow consecutive dispatches to execute concurrently with no
+  /// implicit barrier between them.
+  ///
+  /// Default false: backends emit a per-dispatch barrier (Vulkan
+  /// @c vkCmdPipelineBarrier, DirectX UAV barrier, Metal
+  /// @c MTLDispatchTypeSerial) so consecutive dispatches that depend on
+  /// each other Just Work. Set true when the caller knows successive
+  /// dispatches are independent and wants the perf of skipping the
+  /// implicit sync — equivalent semantics to OpenCL's
+  /// @c CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE.
+  bool concurrent = false;
+};
+
+/// @brief Options for command buffer creation.
+struct CommandBufferOptions {
+  /// @brief Allow consecutive dispatches to execute concurrently with no
+  /// implicit barrier between them.
+  ///
+  /// Default true: the cb's own @c barrier() is the user-facing sync
+  /// primitive, and implicit per-dispatch barriers would undermine it.
+  /// Set false to opt into the same auto-barrier behavior that
+  /// @c StreamOptions defaults to (useful when porting Stream code to a
+  /// cb without retrofitting explicit barrier calls).
+  bool concurrent = true;
 };
 class MappedBuffer;
 class Image;
@@ -485,6 +509,22 @@ class Device {
   virtual SharedContext shareContext() const = 0;
   virtual ghost::Stream createStream(
       const StreamOptions& options = {}) const = 0;
+
+  /// @brief Create a backend-native command buffer.
+  ///
+  /// Backends that wrap a native command-buffer object (Metal
+  /// @c MTLCommandBuffer, Vulkan @c VkCommandBuffer, DirectX
+  /// @c ID3D12GraphicsCommandList) override this to return their native
+  /// implementation, which records ops directly into the native object and
+  /// submits via the stream's queue with a backend-native completion signal
+  /// driving retained-reference release.
+  ///
+  /// The default implementation returns a record-and-replay fallback that
+  /// stores ops as variants and replays them on the target Stream at submit
+  /// time. Used by backends without a native command-buffer concept (CUDA,
+  /// OpenCL, CPU).
+  virtual std::shared_ptr<CommandBuffer> createCommandBuffer(
+      const CommandBufferOptions& options = {}) const;
 
   /// @brief Get the current memory pool size. Default returns the stored pool
   /// size.

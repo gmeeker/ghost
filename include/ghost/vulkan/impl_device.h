@@ -16,6 +16,7 @@
 #define GHOST_VULKAN_IMPL_DEVICE_H
 
 #include <ghost/device.h>
+#include <ghost/implementation/recorded_command_buffer.h>
 #include <ghost/vulkan/ptr.h>
 
 #include <map>
@@ -62,7 +63,15 @@ class EventVulkan : public Event {
   virtual double elapsed(const Event& other) const override;
 };
 
-class StreamVulkan : public Stream {
+/// @brief State and lifecycle shared by every Vulkan encoder (Stream and
+/// CommandBuffer).
+///
+/// BufferVulkan / ImageVulkan / FunctionVulkan downcast a @c ghost::Encoder
+/// to this type to find the @c VkCommandBuffer to record into. Both
+/// @c StreamVulkan and @c CommandBufferVulkan inherit from this mixin in
+/// addition to their @c implementation::Encoder-derived base. Use
+/// @c vulkanEncoder(s) to perform the cross-cast.
+class VulkanEncoder {
  public:
   struct StagingResource {
     vk::ptr<VkBuffer> buffer;
@@ -78,31 +87,105 @@ class StreamVulkan : public Stream {
   };
 
   const DeviceVulkan& dev;
-  // commandBuffer is allocated from _commandPool and freed implicitly when
-  // the pool is destroyed; no separate destroy call needed. Public so
-  // BufferVulkan/ImageVulkan can record copy commands directly.
-  VkCommandBuffer commandBuffer;
+  // commandBuffer is allocated from the encoder's command pool and freed
+  // implicitly when the pool is destroyed. Public so BufferVulkan /
+  // ImageVulkan / FunctionVulkan can record commands directly.
+  VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
   // Public so copyTo paths can attach deferred host reads after staging.
   std::vector<DeferredRead> deferredReads;
+  // When true, @c FunctionVulkan::execute skips its post-dispatch
+  // @c vkCmdPipelineBarrier so consecutive dispatches in this cb may run
+  // concurrently — caller takes responsibility for inter-dispatch hazards.
+  // Set once at construction by StreamVulkan / CommandBufferVulkan.
+  bool concurrent = false;
 
-  StreamVulkan(const DeviceVulkan& dev_);
+  explicit VulkanEncoder(const DeviceVulkan& dev_) : dev(dev_) {}
+
+  virtual ~VulkanEncoder() = default;
+
+  /// @brief Ensure @c commandBuffer is in the recording state. Idempotent.
+  virtual void begin() = 0;
+
+  /// @brief Attach a staging buffer to this encoder so its lifetime extends
+  /// to the encoder's next drain (sync / fence wait).
+  void addStagingResource(vk::ptr<VkBuffer> buf, vk::ptr<VkDeviceMemory> mem) {
+    _pendingStaging.push_back({std::move(buf), std::move(mem)});
+  }
+
+ protected:
+  std::vector<StagingResource> _pendingStaging;
+};
+
+class StreamVulkan : public Stream, public VulkanEncoder {
+ public:
+  StreamVulkan(const DeviceVulkan& dev_, const StreamOptions& options = {});
   ~StreamVulkan();
 
   virtual void sync() override;
   virtual std::shared_ptr<Event> record() override;
   virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
 
-  void begin();
+  void begin() override;
   void submit();
   void cleanupStaging();
-  void addStagingResource(vk::ptr<VkBuffer> buf, vk::ptr<VkDeviceMemory> mem);
+
+  /// @brief Take ownership of an attachment fence representing an
+  /// externally-submitted command buffer's completion.
+  ///
+  /// CommandBufferVulkan calls this after queueing its own work plus a
+  /// trailing empty signal-only submission on the stream's queue. Queue
+  /// FIFO order guarantees the attachment fence fires after the cb's
+  /// work completes, so waiting on every attached fence in @c sync()
+  /// gives the stream correct "drain everything I've been used to
+  /// submit" semantics even though Vulkan binary fences can't be
+  /// signaled twice from a single submission.
+  void attachFence(vk::ptr<VkFence> fence);
 
  private:
   vk::ptr<VkCommandPool> _commandPool;
   vk::ptr<VkFence> _fence;
   bool _recording;
   bool _submitted;
-  std::vector<StagingResource> _pendingStaging;
+  // Pending CommandBuffer-completion fences, owned here and drained on
+  // sync(). See attachFence().
+  std::vector<vk::ptr<VkFence>> _attachedFences;
+};
+
+/// @brief Cross-cast a @c ghost::Encoder to its underlying @c VulkanEncoder.
+///
+/// Throws @c ghost::unsupported_error if the encoder's impl is not a
+/// Vulkan encoder.
+VulkanEncoder& vulkanEncoder(const ghost::Encoder& s);
+
+/// @brief Native Vulkan @c CommandBuffer wrapping its own @c VkCommandBuffer,
+/// @c VkCommandPool and @c VkFence.
+///
+/// Inherits the variant-recording machinery from @ref RecordedCommandBuffer
+/// (dispatch / copy / fill / barrier records accumulate into @c commands)
+/// and the encoder interface from @ref VulkanEncoder (its @c commandBuffer
+/// is the recording target). On @c submit() the variants are replayed
+/// directly into the owned @c VkCommandBuffer, then submitted via
+/// @c vkQueueSubmit on the target Stream's queue with this CommandBuffer's
+/// fence. Resources captured by the variants stay live until @c reset()
+/// (which waits on the fence first) or destruction.
+class CommandBufferVulkan : public RecordedCommandBuffer, public VulkanEncoder {
+ public:
+  CommandBufferVulkan(const DeviceVulkan& dev_,
+                      const CommandBufferOptions& options = {});
+  ~CommandBufferVulkan();
+
+  void begin() override;
+  void submit(const ghost::Stream& stream) override;
+  void reset() override;
+
+ private:
+  vk::ptr<VkCommandPool> _commandPool;
+  vk::ptr<VkFence> _fence;
+  bool _recording = false;
+  bool _submitted = false;
+
+  /// @brief Wait on @c _fence if a submission is in flight. Idempotent.
+  void waitForCompletion();
 };
 
 class BufferVulkan : public Buffer {
@@ -256,6 +339,9 @@ class DeviceVulkan : public Device {
 
   virtual ghost::Stream createStream(
       const StreamOptions& options = {}) const override;
+
+  virtual std::shared_ptr<CommandBuffer> createCommandBuffer(
+      const CommandBufferOptions& options = {}) const override;
 
   virtual ghost::Buffer allocateBuffer(
       size_t bytes, const BufferOptions& opts = {}) const override;

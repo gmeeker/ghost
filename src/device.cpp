@@ -111,6 +111,14 @@ ghost::Image Device::wrapImage(const SharedImage&) const {
   throw ghost::unsupported_error();
 }
 
+std::shared_ptr<CommandBuffer> Device::createCommandBuffer(
+    const CommandBufferOptions&) const {
+  // Fallback ignores options — it doesn't have a backend-native encoder to
+  // configure. Concurrency semantics for the fallback follow the target
+  // Stream at replay time.
+  return CommandBuffer::createDefault();
+}
+
 void Image::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                  const BufferLayout& layout, const Origin3& imageOrigin) {
   throw ghost::unsupported_error();
