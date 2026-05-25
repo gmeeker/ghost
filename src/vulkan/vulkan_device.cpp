@@ -1949,9 +1949,20 @@ Attribute DeviceVulkan::getAttribute(DeviceAttributeId what) const {
       return Attribute((int32_t)properties.limits.maxImageDimension3D,
                        (int32_t)properties.limits.maxImageDimension3D,
                        (int32_t)properties.limits.maxImageDimension3D);
-    case kDeviceMaxImageAlignment:
-      return Attribute(
-          (int32_t)properties.limits.optimalBufferCopyRowPitchAlignment);
+    case kDeviceMaxImageAlignment: {
+      // Conservative row alignment in bytes across every pixel format
+      // Ghost supports. optimalBufferCopyRowPitchAlignment is a perf
+      // hint and can be 1 (no preference) on drivers like NVIDIA;
+      // minTexelBufferOffsetAlignment is the hard floor for texel
+      // buffer views. The format floor is the largest texel block we
+      // expose (RGBA Float32 = 16 bytes), since buffer→image copies
+      // require the row pitch to be a multiple of the texel size.
+      uint64_t opt = properties.limits.optimalBufferCopyRowPitchAlignment;
+      uint64_t minTexel = properties.limits.minTexelBufferOffsetAlignment;
+      const uint64_t kRgba32Bytes = 16;
+      uint64_t result = std::max({opt, minTexel, kRgba32Bytes});
+      return Attribute((int32_t)result);
+    }
     case kDeviceSupportsImageIntegerFiltering:
       return Attribute(true);
     case kDeviceSupportsImageFloatFiltering:
