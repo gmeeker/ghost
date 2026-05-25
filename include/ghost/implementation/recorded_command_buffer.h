@@ -17,6 +17,7 @@
 
 #include <ghost/command_buffer.h>
 
+#include <functional>
 #include <variant>
 #include <vector>
 
@@ -52,7 +53,9 @@ struct CopyBufferCmd {
 
 struct CopyBufferRawCmd {
   std::shared_ptr<implementation::Buffer> dst;
-  const void* src;
+  // Host bytes are captured by value at record time. The original host source
+  // pointer is not retained — see Buffer::copy(Encoder, void*, ...) contract.
+  std::vector<uint8_t> src;
   size_t dstOffset;
   size_t bytes;
 };
@@ -91,7 +94,9 @@ struct CopyImageFromBufferCmd {
 
 struct CopyImageFromHostCmd {
   std::shared_ptr<implementation::Image> dst;
-  const void* src;
+  // Host bytes are captured by value at record time. The original host source
+  // pointer is not retained — see Image::copy(Encoder, void*, ...) contract.
+  std::vector<uint8_t> src;
   BufferLayout layout;
 };
 
@@ -162,7 +167,12 @@ class RecordedCommandBuffer : public CommandBuffer {
 
   void copyBufferRaw(std::shared_ptr<implementation::Buffer> dst,
                      const void* src, size_t dstOffset, size_t bytes) override {
-    commands.push_back(CopyBufferRawCmd{dst, src, dstOffset, bytes});
+    // Capture by value: the user's source pointer may be a stack local that
+    // dies before submit().
+    std::vector<uint8_t> owned(static_cast<const uint8_t*>(src),
+                               static_cast<const uint8_t*>(src) + bytes);
+    commands.push_back(
+        CopyBufferRawCmd{dst, std::move(owned), dstOffset, bytes});
   }
 
   void readBuffer(std::shared_ptr<const implementation::Buffer> src, void* dst,
@@ -196,7 +206,15 @@ class RecordedCommandBuffer : public CommandBuffer {
 
   void copyImageFromHost(std::shared_ptr<implementation::Image> dst,
                          const void* src, const BufferLayout& layout) override {
-    commands.push_back(CopyImageFromHostCmd{dst, src, layout});
+    // Capture by value (same reason as copyBufferRaw). Size is derived from
+    // the destination's pixel layout, mirroring what the immediate path reads.
+    size_t pixelSize = dst->description().pixelSize();
+    size_t rowStride = layout.rowBytes(pixelSize);
+    size_t sliceStride = layout.sliceBytes(rowStride);
+    size_t bytes = sliceStride * layout.size.z;
+    std::vector<uint8_t> owned(static_cast<const uint8_t*>(src),
+                               static_cast<const uint8_t*>(src) + bytes);
+    commands.push_back(CopyImageFromHostCmd{dst, std::move(owned), layout});
   }
 
   void copyImageToBuffer(std::shared_ptr<const implementation::Image> src,
@@ -221,9 +239,31 @@ class RecordedCommandBuffer : public CommandBuffer {
 
   void submit(const ghost::Stream& stream) override;
 
-  void reset() override { commands.clear(); }
+  void reset() override {
+    commands.clear();
+    pendingCompletionHandlers.clear();
+  }
+
+  void onCompletion(std::function<void()> handler) override {
+    pendingCompletionHandlers.push_back(std::move(handler));
+  }
 
  protected:
+  /// @brief Handlers registered via onCompletion() that have not yet been
+  /// associated with a submission. Moved into @c inFlightCompletionHandlers
+  /// at submit() time so subsequent onCompletion() calls accumulate into a
+  /// fresh list for the next submit (matches the documented semantics:
+  /// handlers fire for the submit they were registered against).
+  std::vector<std::function<void()>> pendingCompletionHandlers;
+
+  /// @brief Handlers attached to the most recent submission, fired by the
+  /// backend's completion observation point (Metal: native completion
+  /// block; Vulkan/DirectX: @c waitForCompletion; fallback: end of submit
+  /// after a sync). Backends that have a native async path consume this
+  /// list inside their submit() override and clear it; this base storage is
+  /// here for backends that drain on a host-side wait.
+  std::vector<std::function<void()>> inFlightCompletionHandlers;
+
   /// @brief Replay the recorded @c commands sequence onto @p enc.
   ///
   /// Default behavior: each command invokes the corresponding native

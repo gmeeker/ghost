@@ -18,6 +18,7 @@
 #include <ghost/device.h>
 #include <ghost/function.h>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -96,6 +97,11 @@ class CommandBuffer : public Encoder {
   virtual std::shared_ptr<Event> addRecordEvent(
       const ghost::Stream& stream) = 0;
 
+  /// @brief Register a host-side callback to run after this cb's recorded
+  /// work has completed on the GPU. See @ref ghost::CommandBuffer::onCompletion
+  /// for full semantics.
+  virtual void onCompletion(std::function<void()> handler) = 0;
+
   static std::shared_ptr<CommandBuffer> createDefault();
 };
 
@@ -164,6 +170,26 @@ class CommandBuffer : public Encoder {
 
   /// @brief Clear all recorded commands for reuse.
   void reset();
+
+  /// @brief Register a callback to run after this cb's work has completed.
+  ///
+  /// The handler is invoked once, after the GPU has finished executing the
+  /// recorded commands from the most recent (or next) @ref submit. Handlers
+  /// registered before @c submit() fire for that submit's completion;
+  /// handlers registered after @c submit() but before @c reset() / next
+  /// @c submit() fire for that same in-flight submit. Multiple handlers run
+  /// in registration order.
+  ///
+  /// The handler may run on a backend-internal thread (e.g. Metal's
+  /// completion queue, CUDA's host-fn worker). Do not call back into Ghost
+  /// from inside the handler other than thread-safe operations on unrelated
+  /// objects; in particular, do not call @c reset() / @c submit() on this
+  /// cb from the handler.
+  ///
+  /// Typical use: returning host buffers to a pool, signalling a future,
+  /// kicking the next CPU stage in a pipeline without blocking on
+  /// @c stream.sync().
+  void onCompletion(std::function<void()> handler);
 };
 
 }  // namespace ghost

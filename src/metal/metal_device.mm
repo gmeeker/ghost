@@ -908,6 +908,17 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
   ghost::Image srcImgWrap(nullptr);
   ghost::Image dstImgWrap(nullptr);
 
+  // Deferred D2H finalizers. Built during ReadBufferCmd replay; consumed in
+  // the cb completion handler so memcpys land before stream.sync() returns.
+  struct ReadFinalizer {
+    objc::ptr<id<MTLBuffer>> staging; // non-null for Private path
+    std::shared_ptr<const implementation::Buffer> srcAlive; // for non-Private
+    size_t srcOff;
+    void *dst;
+    size_t bytes;
+  };
+  auto readFinalizers = std::make_shared<std::vector<ReadFinalizer>>();
+
   for (auto &command : commands) {
     std::visit(
         [&](auto &cmd) {
@@ -924,9 +935,39 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
             cmd.dst->copy(enc, srcWrap, cmd.srcOffset, cmd.dstOffset,
                           cmd.bytes);
           } else if constexpr (std::is_same_v<T, CopyBufferRawCmd>) {
-            cmd.dst->copy(enc, cmd.src, cmd.dstOffset, cmd.bytes);
+            cmd.dst->copy(enc, cmd.src.data(), cmd.dstOffset, cmd.bytes);
           } else if constexpr (std::is_same_v<T, ReadBufferCmd>) {
-            cmd.src->copyTo(enc, cmd.dst, cmd.srcOffset, cmd.bytes);
+            // BufferMetal::copyTo's stream-only path can't run on a cb
+            // encoder (it would do a synchronous sync()). Encode the blit
+            // here and queue a finalizer that memcpys to the user's host
+            // dst inside the cb completion handler.
+            auto *srcImpl =
+                static_cast<const implementation::BufferMetal *>(cmd.src.get());
+            size_t effOff = srcImpl->baseOffset() + cmd.srcOffset;
+            MTLStorageMode mode = srcImpl->mem.get().storageMode;
+            ReadFinalizer fin;
+            fin.dst = cmd.dst;
+            fin.bytes = cmd.bytes;
+            if (mode == MTLStorageModePrivate) {
+              fin.staging = [srcImpl->mem.get().device
+                  newBufferWithLength:cmd.bytes
+                              options:MTLResourceStorageModeShared];
+              fin.srcOff = 0;
+              id<MTLBlitCommandEncoder> blit = getBlitEncoder();
+              [blit copyFromBuffer:srcImpl->mem.get()
+                       sourceOffset:effOff
+                           toBuffer:fin.staging.get()
+                  destinationOffset:0
+                               size:cmd.bytes];
+            } else {
+              if (mode == MTLStorageModeManaged) {
+                id<MTLBlitCommandEncoder> blit = getBlitEncoder();
+                [blit synchronizeResource:srcImpl->mem.get()];
+              }
+              fin.srcAlive = cmd.src;
+              fin.srcOff = effOff;
+            }
+            readFinalizers->push_back(std::move(fin));
           } else if constexpr (std::is_same_v<T, FillBufferCmd>) {
             cmd.dst->fill(enc, cmd.offset, cmd.size, cmd.value);
           } else if constexpr (std::is_same_v<T, FillBufferPatternCmd>) {
@@ -942,7 +983,7 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
             srcWrap.impl() = cmd.src;
             cmd.dst->copy(enc, srcWrap, cmd.layout);
           } else if constexpr (std::is_same_v<T, CopyImageFromHostCmd>) {
-            cmd.dst->copy(enc, cmd.src, cmd.layout);
+            cmd.dst->copy(enc, cmd.src.data(), cmd.layout);
           } else if constexpr (std::is_same_v<T, CopyImageToBufferCmd>) {
             dstWrap.impl() = cmd.dst;
             cmd.src->copyTo(enc, dstWrap, cmd.layout);
@@ -968,6 +1009,34 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
   streamMetal->syncCounter++;
   [commandBuffer.get() encodeSignalEvent:streamMetal->syncEvent.get()
                                    value:streamMetal->syncCounter];
+
+  // Attach a single completion handler that runs D2H finalizers first (so
+  // host dst pointers are filled before user callbacks observe them) and
+  // then any user-registered onCompletion handlers. Move both into the
+  // block so the handler is self-sufficient even if *this is destroyed
+  // before completion fires.
+  if (!readFinalizers->empty() || !pendingCompletionHandlers.empty()) {
+    auto userHandlers = std::make_shared<std::vector<std::function<void()>>>();
+    *userHandlers = std::move(pendingCompletionHandlers);
+    pendingCompletionHandlers.clear();
+    [commandBuffer.get() addCompletedHandler:^(id<MTLCommandBuffer>) {
+      for (auto &f : *readFinalizers) {
+        const void *src;
+        if (f.staging.get()) {
+          src = [f.staging.get() contents];
+        } else {
+          auto *bm = static_cast<const implementation::BufferMetal *>(
+              f.srcAlive.get());
+          src =
+              static_cast<const uint8_t *>([bm->mem.get() contents]) + f.srcOff;
+        }
+        memcpy(f.dst, src, f.bytes);
+      }
+      for (auto &h : *userHandlers)
+        h();
+    }];
+  }
+
   [commandBuffer.get() commit];
   _submittedCB = commandBuffer;
   // Register with the stream so stream.sync() waits for our cb. Queue
@@ -981,6 +1050,16 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
 void CommandBufferMetal::reset() {
   waitForCompletion();
   commands.clear();
+  // Drop any handlers that were registered but not yet submitted. Handlers
+  // attached to a prior submit() are already owned by the cb's completion
+  // block and fire independently of the next recording.
+  pendingCompletionHandlers.clear();
+}
+
+void CommandBufferMetal::onCompletion(std::function<void()> handler) {
+  // Use the RecordedCommandBuffer field so submit() can hand it off uniformly
+  // with the rest of the variant-replay machinery.
+  pendingCompletionHandlers.push_back(std::move(handler));
 }
 
 // ---------------------------------------------------------------------------

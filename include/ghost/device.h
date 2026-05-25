@@ -101,12 +101,17 @@ class Buffer {
 
   /// @brief Copy data from host memory into this buffer.
   /// @param s The stream to enqueue the copy on.
-  /// @param src Pointer to host source data.
+  /// @param src Pointer to host source data. Bytes are read at call time; the
+  /// pointer is not retained. (On a @c CommandBuffer encoder the bytes are
+  /// captured by value into the record, so stack-local sources are safe.)
   /// @param bytes Number of bytes to copy.
   void copy(const Encoder& s, const void* src, size_t bytes);
 
   /// @brief Copy data from this buffer to host memory.
-  /// @param s The stream to enqueue the copy on.
+  /// @param s The stream to enqueue the copy on. When @p s is a
+  /// @c CommandBuffer, the copy is deferred until @c cb.submit() and the
+  /// host @p dst pointer must remain valid until @c stream.sync() returns.
+  /// When @p s is a @c Stream, the call is synchronous.
   /// @param[out] dst Pointer to host destination buffer.
   /// @param bytes Number of bytes to copy.
   void copyTo(const Encoder& s, void* dst, size_t bytes) const;

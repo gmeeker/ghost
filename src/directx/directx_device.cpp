@@ -414,6 +414,11 @@ void CommandBufferDirectX::waitForCompletion() {
       WaitForSingleObject(_fenceEvent, INFINITE);
     }
     _submitted = false;
+    if (!inFlightCompletionHandlers.empty()) {
+      auto handlers = std::move(inFlightCompletionHandlers);
+      inFlightCompletionHandlers.clear();
+      for (auto& h : handlers) h();
+    }
   }
 }
 
@@ -462,7 +467,7 @@ void CommandBufferDirectX::submit(const ghost::Stream& stream) {
             cmd.dst->copy(enc, srcWrap, cmd.srcOffset, cmd.dstOffset,
                           cmd.bytes);
           } else if constexpr (std::is_same_v<T, CopyBufferRawCmd>) {
-            cmd.dst->copy(enc, cmd.src, cmd.dstOffset, cmd.bytes);
+            cmd.dst->copy(enc, cmd.src.data(), cmd.dstOffset, cmd.bytes);
           } else if constexpr (std::is_same_v<T, ReadBufferCmd>) {
             cmd.src->copyTo(enc, cmd.dst, cmd.srcOffset, cmd.bytes);
           } else if constexpr (std::is_same_v<T, FillBufferCmd>) {
@@ -480,7 +485,7 @@ void CommandBufferDirectX::submit(const ghost::Stream& stream) {
             srcWrap.impl() = cmd.src;
             cmd.dst->copy(enc, srcWrap, cmd.layout);
           } else if constexpr (std::is_same_v<T, CopyImageFromHostCmd>) {
-            cmd.dst->copy(enc, cmd.src, cmd.layout);
+            cmd.dst->copy(enc, cmd.src.data(), cmd.layout);
           } else if constexpr (std::is_same_v<T, CopyImageToBufferCmd>) {
             dstWrap.impl() = cmd.dst;
             cmd.src->copyTo(enc, dstWrap, cmd.layout);
@@ -519,11 +524,17 @@ void CommandBufferDirectX::submit(const ghost::Stream& stream) {
   ID3D12CommandList* cmdLists[] = {commandList.Get()};
   streamDx->executeOnQueue(cmdLists, 1, _fence.Get(), ++_fenceValue);
   _submitted = true;
+  inFlightCompletionHandlers.insert(
+      inFlightCompletionHandlers.end(),
+      std::make_move_iterator(pendingCompletionHandlers.begin()),
+      std::make_move_iterator(pendingCompletionHandlers.end()));
+  pendingCompletionHandlers.clear();
 }
 
 void CommandBufferDirectX::reset() {
   waitForCompletion();
   commands.clear();
+  pendingCompletionHandlers.clear();
   pendingStaging.clear();
   deferredReads.clear();
   srvNextSlot = 0;

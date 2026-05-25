@@ -1241,6 +1241,13 @@ void CommandBufferVulkan::waitForCompletion() {
     VkFence f = _fence;
     vkWaitForFences(dev.device, 1, &f, VK_TRUE, UINT64_MAX);
     _submitted = false;
+    // Cb is now known to be complete on the GPU. Fire user handlers and
+    // clear so reset()/dtor's repeat wait doesn't re-invoke them.
+    if (!inFlightCompletionHandlers.empty()) {
+      auto handlers = std::move(inFlightCompletionHandlers);
+      inFlightCompletionHandlers.clear();
+      for (auto& h : handlers) h();
+    }
   }
 }
 
@@ -1292,7 +1299,7 @@ void CommandBufferVulkan::submit(const ghost::Stream& stream) {
             cmd.dst->copy(enc, srcWrap, cmd.srcOffset, cmd.dstOffset,
                           cmd.bytes);
           } else if constexpr (std::is_same_v<T, CopyBufferRawCmd>) {
-            cmd.dst->copy(enc, cmd.src, cmd.dstOffset, cmd.bytes);
+            cmd.dst->copy(enc, cmd.src.data(), cmd.dstOffset, cmd.bytes);
           } else if constexpr (std::is_same_v<T, ReadBufferCmd>) {
             cmd.src->copyTo(enc, cmd.dst, cmd.srcOffset, cmd.bytes);
           } else if constexpr (std::is_same_v<T, FillBufferCmd>) {
@@ -1310,7 +1317,7 @@ void CommandBufferVulkan::submit(const ghost::Stream& stream) {
             srcWrap.impl() = cmd.src;
             cmd.dst->copy(enc, srcWrap, cmd.layout);
           } else if constexpr (std::is_same_v<T, CopyImageFromHostCmd>) {
-            cmd.dst->copy(enc, cmd.src, cmd.layout);
+            cmd.dst->copy(enc, cmd.src.data(), cmd.layout);
           } else if constexpr (std::is_same_v<T, CopyImageToBufferCmd>) {
             dstWrap.impl() = cmd.dst;
             cmd.src->copyTo(enc, dstWrap, cmd.layout);
@@ -1349,6 +1356,13 @@ void CommandBufferVulkan::submit(const ghost::Stream& stream) {
   submitInfo.pCommandBuffers = &commandBuffer;
   checkError(vkQueueSubmit(streamVk->dev.computeQueue, 1, &submitInfo, _fence));
   _submitted = true;
+  // Hand off pending handlers; they fire when waitForCompletion observes
+  // the fence signaled.
+  inFlightCompletionHandlers.insert(
+      inFlightCompletionHandlers.end(),
+      std::make_move_iterator(pendingCompletionHandlers.begin()),
+      std::make_move_iterator(pendingCompletionHandlers.end()));
+  pendingCompletionHandlers.clear();
 
   // Vulkan binary fences can only be signaled by one submission at a
   // time, so we cannot signal both our own _fence (for reset() to wait
@@ -1371,6 +1385,7 @@ void CommandBufferVulkan::submit(const ghost::Stream& stream) {
 void CommandBufferVulkan::reset() {
   waitForCompletion();
   commands.clear();
+  pendingCompletionHandlers.clear();
   _pendingStaging.clear();
   deferredReads.clear();
 }

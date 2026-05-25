@@ -20,6 +20,9 @@
 #include <ghost/implementation/recorded_command_buffer.h>
 #include <ghost/objc/ptr.h>
 
+#include <functional>
+#include <vector>
+
 namespace ghost {
 namespace implementation {
 class DeviceMetal;
@@ -151,6 +154,7 @@ class CommandBufferMetal : public RecordedCommandBuffer, public MetalEncoder {
   void begin() override;
   void submit(const ghost::Stream& stream) override;
   void reset() override;
+  void onCompletion(std::function<void()> handler) override;
 
  private:
   const DeviceMetal& _dev;

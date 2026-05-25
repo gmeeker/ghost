@@ -1,3 +1,6 @@
+#include <atomic>
+#include <memory>
+
 #include "ghost_test.h"
 
 using namespace ghost;
@@ -629,6 +632,101 @@ TEST_P(CommandBufferTest, DropCommandBufferBeforeStreamSync) {
 
   for (size_t i = 0; i < N; i++) {
     EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 3.0f) << "index " << i;
+  }
+}
+
+// FR #20 regression: cb-recorded host->buffer copy must capture the source
+// bytes at record time, not the pointer. A stack-local source whose frame is
+// gone by submit() must still produce the correct dst contents.
+TEST_P(CommandBufferTest, CopyHostStackLocalThroughCommandBuffer) {
+  const size_t N = 16;
+  auto buf = device().allocateBuffer(N * sizeof(uint32_t));
+
+  CommandBuffer cb(device());
+
+  // Record from a stack frame that immediately returns. Without the fix the
+  // dst will see whatever happens to occupy that stack address at submit().
+  auto recordFromTransientFrame = [&]() {
+    uint32_t tmp[N];
+    for (size_t i = 0; i < N; i++)
+      tmp[i] = 0xC0FFEE00u + static_cast<uint32_t>(i);
+    buf.copy(cb, tmp, N * sizeof(uint32_t));
+  };
+  recordFromTransientFrame();
+
+  // Stomp the prior stack frame so any pointer-capture bug surfaces.
+  {
+    volatile uint32_t scratch[N];
+    for (size_t i = 0; i < N; i++) scratch[i] = 0xDEADBEEFu;
+    (void)scratch;
+  }
+
+  cb.submit(stream());
+  stream().sync();
+
+  std::vector<uint32_t> output(N, 0u);
+  buf.copyTo(stream(), output.data(), N * sizeof(uint32_t));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_EQ(output[i], 0xC0FFEE00u + static_cast<uint32_t>(i))
+        << "index " << i;
+  }
+}
+
+// FR #19: D2H readback recorded on a CommandBuffer used to throw on Metal
+// for Private storage. The cb path now defers the host memcpy via a
+// completion handler so stream.sync() drains the readback into dst.
+TEST_P(CommandBufferTest, ReadbackThroughCommandBuffer) {
+  const size_t N = 16;
+  std::vector<float> input(N);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i) * 0.5f;
+
+  auto buf = device().allocateBuffer(N * sizeof(float));
+  buf.copy(stream(), input.data(), N * sizeof(float));
+  stream().sync();
+
+  std::vector<float> output(N, -1.0f);
+  CommandBuffer cb(device());
+  buf.copyTo(cb, output.data(), N * sizeof(float));
+  cb.submit(stream());
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], input[i]) << "index " << i;
+  }
+}
+
+// onCompletion: handler registered before submit fires after the cb's
+// recorded work has completed on the GPU. stream.sync() must observe the
+// handler having run.
+TEST_P(CommandBufferTest, OnCompletionFiresAfterSubmit) {
+  const size_t N = 16;
+  std::vector<float> input(N), output(N, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto src = device().allocateBuffer(N * sizeof(float));
+  auto dst = device().allocateBuffer(N * sizeof(float));
+  src.copy(stream(), input.data(), N * sizeof(float));
+  stream().sync();
+
+  // Wrap the flag so the handler's stack-local captures stay safe through
+  // the async completion (Metal/Vulkan/DirectX can fire on a worker thread).
+  auto fired = std::make_shared<std::atomic<int>>(0);
+
+  CommandBuffer cb(device());
+  dst.copy(cb, src, N * sizeof(float));
+  cb.onCompletion([fired]() { fired->fetch_add(1); });
+  cb.onCompletion([fired]() { fired->fetch_add(10); });
+  cb.submit(stream());
+  stream().sync();
+
+  EXPECT_EQ(fired->load(), 11) << "both handlers must have run";
+
+  dst.copyTo(stream(), output.data(), N * sizeof(float));
+  stream().sync();
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], input[i]) << "index " << i;
   }
 }
 

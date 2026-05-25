@@ -28,6 +28,16 @@ std::shared_ptr<implementation::Event> RecordedCommandBuffer::addRecordEvent(
 
 void RecordedCommandBuffer::submit(const ghost::Stream& stream) {
   replayInto(stream, stream);
+  // The replay enqueues onto the stream but doesn't wait. Since the fallback
+  // has no native cb-completion hook, drain the stream and invoke handlers
+  // inline. Backends with native cbs override submit() and route handlers
+  // through their native completion callback instead.
+  if (!pendingCompletionHandlers.empty()) {
+    static_cast<implementation::Stream*>(stream.impl().get())->sync();
+    auto handlers = std::move(pendingCompletionHandlers);
+    pendingCompletionHandlers.clear();
+    for (auto& h : handlers) h();
+  }
 }
 
 void RecordedCommandBuffer::replayInto(const ghost::Encoder& enc,
@@ -54,7 +64,7 @@ void RecordedCommandBuffer::replayInto(const ghost::Encoder& enc,
             cmd.dst->copy(enc, srcWrap, cmd.srcOffset, cmd.dstOffset,
                           cmd.bytes);
           } else if constexpr (std::is_same_v<T, CopyBufferRawCmd>) {
-            cmd.dst->copy(enc, cmd.src, cmd.dstOffset, cmd.bytes);
+            cmd.dst->copy(enc, cmd.src.data(), cmd.dstOffset, cmd.bytes);
           } else if constexpr (std::is_same_v<T, ReadBufferCmd>) {
             cmd.src->copyTo(enc, cmd.dst, cmd.srcOffset, cmd.bytes);
           } else if constexpr (std::is_same_v<T, FillBufferCmd>) {
@@ -72,7 +82,7 @@ void RecordedCommandBuffer::replayInto(const ghost::Encoder& enc,
             srcWrap.impl() = cmd.src;
             cmd.dst->copy(enc, srcWrap, cmd.layout);
           } else if constexpr (std::is_same_v<T, CopyImageFromHostCmd>) {
-            cmd.dst->copy(enc, cmd.src, cmd.layout);
+            cmd.dst->copy(enc, cmd.src.data(), cmd.layout);
           } else if constexpr (std::is_same_v<T, CopyImageToBufferCmd>) {
             dstWrap.impl() = cmd.dst;
             cmd.src->copyTo(enc, dstWrap, cmd.layout);
@@ -127,6 +137,11 @@ void CommandBuffer::submit(const Stream& stream) {
 
 void CommandBuffer::reset() {
   static_cast<implementation::CommandBuffer*>(_impl.get())->reset();
+}
+
+void CommandBuffer::onCompletion(std::function<void()> handler) {
+  static_cast<implementation::CommandBuffer*>(_impl.get())
+      ->onCompletion(std::move(handler));
 }
 
 }  // namespace ghost

@@ -19,6 +19,31 @@
   variant-recording fallback for the Metal backend.
 - `StreamMetal` now batches operations into a transient `MTLCommandBuffer`
   between sync points instead of one cb per op.
+- `CommandBuffer::onCompletion(std::function<void()>)` — register a
+  host-side callback that runs after the cb's recorded work has completed
+  on the GPU. Fires after the most recent (or next) `submit`; handlers
+  run in registration order. Backed by `MTLCommandBuffer
+  addCompletedHandler:` on Metal, fence-observation in
+  `waitForCompletion` on Vulkan/DirectX, and `stream.sync()` drain in the
+  fallback. Typical uses: returning host buffers to a pool, signalling a
+  future, kicking the next CPU stage without blocking on `stream.sync`.
+- `Buffer::copyTo(const CommandBuffer&, void* dst, ...)` now works for
+  Metal Private and Managed storage (previously threw `unsupported_error`
+  during `submit`). The host memcpy is deferred to the cb's completion
+  handler, so `stream.sync()` after `cb.submit(stream)` observes the
+  bytes in `dst`. The host `dst` pointer must remain valid until that
+  `stream.sync()` returns. Enables batching N device-to-host readbacks
+  into a single `MTLCommandBuffer` + blit encoder + commit + wait.
+
+### Changed
+
+- `Buffer::copy(const CommandBuffer&, const void* src, ...)` and
+  `Image::copy(const CommandBuffer&, const void* src, const BufferLayout&)`
+  now capture the source bytes by value at call time instead of
+  retaining the host pointer until `submit`. Stack-local sources are
+  safe; the previous behavior silently corrupted dst when the caller's
+  frame was gone by `submit`. Stream-encoded copies are unchanged
+  (immediate, no extra allocation).
 
 ### Changed (breaking)
 
