@@ -67,6 +67,13 @@ class MetalEncoder {
   // the end of each encoder and wait on it at the start of the next.
   // Recreated lazily after each commit (a fence is bound to a cb).
   objc::ptr<id<MTLFence>> fence;
+  // Set when an encoder is explicitly ended via @c endEncoding() (i.e. by
+  // a user-issued @c cb.barrier() or by submit's final flush) AND the
+  // closed encoder had updated the fence. The next encoder created in
+  // this cb must @c waitForFence to honor the barrier. Without this,
+  // consecutive same-type encoders separated by a barrier race because
+  // resources are hazard-untracked.
+  bool pendingFenceWait = false;
   // When true, @c getComputeEncoder uses @c MTLDispatchTypeConcurrent so
   // consecutive dispatches in the same encoder may run concurrently —
   // caller takes responsibility for inter-dispatch hazards. When false

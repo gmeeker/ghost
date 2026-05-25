@@ -199,7 +199,7 @@ id<MTLBlitCommandEncoder> MetalEncoder::getBlitEncoder() {
   begin();
   if (blitEncoder.get())
     return blitEncoder.get();
-  bool hadPriorEncoder = false;
+  bool hadPriorEncoder = pendingFenceWait;
   if (computeEncoder.get()) {
     [computeEncoder.get() updateFence:fence.get()];
     [computeEncoder.get() endEncoding];
@@ -209,6 +209,7 @@ id<MTLBlitCommandEncoder> MetalEncoder::getBlitEncoder() {
   blitEncoder = [commandBuffer.get() blitCommandEncoder];
   if (hadPriorEncoder)
     [blitEncoder.get() waitForFence:fence.get()];
+  pendingFenceWait = false;
   return blitEncoder.get();
 }
 
@@ -216,7 +217,7 @@ id<MTLComputeCommandEncoder> MetalEncoder::getComputeEncoder() {
   begin();
   if (computeEncoder.get())
     return computeEncoder.get();
-  bool hadPriorEncoder = false;
+  bool hadPriorEncoder = pendingFenceWait;
   if (blitEncoder.get()) {
     [blitEncoder.get() updateFence:fence.get()];
     [blitEncoder.get() endEncoding];
@@ -234,17 +235,27 @@ id<MTLComputeCommandEncoder> MetalEncoder::getComputeEncoder() {
   }
   if (hadPriorEncoder)
     [computeEncoder.get() waitForFence:fence.get()];
+  pendingFenceWait = false;
   return computeEncoder.get();
 }
 
 void MetalEncoder::endEncoding() {
+  // Resources are MTLHazardTrackingModeUntracked, so updating the fence on
+  // the encoder being closed is the only way to make a subsequent encoder
+  // wait on its writes. Without this, BarrierCmd between two same-type
+  // (e.g. compute -> compute) encoders would race: the second encoder
+  // creates fresh without observing the first's fence signal.
   if (blitEncoder.get()) {
+    [blitEncoder.get() updateFence:fence.get()];
     [blitEncoder.get() endEncoding];
     blitEncoder = objc::ptr<id<MTLBlitCommandEncoder>>();
+    pendingFenceWait = true;
   }
   if (computeEncoder.get()) {
+    [computeEncoder.get() updateFence:fence.get()];
     [computeEncoder.get() endEncoding];
     computeEncoder = objc::ptr<id<MTLComputeCommandEncoder>>();
+    pendingFenceWait = true;
   }
 }
 
