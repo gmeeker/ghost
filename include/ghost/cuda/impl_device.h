@@ -18,6 +18,8 @@
 #include <ghost/cuda/cu_ptr.h>
 #include <ghost/device.h>
 
+#include <vector>
+
 namespace ghost {
 namespace implementation {
 class DeviceCUDA;
@@ -55,6 +57,12 @@ class BufferCUDA : public Buffer {
              const BufferOptions& opts = {});
   ~BufferCUDA();
 
+  /// @brief Record that this buffer has been used on a stream. The destructor
+  /// will defer @c cuMemFree until pending work on each recorded stream has
+  /// completed, so callers may drop the wrapper immediately after a
+  /// fire-and-forget dispatch without synchronizing first.
+  virtual void markUsed(CUstream s);
+
   virtual size_t size() const override;
 
   virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
@@ -78,6 +86,10 @@ class BufferCUDA : public Buffer {
 
   virtual std::shared_ptr<Buffer> createSubBuffer(
       const std::shared_ptr<Buffer>& self, size_t offset, size_t size) override;
+
+ protected:
+  // Streams that have enqueued work referencing this buffer's memory.
+  std::vector<CUstream> _useStreams;
 };
 
 class SubBufferCUDA : public BufferCUDA {
@@ -86,6 +98,8 @@ class SubBufferCUDA : public BufferCUDA {
 
   SubBufferCUDA(std::shared_ptr<Buffer> parent, cu::ptr<CUdeviceptr> mem_,
                 size_t bytes);
+
+  void markUsed(CUstream s) override;
 };
 
 class MappedBufferCUDA : public BufferCUDA {
@@ -115,6 +129,10 @@ class ImageCUDA : public Image {
             ImageCUDA& image);
   ~ImageCUDA();
 
+  /// @brief Record that this image has been used on a stream. See
+  /// @c BufferCUDA::markUsed.
+  void markUsed(CUstream s);
+
   virtual const ImageDescription& description() const override { return descr; }
 
   virtual void copy(const ghost::Encoder& s, const ghost::Image& src) override;
@@ -135,6 +153,9 @@ class ImageCUDA : public Image {
   virtual void copy(const ghost::Encoder& s, const ghost::Image& src,
                     const Size3& region, const Origin3& srcOrigin,
                     const Origin3& dstOrigin) override;
+
+ protected:
+  std::vector<CUstream> _useStreams;
 };
 
 // Class to track thread's current context, even if other libraries change it.

@@ -342,6 +342,8 @@ using f_cuLaunchCooperativeKernel = CUresult(CUDAAPI*)(
     unsigned int gridDimZ, unsigned int blockDimX, unsigned int blockDimY,
     unsigned int blockDimZ, unsigned int sharedMemBytes, CUstream hStream,
     void** kernelParams);
+using f_cuLaunchHostFunc = CUresult(CUDAAPI*)(CUstream hStream, CUhostFn fn,
+                                              void* userData);
 using f_cuFuncSetBlockShape = CUresult(CUDAAPI*)(CUfunction hfunc, int x, int y,
                                                  int z);
 using f_cuFuncSetSharedSize = CUresult(CUDAAPI*)(CUfunction hfunc,
@@ -668,6 +670,7 @@ class LibCUDAWrapper {
   f_cuFuncSetSharedMemConfig m_cuFuncSetSharedMemConfig = nullptr;
   f_cuLaunchKernel m_cuLaunchKernel = nullptr;
   f_cuLaunchCooperativeKernel m_cuLaunchCooperativeKernel = nullptr;
+  f_cuLaunchHostFunc m_cuLaunchHostFunc = nullptr;
   f_cuFuncSetBlockShape m_cuFuncSetBlockShape = nullptr;
   f_cuFuncSetSharedSize m_cuFuncSetSharedSize = nullptr;
   f_cuParamSetSize m_cuParamSetSize = nullptr;
@@ -921,6 +924,7 @@ class LibCUDAWrapper {
     INIT_FUNCTION(cuFuncSetSharedMemConfig);
     INIT_FUNCTION(cuLaunchKernel);
     INIT_FUNCTION(cuLaunchCooperativeKernel);
+    INIT_FUNCTION(cuLaunchHostFunc);
     INIT_FUNCTION(cuFuncSetBlockShape);
     INIT_FUNCTION(cuFuncSetSharedSize);
     INIT_FUNCTION(cuParamSetSize);
@@ -2434,6 +2438,17 @@ CUresult CUDAAPI cuLaunchCooperativeKernel(
   if (func) {
     return func(f, gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY,
                 blockDimZ, sharedMemBytes, hStream, kernelParams);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+CUresult CUDAAPI cuLaunchHostFunc(CUstream hStream, CUhostFn fn,
+                                  void* userData) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuLaunchHostFunc;
+  if (func) {
+    return func(hStream, fn, userData);
   } else {
     return CUDA_ERROR_NOT_INITIALIZED;
   }

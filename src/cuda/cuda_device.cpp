@@ -40,8 +40,11 @@ extern "C" HRESULT __stdcall __HrLoadAllImportsForDll(const char* szDll);
 #include <ghost/cuda/impl_device.h>
 #include <ghost/cuda/impl_function.h>
 
+#include <atomic>
 #include <cstring>
+#include <new>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 namespace ghost {
@@ -75,6 +78,48 @@ inline bool isCudaDriverAvailable() { return true; }
 
 namespace implementation {
 using namespace cu;
+
+namespace {
+// Shared state for a deferred CUdeviceptr release. The cu::ptr inside owns
+// the device memory; when the last scheduled host-fn callback runs, the
+// DeferredRelease is deleted and the cu::ptr destructor calls cuMemFree.
+struct DeferredRelease {
+  std::atomic<int> remaining;
+  cu::ptr<CUdeviceptr> mem;
+};
+
+void CUDA_CB releaseDeferredCallback(void* p) {
+  auto* d = static_cast<DeferredRelease*>(p);
+  if (d->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    delete d;
+  }
+}
+
+// Schedule cuMemFree of @p mem to fire after pending work on each stream in
+// @p streams has completed. On any scheduling failure, the cu::ptr's
+// destructor runs synchronously (matching pre-fix behavior — the caller has
+// already violated the lifetime contract).
+void scheduleDeferredRelease(cu::ptr<CUdeviceptr>&& mem,
+                             const std::vector<CUstream>& streams) {
+  if (!mem.get() || !mem.owned()) return;  // nothing to free
+  if (streams.empty()) return;  // caller path uses synchronous release
+  auto* d = new DeferredRelease{};
+  d->remaining.store(static_cast<int>(streams.size()),
+                     std::memory_order_relaxed);
+  d->mem = std::move(mem);
+  for (CUstream s : streams) {
+    CUresult err = cuLaunchHostFunc(s, &releaseDeferredCallback, d);
+    if (err != CUDA_SUCCESS) {
+      // Decrement on this stream's behalf so the remaining callbacks (or the
+      // synchronous fallback below) get the count right.
+      if (d->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        delete d;
+        return;
+      }
+    }
+  }
+}
+}  // namespace
 
 EventCUDA::EventCUDA(cu::ptr<CUevent> event_) : event(event_) {}
 
@@ -139,7 +184,19 @@ BufferCUDA::~BufferCUDA() {
   if (_allocator) {
     _allocator->freeBuffer(
         reinterpret_cast<void*>(static_cast<uintptr_t>(mem.release())), _size);
+    return;
   }
+  // Defer cuMemFree until pending work on each used stream completes.
+  // Non-owning mem (sub-buffers, sharedImage donors) falls through to the
+  // cu::ptr destructor, which is a no-op.
+  scheduleDeferredRelease(std::move(mem), _useStreams);
+}
+
+void BufferCUDA::markUsed(CUstream s) {
+  for (CUstream existing : _useStreams) {
+    if (existing == s) return;
+  }
+  _useStreams.push_back(s);
 }
 
 BufferCUDA::BufferCUDA(const DeviceCUDA& dev, size_t bytes,
@@ -157,6 +214,8 @@ void BufferCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                       size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferCUDA*>(src.impl().get());
+  markUsed(stream_impl->queue);
+  src_impl->markUsed(stream_impl->queue);
   CUresult err;
   err = cuMemcpyDtoDAsync(mem, src_impl->mem, bytes, stream_impl->queue);
   checkError(err);
@@ -164,6 +223,7 @@ void BufferCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
 
 void BufferCUDA::copy(const ghost::Encoder& s, const void* src, size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  markUsed(stream_impl->queue);
   CUresult err;
   err = cuMemcpyHtoDAsync(mem, src, bytes, stream_impl->queue);
   checkError(err);
@@ -172,6 +232,7 @@ void BufferCUDA::copy(const ghost::Encoder& s, const void* src, size_t bytes) {
 void BufferCUDA::copyTo(const ghost::Encoder& s, void* dst,
                         size_t bytes) const {
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  const_cast<BufferCUDA*>(this)->markUsed(stream_impl->queue);
   CUresult err;
   err = cuMemcpyDtoHAsync(dst, mem, bytes, stream_impl->queue);
   checkError(err);
@@ -181,6 +242,8 @@ void BufferCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                       size_t srcOffset, size_t dstOffset, size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
   auto src_impl = static_cast<implementation::BufferCUDA*>(src.impl().get());
+  markUsed(stream_impl->queue);
+  src_impl->markUsed(stream_impl->queue);
   CUresult err;
   err =
       cuMemcpyDtoDAsync(mem.get() + dstOffset, src_impl->mem.get() + srcOffset,
@@ -191,6 +254,7 @@ void BufferCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
 void BufferCUDA::copy(const ghost::Encoder& s, const void* src,
                       size_t dstOffset, size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  markUsed(stream_impl->queue);
   CUresult err;
   err =
       cuMemcpyHtoDAsync(mem.get() + dstOffset, src, bytes, stream_impl->queue);
@@ -200,6 +264,7 @@ void BufferCUDA::copy(const ghost::Encoder& s, const void* src,
 void BufferCUDA::copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
                         size_t bytes) const {
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  const_cast<BufferCUDA*>(this)->markUsed(stream_impl->queue);
   CUresult err;
   err =
       cuMemcpyDtoHAsync(dst, mem.get() + srcOffset, bytes, stream_impl->queue);
@@ -209,6 +274,7 @@ void BufferCUDA::copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
 void BufferCUDA::fill(const ghost::Encoder& s, size_t offset, size_t size,
                       uint8_t value) {
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  markUsed(stream_impl->queue);
   CUresult err;
   err = cuMemsetD8Async(mem.get() + offset, value, size, stream_impl->queue);
   checkError(err);
@@ -217,6 +283,7 @@ void BufferCUDA::fill(const ghost::Encoder& s, size_t offset, size_t size,
 void BufferCUDA::fill(const ghost::Encoder& s, size_t offset, size_t size,
                       const void* pattern, size_t patternSize) {
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  markUsed(stream_impl->queue);
   CUresult err;
   CUdeviceptr dst = mem.get() + offset;
   if (patternSize == 1) {
@@ -251,6 +318,17 @@ std::shared_ptr<Buffer> BufferCUDA::createSubBuffer(
 SubBufferCUDA::SubBufferCUDA(std::shared_ptr<Buffer> parent,
                              cu::ptr<CUdeviceptr> mem_, size_t bytes)
     : BufferCUDA(mem_, bytes), _parent(parent) {}
+
+void SubBufferCUDA::markUsed(CUstream s) {
+  // Propagate to the parent so the parent's deferred release waits for any
+  // pending work referencing this sub-region. Also record locally so direct
+  // uses of this sub-buffer wrapper are tracked (defensive: a sub-buffer's
+  // mem is non-owning, but recording is cheap and keeps invariants uniform).
+  if (auto* p = static_cast<BufferCUDA*>(_parent.get())) {
+    p->markUsed(s);
+  }
+  BufferCUDA::markUsed(s);
+}
 
 MappedBufferCUDA::MappedBufferCUDA(cu::ptr<void*> ptr_)
     : BufferCUDA(cu::ptr<CUdeviceptr>(), 0), ptr(ptr_) {
@@ -303,7 +381,16 @@ ImageCUDA::~ImageCUDA() {
   if (_allocator) {
     _allocator->freeImage(
         reinterpret_cast<void*>(static_cast<uintptr_t>(mem.release())), descr);
+    return;
   }
+  scheduleDeferredRelease(std::move(mem), _useStreams);
+}
+
+void ImageCUDA::markUsed(CUstream s) {
+  for (CUstream existing : _useStreams) {
+    if (existing == s) return;
+  }
+  _useStreams.push_back(s);
 }
 
 ImageCUDA::ImageCUDA(const DeviceCUDA& dev, const ImageDescription& descr_)
@@ -336,6 +423,11 @@ ImageCUDA::ImageCUDA(const DeviceCUDA& dev, const ImageDescription& descr_,
 
 void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src) {
   auto src_impl = static_cast<implementation::ImageCUDA*>(src.impl().get());
+  {
+    auto sc = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    markUsed(sc->queue);
+    src_impl->markUsed(sc->queue);
+  }
   size_t srcPixSize = src_impl->descr.pixelSize();
   size_t srcRowBytes = src_impl->descr.rowBytes(srcPixSize);
   size_t srcSliceBytes = src_impl->descr.sliceBytes(srcRowBytes);
@@ -368,6 +460,7 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src) {
     a.Height = descr.size.y;
     a.Depth = descr.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy3DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -390,6 +483,7 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src) {
     a.WidthInBytes = descr.size.x * dstPixSize;
     a.Height = descr.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy2DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -399,6 +493,11 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src) {
 void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                      const BufferLayout& layout) {
   auto src_impl = static_cast<implementation::BufferCUDA*>(src.impl().get());
+  {
+    auto sc = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    markUsed(sc->queue);
+    src_impl->markUsed(sc->queue);
+  }
   size_t pixSize = descr.pixelSize();
   size_t srcRowBytes = layout.rowBytes(pixSize);
   size_t srcSliceBytes = layout.sliceBytes(srcRowBytes);
@@ -430,6 +529,7 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
     a.Height = descr.size.y;
     a.Depth = descr.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy3DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -452,6 +552,7 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
     a.WidthInBytes = descr.size.x * pixSize;
     a.Height = descr.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy2DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -491,6 +592,7 @@ void ImageCUDA::copy(const ghost::Encoder& s, const void* src,
     a.Height = descr.size.y;
     a.Depth = descr.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy3DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -513,6 +615,7 @@ void ImageCUDA::copy(const ghost::Encoder& s, const void* src,
     a.WidthInBytes = descr.size.x * pixSize;
     a.Height = descr.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy2DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -522,6 +625,11 @@ void ImageCUDA::copy(const ghost::Encoder& s, const void* src,
 void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                        const BufferLayout& layout) const {
   auto dst_impl = static_cast<implementation::BufferCUDA*>(dst.impl().get());
+  {
+    auto sc = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(sc->queue);
+    dst_impl->markUsed(sc->queue);
+  }
   size_t pixSize = descr.pixelSize();
   size_t srcRowBytes = descr.rowBytes(pixSize);
   size_t srcSliceBytes = descr.sliceBytes(srcRowBytes);
@@ -553,6 +661,7 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
     a.Height = layout.size.y;
     a.Depth = layout.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy3DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -575,6 +684,7 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
     a.WidthInBytes = layout.size.x * pixSize;
     a.Height = layout.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy2DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -614,6 +724,7 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, void* dst,
     a.Height = layout.size.y;
     a.Depth = layout.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy3DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -636,6 +747,7 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, void* dst,
     a.WidthInBytes = layout.size.x * pixSize;
     a.Height = layout.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy2DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -645,6 +757,11 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, void* dst,
 void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
                      const BufferLayout& layout, const Origin3& imageOrigin) {
   auto src_impl = static_cast<implementation::BufferCUDA*>(src.impl().get());
+  {
+    auto sc = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    markUsed(sc->queue);
+    src_impl->markUsed(sc->queue);
+  }
   size_t pixSize = descr.pixelSize();
   size_t srcRowBytes = layout.rowBytes(pixSize);
   size_t srcSliceBytes = layout.sliceBytes(srcRowBytes);
@@ -676,6 +793,7 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
     a.Height = layout.size.y;
     a.Depth = layout.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy3DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -698,6 +816,7 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Buffer& src,
     a.WidthInBytes = layout.size.x * pixSize;
     a.Height = layout.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy2DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -708,6 +827,11 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                        const BufferLayout& layout,
                        const Origin3& imageOrigin) const {
   auto dst_impl = static_cast<implementation::BufferCUDA*>(dst.impl().get());
+  {
+    auto sc = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(sc->queue);
+    dst_impl->markUsed(sc->queue);
+  }
   size_t pixSize = descr.pixelSize();
   size_t srcRowBytes = descr.rowBytes(pixSize);
   size_t srcSliceBytes = descr.sliceBytes(srcRowBytes);
@@ -739,6 +863,7 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
     a.Height = layout.size.y;
     a.Depth = layout.size.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy3DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -761,6 +886,7 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
     a.WidthInBytes = layout.size.x * pixSize;
     a.Height = layout.size.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy2DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -771,6 +897,11 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src,
                      const Size3& region, const Origin3& srcOrigin,
                      const Origin3& dstOrigin) {
   auto src_impl = static_cast<implementation::ImageCUDA*>(src.impl().get());
+  {
+    auto sc = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    markUsed(sc->queue);
+    src_impl->markUsed(sc->queue);
+  }
   size_t srcPixSize = src_impl->descr.pixelSize();
   size_t srcRowBytes = src_impl->descr.rowBytes(srcPixSize);
   size_t srcSliceBytes = src_impl->descr.sliceBytes(srcRowBytes);
@@ -803,6 +934,7 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src,
     a.Height = region.y;
     a.Depth = region.z;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy3DAsync(&a, stream_impl->queue);
     checkError(err);
@@ -825,6 +957,7 @@ void ImageCUDA::copy(const ghost::Encoder& s, const ghost::Image& src,
     a.WidthInBytes = region.x * dstPixSize;
     a.Height = region.y;
     auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    const_cast<ImageCUDA*>(this)->markUsed(stream_impl->queue);
     CUresult err;
     err = cuMemcpy2DAsync(&a, stream_impl->queue);
     checkError(err);

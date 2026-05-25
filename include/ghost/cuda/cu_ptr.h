@@ -137,6 +137,8 @@ class ptr {
 
   TYPE get() const { return value; }
 
+  bool owned() const { return _owned; }
+
   operator TYPE() const { return value; }
 
   TYPE* operator&() {

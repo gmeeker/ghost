@@ -551,6 +551,87 @@ TEST_P(CommandBufferTest, StreamConcurrentOptionIndependentDispatch) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Fire-and-forget buffer release: caller drops the Buffer wrapper between
+// dispatch and stream sync. On CUDA, the BufferCUDA destructor must defer
+// cuMemFree until the stream has advanced past the pending kernel; on
+// OpenCL, the runtime's implicit cl_mem retention covers this. Without the
+// fix, CUDA crashes with CUDA_ERROR_ILLEGAL_ADDRESS at the next driver call.
+// ---------------------------------------------------------------------------
+
+TEST_P(CommandBufferTest, DropBufferBeforeStreamSync) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  std::vector<float> output(N, 0.0f);
+  auto outBuf = device().allocateBuffer(N * sizeof(float));
+
+  {
+    std::vector<float> input(N);
+    for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+    auto inBuf = device().allocateBuffer(N * sizeof(float));
+    inBuf.copy(stream(), input.data(), N * sizeof(float));
+
+    LaunchArgs la;
+    la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
+    fn(la, stream())(outBuf, inBuf, 2.0f);
+    // inBuf drops here, before stream().sync(). The kernel above is still
+    // pending on the stream; the underlying device allocation must survive
+    // until the GPU finishes reading it.
+  }
+
+  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 2.0f) << "index " << i;
+  }
+}
+
+TEST_P(CommandBufferTest, DropCommandBufferBeforeStreamSync) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  std::vector<float> output(N, 0.0f);
+  auto outBuf = device().allocateBuffer(N * sizeof(float));
+
+  {
+    std::vector<float> input(N);
+    for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+    auto inBuf = device().allocateBuffer(N * sizeof(float));
+    inBuf.copy(stream(), input.data(), N * sizeof(float));
+    stream().sync();
+
+    CommandBuffer cb(device());
+    LaunchArgs la;
+    la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
+    fn(la, cb)(outBuf, inBuf, 3.0f);
+    cb.submit(stream());
+    // Both inBuf and cb drop here — the recorded shared_ptr<impl::Buffer>
+    // refs in cb's commands are released BEFORE stream().sync() drains the
+    // GPU. The underlying allocation must outlive these drops.
+  }
+
+  outBuf.copyTo(stream(), output.data(), N * sizeof(float));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 3.0f) << "index " << i;
+  }
+}
+
 GHOST_INSTANTIATE_KERNEL_TESTS(CommandBufferTest);
 
 // ---------------------------------------------------------------------------

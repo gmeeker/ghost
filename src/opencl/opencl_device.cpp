@@ -287,8 +287,15 @@ BufferOpenCL::BufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes)
 BufferOpenCL::~BufferOpenCL() {
   if (_allocator) {
     _allocator->freeBuffer((void*)mem.release(), _size);
+    return;
   }
-  // else: opencl::ptr destructor calls clReleaseMemObject normally
+  // OpenCL's runtime defers actual deletion of a cl_mem until queued
+  // commands referencing it have finished (CL spec 5.6.2). So calling
+  // clReleaseMemObject here while a fire-and-forget dispatch is still
+  // in flight is safe — the runtime keeps the allocation alive until
+  // the pending kernels/copies complete. No explicit per-use event
+  // tracking is needed on this path.
+  // opencl::ptr destructor calls clReleaseMemObject.
 }
 
 BufferOpenCL::BufferOpenCL(const DeviceOpenCL& dev, size_t bytes,

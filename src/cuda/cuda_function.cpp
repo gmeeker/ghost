@@ -190,6 +190,36 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
     }
   }
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  // Retain buffer/image impls past kernel completion: if the caller drops
+  // their wrapper between dispatch and stream sync, the device pointer must
+  // not be freed before the GPU finishes reading it.
+  for (auto i = args.begin(); i != args.end(); ++i) {
+    switch (i->type()) {
+      case Attribute::Type_Buffer: {
+        auto buf =
+            static_cast<implementation::BufferCUDA*>(i->bufferImpl().get());
+        buf->markUsed(stream_impl->queue);
+        break;
+      }
+      case Attribute::Type_Image: {
+        auto img =
+            static_cast<implementation::ImageCUDA*>(i->imageImpl().get());
+        img->markUsed(stream_impl->queue);
+        break;
+      }
+      case Attribute::Type_ArgumentBuffer: {
+        auto ab = i->argumentBuffer();
+        if (!ab->isStruct()) {
+          auto buf =
+              static_cast<implementation::BufferCUDA*>(ab->bufferImpl().get());
+          buf->markUsed(stream_impl->queue);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
   if (launchArgs.requiredSubgroupSize() != 0) {
     int warpSize = 0;
     checkError(cuDeviceGetAttribute(&warpSize, CU_DEVICE_ATTRIBUTE_WARP_SIZE,
