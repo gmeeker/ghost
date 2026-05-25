@@ -84,8 +84,10 @@ namespace {
 // the device memory; when the last scheduled host-fn callback runs, the
 // DeferredRelease is deleted and the cu::ptr destructor calls cuMemFree.
 struct DeferredRelease {
-  std::atomic<int> remaining;
+  std::atomic<int> remaining{0};
   cu::ptr<CUdeviceptr> mem;
+
+  DeferredRelease() : mem(0, false) {}
 };
 
 void CUDA_CB releaseDeferredCallback(void* p) {
