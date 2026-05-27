@@ -197,6 +197,10 @@ class BufferDirectX : public Buffer {
   ComPtr<ID3D12Resource> resource;
   size_t _size;
   D3D12_RESOURCE_STATES currentState;
+  // UPLOAD and READBACK heap resources are locked in their initial state by
+  // D3D12; emitting a ResourceBarrier against them returns E_INVALIDARG. We
+  // record the heap so transitionTo() can skip those.
+  D3D12_HEAP_TYPE _heapType = D3D12_HEAP_TYPE_DEFAULT;
 
   BufferDirectX(const DeviceDirectX& dev, size_t bytes,
                 const BufferOptions& opts = {});

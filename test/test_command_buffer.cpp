@@ -639,7 +639,7 @@ TEST_P(CommandBufferTest, DropCommandBufferBeforeStreamSync) {
 // bytes at record time, not the pointer. A stack-local source whose frame is
 // gone by submit() must still produce the correct dst contents.
 TEST_P(CommandBufferTest, CopyHostStackLocalThroughCommandBuffer) {
-  const size_t N = 16;
+  static constexpr size_t N = 16;
   auto buf = device().allocateBuffer(N * sizeof(uint32_t));
 
   CommandBuffer cb(device());
@@ -650,7 +650,7 @@ TEST_P(CommandBufferTest, CopyHostStackLocalThroughCommandBuffer) {
     uint32_t tmp[N];
     for (size_t i = 0; i < N; i++)
       tmp[i] = 0xC0FFEE00u + static_cast<uint32_t>(i);
-    buf.copy(cb, tmp, N * sizeof(uint32_t));
+    buf.copy(cb, static_cast<const void*>(tmp), N * sizeof(uint32_t));
   };
   recordFromTransientFrame();
 

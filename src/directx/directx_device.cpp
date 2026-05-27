@@ -566,11 +566,20 @@ BufferDirectX::BufferDirectX(const DeviceDirectX& dev, size_t bytes,
   }
   resource = dev.createCommittedBuffer(bytes, heapType, flags, initialState);
   currentState = initialState;
+  _heapType = heapType;
 }
 
 BufferDirectX::BufferDirectX(ComPtr<ID3D12Resource> res, size_t bytes,
                              D3D12_RESOURCE_STATES state)
-    : resource(res), _size(bytes), currentState(state) {}
+    : resource(res), _size(bytes), currentState(state) {
+  if (resource) {
+    D3D12_HEAP_PROPERTIES props = {};
+    D3D12_HEAP_FLAGS heapFlags = D3D12_HEAP_FLAG_NONE;
+    if (SUCCEEDED(resource->GetHeapProperties(&props, &heapFlags))) {
+      _heapType = props.Type;
+    }
+  }
+}
 
 BufferDirectX::~BufferDirectX() {
   if (_allocator) {
@@ -586,6 +595,15 @@ size_t BufferDirectX::size() const { return _size; }
 void BufferDirectX::transitionTo(ID3D12GraphicsCommandList* cmdList,
                                  D3D12_RESOURCE_STATES newState) {
   if (currentState == newState) return;
+
+  // UPLOAD heap resources are permanently in GENERIC_READ; READBACK in
+  // COPY_DEST. D3D12 rejects ResourceBarrier transitions against them with
+  // E_INVALIDARG. Treat the request as a no-op ΓÇö the heap's fixed state is
+  // already valid for the copy operations that drive these calls.
+  if (_heapType == D3D12_HEAP_TYPE_UPLOAD ||
+      _heapType == D3D12_HEAP_TYPE_READBACK) {
+    return;
+  }
 
   D3D12_RESOURCE_BARRIER barrier = {};
   barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -746,6 +764,7 @@ MappedBufferDirectX::MappedBufferDirectX(const DeviceDirectX& dev, size_t bytes,
   resource = dev.createCommittedBuffer(bytes, heapType,
                                        D3D12_RESOURCE_FLAG_NONE, initialState);
   currentState = initialState;
+  _heapType = heapType;
 
   // Persistently map
   D3D12_RANGE readRange = {0, 0};
