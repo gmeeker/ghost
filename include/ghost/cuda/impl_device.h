@@ -45,6 +45,7 @@ class StreamCUDA : public Stream {
   void sync();
   virtual std::shared_ptr<Event> record() override;
   virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
+  virtual void barrier() override;
 };
 
 class BufferCUDA : public Buffer {

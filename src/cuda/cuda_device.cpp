@@ -179,6 +179,14 @@ void StreamCUDA::waitForEvent(const std::shared_ptr<Event>& e) {
   checkError(err);
 }
 
+void StreamCUDA::barrier() {
+  // No host drain. A CUDA stream executes its enqueued operations in issue
+  // order, so the op after a CommandBuffer barrier already happens-after the
+  // op before it. The default Stream::barrier() would cuStreamSynchronize()
+  // mid-replay, forcing a full host stall on every cb.barrier(). Host
+  // visibility is provided by the caller's Stream::sync() after submit().
+}
+
 BufferCUDA::BufferCUDA(cu::ptr<CUdeviceptr> mem_, size_t bytes)
     : mem(mem_), _size(bytes) {}
 
