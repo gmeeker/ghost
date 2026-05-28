@@ -15,6 +15,7 @@
 #if WITH_METAL
 
 #include <ghost/allocator.h>
+#include <ghost/argument_buffer.h>
 #include <ghost/metal/device.h>
 #include <ghost/metal/exception.h>
 #include <ghost/metal/impl_device.h>
@@ -24,6 +25,8 @@
 #include <sys/types.h>
 
 #include <TargetConditionals.h>
+
+#include <unordered_set>
 
 namespace ghost {
 namespace implementation {
@@ -930,15 +933,66 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
   };
   auto readFinalizers = std::make_shared<std::vector<ReadFinalizer>>();
 
+  // Per-resource barrier tracking. A compute->compute barrier only needs to
+  // order the resources dispatches actually touched since the last barrier,
+  // not every buffer+texture the concurrent encoder can reach. Passing that
+  // exact set to memoryBarrierWithResources: preserves more intra-encoder
+  // overlap than the coarse memoryBarrierWithScope: on barrier-dense graphs.
+  // Ghost binds every resource directly (setBuffer/setTexture, no indirect
+  // residency), so the args fully enumerate what a dispatch touches.
+  // Resources stay alive via the recorded commands for the duration of
+  // submit(), so unretained pointers are safe.
+  std::vector<__unsafe_unretained id<MTLResource>> barrierResources;
+  std::unordered_set<void *> barrierResourceSet;
+  auto addBarrierResource = [&](id<MTLResource> r) {
+    if (r && barrierResourceSet.insert((__bridge void *)r).second)
+      barrierResources.push_back(r);
+  };
+  auto addBarrierArgs = [&](const std::vector<Attribute> &args) {
+    for (auto &a : args) {
+      switch (a.type()) {
+      case Attribute::Type_Buffer:
+        addBarrierResource(
+            static_cast<implementation::BufferMetal *>(a.bufferImpl().get())
+                ->mem.get());
+        break;
+      case Attribute::Type_Image:
+        addBarrierResource(
+            static_cast<implementation::ImageMetal *>(a.imageImpl().get())
+                ->mem.get());
+        break;
+      case Attribute::Type_ArgumentBuffer: {
+        auto ab = a.argumentBuffer();
+        if (!ab->isStruct())
+          addBarrierResource(
+              static_cast<implementation::BufferMetal *>(ab->bufferImpl().get())
+                  ->mem.get());
+        break;
+      }
+      default:
+        break;
+      }
+    }
+  };
+  auto clearBarrierResources = [&]() {
+    barrierResources.clear();
+    barrierResourceSet.clear();
+  };
+
   for (auto &command : commands) {
     std::visit(
         [&](auto &cmd) {
           using T = std::decay_t<decltype(cmd)>;
           if constexpr (std::is_same_v<T, DispatchCmd>) {
             cmd.function->execute(enc, cmd.launchArgs, cmd.args);
+            addBarrierArgs(cmd.args);
           } else if constexpr (std::is_same_v<T, DispatchIndirectCmd>) {
             cmd.function->executeIndirect(enc, cmd.indirectBuffer,
                                           cmd.indirectOffset, cmd.args);
+            addBarrierArgs(cmd.args);
+            addBarrierResource(static_cast<implementation::BufferMetal *>(
+                                   cmd.indirectBuffer.get())
+                                   ->mem.get());
           } else if constexpr (std::is_same_v<T, CopyBufferCmd>) {
             dstWrap.impl() = cmd.dst;
             srcWrap.impl() =
@@ -1001,20 +1055,26 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
           } else if constexpr (std::is_same_v<T, CopyImageToHostCmd>) {
             cmd.src->copyTo(enc, cmd.dst, cmd.layout);
           } else if constexpr (std::is_same_v<T, BarrierCmd>) {
-            // Compute->compute: an intra-encoder barrier orders prior
-            // writes for untracked (heap) resources without an encoder
-            // teardown + fence roundtrip. Both Buffers and Textures so it
-            // matches barrier()'s order-everything semantics (Ghost Images
-            // are textures). A pending compute<->blit transition still
-            // needs the cross-encoder fence, applied by the next
-            // get*Encoder(); fall back to endEncoding() when no compute
-            // encoder is open.
+            // Compute->compute: order just the resources dispatches touched
+            // since the last barrier (memoryBarrierWithResources:), which
+            // keeps more of the concurrent encoder's overlap than the coarse
+            // memoryBarrierWithScope:(Buffers|Textures) on barrier-dense
+            // graphs. The tracked set covers both buffers and textures
+            // (Ghost Images), preserving barrier()'s order-everything
+            // semantics. An empty set means nothing was dispatched since the
+            // last barrier, so there is nothing to order. A pending
+            // compute<->blit transition still needs the cross-encoder fence;
+            // fall back to endEncoding() when no compute encoder is open or
+            // the API is unavailable.
             if (computeEncoder.get() && !blitEncoder.get()) {
               if (@available(macOS 10.14, iOS 12.0, tvOS 12.0,
                              macCatalyst 13.0, *)) {
-                [computeEncoder.get()
-                    memoryBarrierWithScope:MTLBarrierScopeBuffers |
-                                           MTLBarrierScopeTextures];
+                if (!barrierResources.empty()) {
+                  [computeEncoder.get()
+                      memoryBarrierWithResources:barrierResources.data()
+                                           count:barrierResources.size()];
+                }
+                clearBarrierResources();
               } else {
                 endEncoding();
               }
@@ -1028,6 +1088,12 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
           }
         },
         command);
+    // A blit transition or endEncoding() ends the compute encoder and fences
+    // its writes, so resources tracked for the per-resource barrier are now
+    // ordered by that fence. Reset the running set when no compute encoder is
+    // open (the per-resource barrier branch leaves it open and self-clears).
+    if (!computeEncoder.get())
+      clearBarrierResources();
   }
 
   endEncoding();
