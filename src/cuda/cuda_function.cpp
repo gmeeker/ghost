@@ -54,6 +54,22 @@ inline void checkNVRTCError(nvrtcResult err) {
 namespace implementation {
 using namespace cu;
 
+namespace {
+typedef ptr<CUtexObject, cu::detail<GhostCUtexObject>> texptr;
+
+// Owns per-launch texture objects so they can be released after the kernel
+// completes. cuTexObjectDestroy is synchronous; without this, the texptrs go
+// out of scope at the end of execute() and the kernel reads a destroyed
+// texture (manifests as all-zero tex2D fetches on Windows CUDA).
+struct DeferredTextureRelease {
+  std::list<texptr> textures;
+};
+
+void CUDA_CB releaseTexturesCallback(void* p) {
+  delete static_cast<DeferredTextureRelease*>(p);
+}
+}  // namespace
+
 FunctionCUDA::FunctionCUDA(const DeviceCUDA& dev, CUfunction k)
     : kernel(k), _dev(dev) {}
 
@@ -63,7 +79,6 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
   CUresult err;
   size_t local_mem = 0;
   std::vector<void*> params;
-  typedef ptr<CUtexObject, cu::detail<GhostCUtexObject>> texptr;
   std::list<texptr> textures;
 
   for (auto i = args.begin(); i != args.end(); ++i) {
@@ -163,7 +178,9 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
         resDesc.res.pitch2D.numChannels = (unsigned int)cuda->descr.channels;
         resDesc.res.pitch2D.width = cuda->descr.size.x;
         resDesc.res.pitch2D.height = cuda->descr.size.y;
-        resDesc.res.pitch2D.pitchInBytes = cuda->descr.stride.x;
+        // stride.x == 0 means tight packing; resolve to width*pixelSize.
+        resDesc.res.pitch2D.pitchInBytes =
+            cuda->descr.rowBytes(cuda->descr.pixelSize());
 
         texptr texObj;
         checkError(cuTexObjectCreate(&texObj, &resDesc, &texDesc, nullptr));
@@ -251,6 +268,17 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
                          stream_impl->queue, &params[0], nullptr);
   }
   checkError(err);
+  // Hand the per-launch texture objects off to a host callback so they're
+  // destroyed only after the kernel completes. Fallback: synchronous release
+  // (the prior buggy behavior) if scheduling the callback fails.
+  if (!textures.empty()) {
+    auto* d = new DeferredTextureRelease{std::move(textures)};
+    CUresult hostErr =
+        cuLaunchHostFunc(stream_impl->queue, &releaseTexturesCallback, d);
+    if (hostErr != CUDA_SUCCESS) {
+      delete d;
+    }
+  }
 }
 
 Attribute FunctionCUDA::getAttribute(FunctionAttributeId what) const {
