@@ -1001,10 +1001,26 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
           } else if constexpr (std::is_same_v<T, CopyImageToHostCmd>) {
             cmd.src->copyTo(enc, cmd.dst, cmd.layout);
           } else if constexpr (std::is_same_v<T, BarrierCmd>) {
-            // End the current encoder; Metal's encoder boundary plus the
-            // queue's per-cb hazard tracking is sufficient to order
-            // subsequent dispatches after preceding writes.
-            endEncoding();
+            // Compute->compute: an intra-encoder barrier orders prior
+            // writes for untracked (heap) resources without an encoder
+            // teardown + fence roundtrip. Both Buffers and Textures so it
+            // matches barrier()'s order-everything semantics (Ghost Images
+            // are textures). A pending compute<->blit transition still
+            // needs the cross-encoder fence, applied by the next
+            // get*Encoder(); fall back to endEncoding() when no compute
+            // encoder is open.
+            if (computeEncoder.get() && !blitEncoder.get()) {
+              if (@available(macOS 10.14, iOS 12.0, tvOS 12.0,
+                             macCatalyst 13.0, *)) {
+                [computeEncoder.get()
+                    memoryBarrierWithScope:MTLBarrierScopeBuffers |
+                                           MTLBarrierScopeTextures];
+              } else {
+                endEncoding();
+              }
+            } else {
+              endEncoding();
+            }
           } else if constexpr (std::is_same_v<T, WaitEventCmd>) {
             throw ghost::unsupported_error();
           } else if constexpr (std::is_same_v<T, RecordEventCmd>) {
