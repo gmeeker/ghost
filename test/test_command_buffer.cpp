@@ -193,6 +193,94 @@ TEST_P(CommandBufferTest, BarrierOrdering) {
   }
 }
 
+// Same dependency chain as BarrierOrdering, but with the library opted into
+// WriteDefault::FirstWritten (so barriers order only written resources) and a
+// run that mixes the convention default with an explicit ghost::write marker.
+// The RAW dependency through the written output buffer must still be honored.
+TEST_P(CommandBufferTest, BarrierOrderingFirstWritten) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto lib = device().loadLibraryFromText(src);
+  lib.setWriteDefault(WriteDefault::FirstWritten);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  auto buf1 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf2 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf3 = device().allocateBuffer(safeN * sizeof(float));
+  buf1.copy(stream(), input.data(), safeN * sizeof(float));
+  stream().sync();
+
+  LaunchArgs la;
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
+
+  CommandBuffer cb(device());
+  // mult_const_f writes its first arg (the output) — the FirstWritten default
+  // covers this dispatch with no annotation.
+  fn(la, cb)(buf2, buf1, 2.0f);
+  cb.barrier();
+  // Same write set, expressed explicitly via ghost::write (must agree with the
+  // default and still order buf2's prior write before this read).
+  fn(la, cb)(ghost::write(buf3), buf2, 3.0f);
+  cb.submit(stream());
+
+  buf3.copyTo(stream(), output.data(), safeN * sizeof(float));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 6.0f) << "index " << i;
+  }
+}
+
+// Per-dispatch BoundFunction::writes(n) shorthand on a default (Conservative)
+// library: the first arg (output) is written, the rest read-only. The RAW
+// dependency through buf2 must remain ordered after narrowing.
+TEST_P(CommandBufferTest, BarrierOrderingWritesN) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  auto buf1 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf2 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf3 = device().allocateBuffer(safeN * sizeof(float));
+  buf1.copy(stream(), input.data(), safeN * sizeof(float));
+  stream().sync();
+
+  LaunchArgs la;
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
+
+  CommandBuffer cb(device());
+  fn(la, cb).writes(1)(buf2, buf1, 2.0f);
+  cb.barrier();
+  fn(la, cb).writes(1)(buf3, buf2, 3.0f);
+  cb.submit(stream());
+
+  buf3.copyTo(stream(), output.data(), safeN * sizeof(float));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 6.0f) << "index " << i;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Reset and reuse
 // ---------------------------------------------------------------------------
@@ -503,6 +591,48 @@ TEST_P(CommandBufferTest, AutoBarrierOptInChainedDispatches) {
   CommandBuffer cb(device(), CommandBufferOptions{/*concurrent=*/false});
   fn(la, cb)(buf2, buf1, 2.0f);
   fn(la, cb)(buf3, buf2, 3.0f);  // depends on buf2 written above
+  cb.submit(stream());
+
+  buf3.copyTo(stream(), output.data(), safeN * sizeof(float));
+  stream().sync();
+
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 6.0f) << "index " << i;
+  }
+}
+
+// concurrent=false uses a serial encoder (Metal MTLDispatchTypeSerial), so an
+// explicit cb.barrier() between dependent dispatches is redundant and elided.
+// The RAW chain must still be correct with the barrier present — this guards
+// the elide against under-synchronization.
+TEST_P(CommandBufferTest, ExplicitBarrierElidedOnSerialEncoder) {
+  const char* src = multConstSource();
+  if (!src) GTEST_SKIP();
+
+  const size_t N = 256;
+  const uint32_t localSize = 64;
+  const size_t safeN = N * localSize;
+
+  std::vector<float> input(safeN, 0.0f);
+  std::vector<float> output(safeN, 0.0f);
+  for (size_t i = 0; i < N; i++) input[i] = static_cast<float>(i);
+
+  auto lib = device().loadLibraryFromText(src);
+  auto fn = lib.lookupFunction("mult_const_f");
+
+  auto buf1 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf2 = device().allocateBuffer(safeN * sizeof(float));
+  auto buf3 = device().allocateBuffer(safeN * sizeof(float));
+  buf1.copy(stream(), input.data(), safeN * sizeof(float));
+  stream().sync();
+
+  LaunchArgs la;
+  la.global_size(static_cast<uint32_t>(N)).local_size(localSize);
+
+  CommandBuffer cb(device(), CommandBufferOptions{/*concurrent=*/false});
+  fn(la, cb)(buf2, buf1, 2.0f);
+  cb.barrier();  // elided on the serial encoder; serial dispatch orders anyway
+  fn(la, cb)(buf3, buf2, 3.0f);
   cb.submit(stream());
 
   buf3.copyTo(stream(), output.data(), safeN * sizeof(float));

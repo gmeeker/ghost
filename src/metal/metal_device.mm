@@ -942,41 +942,84 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
   // residency), so the args fully enumerate what a dispatch touches.
   // Resources stay alive via the recorded commands for the duration of
   // submit(), so unretained pointers are safe.
+  // Above this many distinct resources in one barrier interval the per-resource
+  // list stops being worth it (memoryBarrierWithResources: is O(N) and the
+  // linear dedup below is O(N^2)); fall back to the O(1) coarse scope barrier.
+  constexpr size_t kBarrierResourceMax = 32;
   std::vector<__unsafe_unretained id<MTLResource>> barrierResources;
-  std::unordered_set<void *> barrierResourceSet;
+  barrierResources.reserve(kBarrierResourceMax);
+  bool barrierOverflow = false;
+  // Small linear dedup: per-barrier-interval sets are tiny (dense graphs have a
+  // run length near 1), so a vector scan beats hashing + node allocation.
   auto addBarrierResource = [&](id<MTLResource> r) {
-    if (r && barrierResourceSet.insert((__bridge void *)r).second)
-      barrierResources.push_back(r);
-  };
-  auto addBarrierArgs = [&](const std::vector<Attribute> &args) {
-    for (auto &a : args) {
-      switch (a.type()) {
-      case Attribute::Type_Buffer:
-        addBarrierResource(
-            static_cast<implementation::BufferMetal *>(a.bufferImpl().get())
-                ->mem.get());
-        break;
-      case Attribute::Type_Image:
-        addBarrierResource(
-            static_cast<implementation::ImageMetal *>(a.imageImpl().get())
-                ->mem.get());
-        break;
-      case Attribute::Type_ArgumentBuffer: {
-        auto ab = a.argumentBuffer();
-        if (!ab->isStruct())
-          addBarrierResource(
-              static_cast<implementation::BufferMetal *>(ab->bufferImpl().get())
-                  ->mem.get());
-        break;
-      }
-      default:
-        break;
-      }
+    if (!r || barrierOverflow)
+      return;
+    for (id<MTLResource> existing : barrierResources)
+      if (existing == r)
+        return;
+    if (barrierResources.size() >= kBarrierResourceMax) {
+      barrierOverflow = true;
+      return;
     }
+    barrierResources.push_back(r);
+  };
+  // Resolve a kernel-argument Attribute to its backing MTLResource (nil for
+  // scalars, samplers, and inline-struct argument buffers).
+  auto resourceOf = [](const Attribute &a) -> id<MTLResource> {
+    switch (a.type()) {
+    case Attribute::Type_Buffer:
+      return static_cast<implementation::BufferMetal *>(a.bufferImpl().get())
+          ->mem.get();
+    case Attribute::Type_Image:
+      return static_cast<implementation::ImageMetal *>(a.imageImpl().get())
+          ->mem.get();
+    case Attribute::Type_ArgumentBuffer: {
+      auto ab = a.argumentBuffer();
+      if (!ab->isStruct())
+        return static_cast<implementation::BufferMetal *>(
+                   ab->bufferImpl().get())
+            ->mem.get();
+      return nil;
+    }
+    default:
+      return nil;
+    }
+  };
+  // A resource only needs compute->compute barrier ordering if some dispatch in
+  // this cb *writes* it. Resources that are read-only across every dispatch
+  // (e.g. weights/inputs) can never be a hazard source, so they are dropped
+  // from every per-resource barrier. The filter is "written by some dispatch",
+  // not "written by this dispatch": a resource this dispatch only reads but a
+  // later dispatch overwrites still needs ordering (write-after-read), so per-
+  // dispatch write-only tracking would be unsafe. Which args count as writes is
+  // resolved by Function::writtenArgs (the owning Library's WriteDefault plus
+  // any ghost::write()/read()/writes() overrides). Copy/blit-written resources
+  // are ordered by the compute<->blit encoder fence, not this barrier, so only
+  // dispatch writes feed the set.
+  std::unordered_set<void *> writtenByDispatch;
+  for (auto &command : commands) {
+    auto collect = [&](const std::shared_ptr<implementation::Function> &fn,
+                       const std::vector<Attribute> &args) {
+      std::vector<bool> written = fn->writtenArgs(args);
+      for (size_t k = 0; k < args.size(); ++k)
+        if (written[k])
+          if (id<MTLResource> r = resourceOf(args[k]))
+            writtenByDispatch.insert((__bridge void *)r);
+    };
+    if (auto *d = std::get_if<DispatchCmd>(&command))
+      collect(d->function, d->args);
+    else if (auto *di = std::get_if<DispatchIndirectCmd>(&command))
+      collect(di->function, di->args);
+  }
+  auto addBarrierArgs = [&](const std::vector<Attribute> &args) {
+    for (auto &a : args)
+      if (id<MTLResource> r = resourceOf(a))
+        if (writtenByDispatch.count((__bridge void *)r))
+          addBarrierResource(r);
   };
   auto clearBarrierResources = [&]() {
     barrierResources.clear();
-    barrierResourceSet.clear();
+    barrierOverflow = false;
   };
 
   for (auto &command : commands) {
@@ -990,9 +1033,14 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
             cmd.function->executeIndirect(enc, cmd.indirectBuffer,
                                           cmd.indirectOffset, cmd.args);
             addBarrierArgs(cmd.args);
-            addBarrierResource(static_cast<implementation::BufferMetal *>(
-                                   cmd.indirectBuffer.get())
-                                   ->mem.get());
+            // The indirect-args buffer is read here; order it only if a
+            // dispatch writes it elsewhere (e.g. a prior dispatch computed the
+            // counts), matching the writtenByDispatch filter.
+            id<MTLResource> ind = static_cast<implementation::BufferMetal *>(
+                                      cmd.indirectBuffer.get())
+                                      ->mem.get();
+            if (ind && writtenByDispatch.count((__bridge void *)ind))
+              addBarrierResource(ind);
           } else if constexpr (std::is_same_v<T, CopyBufferCmd>) {
             dstWrap.impl() = cmd.dst;
             srcWrap.impl() =
@@ -1067,9 +1115,21 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
             // fall back to endEncoding() when no compute encoder is open or
             // the API is unavailable.
             if (computeEncoder.get() && !blitEncoder.get()) {
-              if (@available(macOS 10.14, iOS 12.0, tvOS 12.0,
-                             macCatalyst 13.0, *)) {
-                if (!barrierResources.empty()) {
+              if (!concurrent) {
+                // Serial encoder (MTLDispatchTypeSerial): consecutive
+                // dispatches already execute in order, so an intra-encoder
+                // barrier is redundant. (A compute<->blit transition still
+                // needs the cross-encoder fence, handled by the else branch.)
+                clearBarrierResources();
+              } else if (@available(macOS 10.14, iOS 12.0, tvOS 12.0,
+                                    macCatalyst 13.0, *)) {
+                if (barrierOverflow) {
+                  // Too many resources to order individually; the coarse scope
+                  // barrier is O(1) and strictly broader, so still correct.
+                  [computeEncoder.get()
+                      memoryBarrierWithScope:MTLBarrierScopeBuffers |
+                                             MTLBarrierScopeTextures];
+                } else if (!barrierResources.empty()) {
                   [computeEncoder.get()
                       memoryBarrierWithResources:barrierResources.data()
                                            count:barrierResources.size()];

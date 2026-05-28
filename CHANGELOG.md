@@ -34,6 +34,21 @@
   bytes in `dst`. The host `dst` pointer must remain valid until that
   `stream.sync()` returns. Enables batching N device-to-host readbacks
   into a single `MTLCommandBuffer` + blit encoder + commit + wait.
+- Resource write-intent for CommandBuffer barrier narrowing. `ghost::write(buf)`,
+  `ghost::read(buf)`, `ghost::readwrite(buf)` tag a Buffer/Image kernel argument
+  (mirroring `ghost::sampler()`); `BoundFunction::writes(n)` is shorthand for
+  "the first `n` Buffer/Image args are written, the rest read-only". A
+  CommandBuffer barrier then orders only resources some dispatch writes —
+  resources that are read-only across the whole batch (e.g. weights) are
+  dropped, preserving more dispatch overlap. Write-after-read is still ordered
+  (a resource read here but written by a later dispatch stays in the set).
+- `Library::setWriteDefault(WriteDefault)` with `WriteDefault { Conservative,
+  FirstWritten }` — per-library default for resource args left untagged.
+  Default `Conservative` treats every resource as written (no behavior change).
+  `FirstWritten` opts into the "first Buffer/Image arg is the output" convention
+  so barriers narrow without per-call tagging; kernels that write a non-first or
+  multiple resources under `FirstWritten` must tag them (`ghost::write` /
+  `writes()`) or they are under-synchronized in concurrent mode.
 
 ### Changed
 

@@ -73,4 +73,18 @@ Attribute::Attribute(const SamplerDescription& sampler)
 
 Attribute sampler() { return Attribute(SamplerDescription{}); }
 
+Attribute write(Buffer& b) { return Attribute(b).access(Access::WriteOnly); }
+
+Attribute write(Image& i) { return Attribute(i).access(Access::WriteOnly); }
+
+Attribute read(Buffer& b) { return Attribute(b).access(Access::ReadOnly); }
+
+Attribute read(Image& i) { return Attribute(i).access(Access::ReadOnly); }
+
+Attribute readwrite(Buffer& b) {
+  return Attribute(b).access(Access::ReadWrite);
+}
+
+Attribute readwrite(Image& i) { return Attribute(i).access(Access::ReadWrite); }
+
 }  // namespace ghost

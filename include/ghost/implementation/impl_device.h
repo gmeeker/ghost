@@ -224,7 +224,9 @@ struct CommandBufferOptions {
   /// primitive, and implicit per-dispatch barriers would undermine it.
   /// Set false to opt into the same auto-barrier behavior that
   /// @c StreamOptions defaults to (useful when porting Stream code to a
-  /// cb without retrofitting explicit barrier calls).
+  /// cb without retrofitting explicit barrier calls). On Metal this is also
+  /// the dispatch-type selector: false uses @c MTLDispatchTypeSerial,
+  /// true uses @c MTLDispatchTypeConcurrent.
   bool concurrent = true;
 };
 class MappedBuffer;

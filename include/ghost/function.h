@@ -18,6 +18,7 @@
 #include <ghost/implementation/impl_function.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace ghost {
@@ -220,10 +221,37 @@ class Function {
     BoundFunction(std::shared_ptr<implementation::Function> impl,
                   const LaunchArgs& launchArgs, const Encoder& encoder);
 
+    /// @brief Declare that the first @p n Buffer/Image arguments are written
+    /// and the rest are read-only, so CommandBuffer barriers order only the
+    /// written resources. A complete per-dispatch spec for the common
+    /// "outputs first" case; per-argument @c ghost::write()/read() markers take
+    /// precedence over it. Returns @c *this for chaining:
+    /// @code
+    /// fn(launchArgs, cmd).writes(1)(out, in, weights);
+    /// @endcode
+    BoundFunction& writes(size_t n) {
+      _writeCount = n;
+      return *this;
+    }
+
     template <typename... ARGS>
     void operator()(ARGS&&... args) {
       std::vector<Attribute> attrArgs;
       implementation::Function::addArgs(attrArgs, std::forward<ARGS>(args)...);
+      if (_writeCount) {
+        // Stamp the first n Buffer/Image args Write and the rest Read, leaving
+        // any arg the caller already marked (ghost::write/read) untouched.
+        size_t resourceIndex = 0;
+        for (auto& a : attrArgs) {
+          if (a.type() != Attribute::Type_Buffer &&
+              a.type() != Attribute::Type_Image)
+            continue;
+          if (!a.access())
+            a.access(resourceIndex < *_writeCount ? Access::WriteOnly
+                                                  : Access::ReadOnly);
+          ++resourceIndex;
+        }
+      }
       dispatch(attrArgs);
     }
 
@@ -233,6 +261,7 @@ class Function {
     std::shared_ptr<implementation::Function> _impl;
     LaunchArgs _launchArgs;
     const Encoder& _encoder;
+    std::optional<size_t> _writeCount;
   };
 
   /// @brief Bind this kernel to a launch configuration and encoder.
@@ -304,8 +333,7 @@ class Library {
   template <typename... ARGS>
   Function lookupFunction(const std::string& name, ARGS&&... args) {
     Function fn = _impl->lookupFunction(name, std::forward<ARGS>(args)...);
-    fn._parent = _impl;
-    return fn;
+    return _stamp(fn);
   }
 
   /// @brief Look up a specialized function with compile-time constant values.
@@ -322,8 +350,7 @@ class Library {
     std::vector<Attribute> args;
     implementation::Function::addArgs(args, std::forward<ARGS>(tail)...);
     Function fn = _impl->specializeFunction(name, args);
-    fn._parent = _impl;
-    return fn;
+    return _stamp(fn);
   }
 
   /// @brief Look up a specialized function with a vector of constant values.
@@ -335,8 +362,7 @@ class Library {
   Function lookupSpecializedFunction(const std::string& name,
                                      const std::vector<Attribute>& args) {
     Function fn = _impl->specializeFunction(name, args);
-    fn._parent = _impl;
-    return fn;
+    return _stamp(fn);
   }
 
   /// @brief Look up a specialized function with named constant values.
@@ -354,8 +380,7 @@ class Library {
       const std::string& name,
       const std::vector<std::pair<std::string, Attribute>>& constants) {
     Function fn = _impl->specializeFunctionNamed(name, constants);
-    fn._parent = _impl;
-    return fn;
+    return _stamp(fn);
   }
 
   /// @brief Set named global constants on this library.
@@ -374,6 +399,20 @@ class Library {
   void setGlobals(
       const std::vector<std::pair<std::string, Attribute>>& globals);
 
+  /// @brief Set how functions looked up from this library interpret untagged
+  /// resource arguments for CommandBuffer barrier narrowing.
+  ///
+  /// Applies to functions looked up *after* this call. Default is
+  /// @c WriteDefault::Conservative (every resource treated as written — no
+  /// behavior change). Set @c WriteDefault::FirstWritten to opt into the
+  /// "first Buffer/Image is the output" convention so barriers order only
+  /// written resources without per-call tagging.
+  /// @param wd The write-intent default policy.
+  void setWriteDefault(WriteDefault wd) { _impl->writeDefault = wd; }
+
+  /// @brief The current write-intent default policy for this library.
+  WriteDefault writeDefault() const { return _impl->writeDefault; }
+
   /// @brief Retrieve the compiled binary data from this library.
   ///
   /// Returns the backend-specific compiled binary (e.g., cubin for CUDA,
@@ -390,6 +429,14 @@ class Library {
   std::shared_ptr<implementation::Library>& impl() { return _impl; }
 
  private:
+  // Stamp library-owned state (parent reference + write-default policy) onto a
+  // freshly looked-up function. Library is a friend of Function.
+  Function& _stamp(Function& fn) const {
+    fn._parent = _impl;
+    fn._impl->writeDefault = _impl->writeDefault;
+    return fn;
+  }
+
   std::shared_ptr<implementation::Library> _impl;
 };
 }  // namespace ghost

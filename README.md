@@ -329,6 +329,17 @@ result.copy(cb, outputBuf, bytes);
 cb.submit(stream);
 ```
 
+A `barrier()` orders every resource by default. To let the backend narrow a
+barrier to just the resources a dispatch writes (so read-only inputs don't add
+false ordering), tag write intent with `ghost::write()` / `ghost::read()` or
+`fn(args, cb).writes(n)(...)`, or set a library-wide default with
+`library.setWriteDefault(ghost::WriteDefault::FirstWritten)`. The default,
+`Conservative`, treats every resource as written.
+
+```cpp
+fn(args, cb)(ghost::write(outputBuf), inputBuf, 3.14f);  // only outputBuf ordered
+```
+
 ## Architecture
 
 Ghost uses a bridge/pimpl pattern. Public API classes (`Device`, `Function`, `Library`, `Stream`, `CommandBuffer`, `Buffer`, `Image`) are thin wrappers that delegate to virtual implementation interfaces. `Stream` and `CommandBuffer` both inherit from `Encoder`, so GPU operations (kernel dispatch, buffer/image copies) accept either through a single interface. Each backend provides concrete implementations of these interfaces.

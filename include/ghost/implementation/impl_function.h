@@ -27,6 +27,20 @@
 
 namespace ghost {
 
+/// @brief How a Library interprets the read/write intent of resource arguments
+/// that the caller did not explicitly tag (via @c ghost::write()/read() or
+/// @c BoundFunction::writes()). Controls CommandBuffer barrier narrowing.
+enum class WriteDefault {
+  /// @brief Every resource argument is treated as written. Never
+  /// under-synchronizes; the default, and matches pre-existing behavior.
+  Conservative,
+  /// @brief The first Buffer/Image argument is treated as written, the rest
+  /// read-only — the common "output first" kernel convention. Opt in per
+  /// Library; kernels that write a non-first or multiple resources must tag
+  /// them explicitly or they will be under-synchronized in concurrent mode.
+  FirstWritten,
+};
+
 /// @brief Identifiers for queryable function (kernel) attributes.
 ///
 /// Pass these to Function::getAttribute() or
@@ -134,6 +148,36 @@ class Function {
 
   virtual Attribute getAttribute(FunctionAttributeId what) const = 0;
 
+  /// @brief Write-intent policy inherited from the owning Library, stamped at
+  /// lookup time. Consulted by @ref writtenArgs for barrier narrowing.
+  WriteDefault writeDefault = WriteDefault::Conservative;
+
+  /// @brief Resolve which arguments a dispatch writes, for CommandBuffer
+  /// barrier narrowing. Per-argument @c Access (from @c ghost::write()/read()
+  /// or @c BoundFunction::writes()) takes precedence; unset resource args fall
+  /// back to @ref writeDefault. Result is index-aligned with @p args; non-
+  /// resource args (scalars, samplers) are always @c false.
+  std::vector<bool> writtenArgs(const std::vector<Attribute>& args) const {
+    std::vector<bool> written(args.size(), false);
+    size_t bufferImageIndex = 0;
+    for (size_t k = 0; k < args.size(); ++k) {
+      const Attribute& a = args[k];
+      Attribute::Type t = a.type();
+      bool isBufImg =
+          (t == Attribute::Type_Buffer || t == Attribute::Type_Image);
+      if (!isBufImg && t != Attribute::Type_ArgumentBuffer) continue;
+      if (const std::optional<Access>& acc = a.access()) {
+        written[k] = (*acc != Access::ReadOnly);
+      } else if (writeDefault == WriteDefault::Conservative) {
+        written[k] = true;
+      } else {  // FirstWritten: only the first Buffer/Image is the output
+        written[k] = isBufImg && bufferImageIndex == 0;
+      }
+      if (isBufImg) ++bufferImageIndex;
+    }
+    return written;
+  }
+
   /// @brief Subgroup width the compiled pipeline will actually use.
   ///
   /// Default implementation returns the value of @c kFunctionThreadWidth from
@@ -202,6 +246,10 @@ class Library {
 
   /// @brief Whether this library retains compiled binary data for getBinary().
   bool retainBinary() const { return _retainBinary; }
+
+  /// @brief Default write-intent policy stamped onto functions looked up from
+  /// this library. Set via @c ghost::Library::setWriteDefault.
+  WriteDefault writeDefault = WriteDefault::Conservative;
 
  private:
   bool _retainBinary = false;

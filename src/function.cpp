@@ -97,8 +97,7 @@ Library::Library(std::shared_ptr<implementation::Library> impl) : _impl(impl) {}
 
 Function Library::lookupFunction(const std::string& name) const {
   Function fn = _impl->lookupFunction(name);
-  fn._parent = _impl;
-  return fn;
+  return _stamp(fn);
 }
 
 void Library::setGlobals(

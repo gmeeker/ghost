@@ -32,6 +32,11 @@ class Buffer;
 class Image;
 }  // namespace implementation
 
+// Per-argument read/write intent reuses the existing ghost::Access enum
+// (declared in image.h: ReadOnly / WriteOnly / ReadWrite). It tags resource
+// arguments so CommandBuffer barriers can order only the resources a dispatch
+// actually writes; when left unset, the owning Library's WriteDefault decides.
+
 /// @brief Type-safe tagged union for passing kernel arguments and querying
 /// device/function metadata.
 ///
@@ -109,6 +114,8 @@ class Attribute {
   std::shared_ptr<implementation::Image> _imageImpl;
   std::shared_ptr<ArgumentBuffer> _argBuffer;
   std::optional<SamplerDescription> _sampler;
+  // Read/write intent for resource args; unset means "defer to WriteDefault".
+  std::optional<Access> _access;
 
   template <typename S, typename T>
   void setT(const S* v, S v0, S* s, T* t, size_t num) {
@@ -383,6 +390,17 @@ class Attribute {
   }
 
   /// @}
+
+  /// @brief Set this resource argument's read/write intent.
+  /// @return @c *this for chaining.
+  Attribute& access(Access a) {
+    _access = a;
+    return *this;
+  }
+
+  /// @brief Explicitly-set read/write intent, or @c std::nullopt to defer to
+  /// the owning Library's @c WriteDefault policy.
+  const std::optional<Access>& access() const { return _access; }
 };
 
 /// @brief Construct a standalone sampler argument with default settings.
@@ -397,6 +415,24 @@ class Attribute {
 /// is ignored. For kernels with a 1:1 image/sampler pairing, prefer
 /// @c Image::sample() which is portable to all backends including CUDA.
 Attribute sampler();
+
+/// @name Resource access markers
+///
+/// Tag a Buffer/Image argument with its read/write intent so CommandBuffer
+/// barriers order only the resources a dispatch actually writes. Read-only
+/// resources never create a write→read hazard, so excluding them preserves
+/// more dispatch overlap. Example:
+/// @code
+/// fn(launchArgs, cmd)(ghost::write(out), in, weights);
+/// @endcode
+/// @{
+Attribute write(Buffer& b);
+Attribute write(Image& i);
+Attribute read(Buffer& b);
+Attribute read(Image& i);
+Attribute readwrite(Buffer& b);
+Attribute readwrite(Image& i);
+/// @}
 
 }  // namespace ghost
 
