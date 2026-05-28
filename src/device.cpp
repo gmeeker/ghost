@@ -33,6 +33,8 @@ void Stream::waitForEvent(const std::shared_ptr<Event>&) {
   throw ghost::unsupported_error();
 }
 
+void Stream::barrier() { sync(); }
+
 CommandBuffer* Encoder::asCommandBuffer() { return nullptr; }
 
 size_t Buffer::baseOffset() const { return 0; }

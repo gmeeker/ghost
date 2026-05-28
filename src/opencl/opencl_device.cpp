@@ -281,6 +281,15 @@ void StreamOpenCL::waitForEvent(const std::shared_ptr<Event>& e) {
   checkError(err);
 }
 
+void StreamOpenCL::barrier() {
+  // No host drain. Intra-queue ordering is already guaranteed: on an
+  // out-of-order queue every enqueue waits on the prior op's event (the
+  // events/lastEvent chain in execute() and the copy/fill paths), and an
+  // in-order queue orders by FIFO. So a CommandBuffer barrier between two
+  // ops needs no work here — the op after it already happens-after the op
+  // before it. Host visibility is provided by the caller's Stream::sync().
+}
+
 BufferOpenCL::BufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes)
     : mem(mem_), _size(bytes) {}
 

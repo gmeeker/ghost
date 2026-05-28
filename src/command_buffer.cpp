@@ -89,10 +89,12 @@ void RecordedCommandBuffer::replayInto(const ghost::Encoder& enc,
           } else if constexpr (std::is_same_v<T, CopyImageToHostCmd>) {
             cmd.src->copyTo(enc, cmd.dst, cmd.layout);
           } else if constexpr (std::is_same_v<T, BarrierCmd>) {
-            // Coarse fallback: drain the stream. Backends override
-            // submit() and replace this with a native pipeline barrier
-            // within their cb.
-            static_cast<implementation::Stream*>(stream.impl().get())->sync();
+            // Delegate to the stream's barrier(). Default drains the stream;
+            // backends whose enqueue already serializes (OpenCL) override it
+            // with a non-draining variant. Backends with a native cb override
+            // submit() and emit a native pipeline barrier instead.
+            static_cast<implementation::Stream*>(stream.impl().get())
+                ->barrier();
           } else if constexpr (std::is_same_v<T, WaitEventCmd>) {
             static_cast<implementation::Stream*>(stream.impl().get())
                 ->waitForEvent(cmd.event);

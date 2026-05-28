@@ -320,6 +320,15 @@ class Stream : public Encoder {
   /// The default implementation throws ghost::unsupported_error.
   /// @param e The event to wait for.
   virtual void waitForEvent(const std::shared_ptr<Event>& e);
+
+  /// @brief Order prior commands on this stream before subsequent ones.
+  ///
+  /// Replay target for CommandBuffer::barrier(). The default drains the
+  /// stream via sync() (host-blocking) so backends without finer ordering
+  /// stay correct. Backends whose per-op enqueue already serializes
+  /// (e.g. OpenCL's event chain / in-order queues) override this with a
+  /// cheaper non-draining variant.
+  virtual void barrier();
 };
 
 /// @brief Abstract backend interface for a GPU memory buffer.

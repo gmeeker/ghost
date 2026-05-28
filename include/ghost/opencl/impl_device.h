@@ -49,6 +49,7 @@ class StreamOpenCL : public Stream {
   virtual void sync() override;
   virtual std::shared_ptr<Event> record() override;
   virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
+  virtual void barrier() override;
   void addEvent();
   cl_event* event();
 
