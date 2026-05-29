@@ -108,6 +108,18 @@ TEST_P(ImageTest, SharedImageFromBufferWithPool) {
     // Pool not supported on this backend — test still exercises Shared hint.
   }
 
+  // Reset the pool on every exit path, including the GTEST_SKIP returns below.
+  struct PoolGuard {
+    Device& d;
+
+    ~PoolGuard() {
+      try {
+        d.setMemoryPoolSize(0);
+      } catch (const std::exception&) {
+      }
+    }
+  } poolGuard{device()};
+
   // Default-hint buffer may be heap-allocated; sharedImage should either
   // work or throw unsupported_error (not hang).
   auto defaultBuf = device().allocateBuffer(dataSize);
@@ -143,12 +155,6 @@ TEST_P(ImageTest, SharedImageFromBufferWithPool) {
 
   for (size_t i = 0; i < pixelCount; i++) {
     EXPECT_FLOAT_EQ(output[i], input[i]) << "index " << i;
-  }
-
-  // Reset pool.
-  try {
-    device().setMemoryPoolSize(0);
-  } catch (const std::exception&) {
   }
 }
 

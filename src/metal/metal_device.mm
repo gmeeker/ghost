@@ -361,11 +361,15 @@ BufferMetal::BufferMetal(const DeviceMetal &dev, size_t bytes,
     : _size(bytes) {
   MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache |
                                MTLResourceHazardTrackingModeUntracked;
-  // Staging hint routes to a host-visible shared buffer. Other hints
-  // currently fall through to private storage (the default fast path).
-  if (opts.hint == AllocHint::Staging) {
+  // Staging and Shared hints route to host-visible shared storage. Staging is
+  // for CPU<->GPU transfers; Shared backs a buffer-aliased texture where the
+  // CPU writes the buffer and reads it back through the texture, so it must be
+  // host-visible and coherent (a private buffer would force staging blits that
+  // race against the texture read under untracked hazards). Other hints fall
+  // through to private storage (the default fast path).
+  if (opts.hint == AllocHint::Staging || opts.hint == AllocHint::Shared) {
     options |= MTLResourceStorageModeShared;
-    if (opts.access == Access::ReadOnly) {
+    if (opts.hint == AllocHint::Staging && opts.access == Access::ReadOnly) {
       // Host writes, kernel reads — write-combined is efficient for upload.
       options |= MTLResourceCPUCacheModeWriteCombined;
     }
@@ -639,6 +643,20 @@ ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_,
                                 ") is less than width * pixelSize (" +
                                 std::to_string(minRowBytes) + ")");
   }
+  // The row stride must also be a multiple of the device's minimum linear
+  // texture alignment. Apple GPUs require only a few bytes, but discrete
+  // GPUs (Intel/AMD) commonly require 256. A misaligned stride makes
+  // newTextureWithDescriptor:offset:bytesPerRow: return nil, so reject it as
+  // unsupported instead of silently producing a nil texture.
+  size_t alignment = dev.imageAlignment(descr);
+  if (alignment > 1 && (bytesPerRow % alignment) != 0) {
+    throw ghost::unsupported_error(
+        ("bytesPerRow (" + std::to_string(bytesPerRow) +
+         ") is not a multiple of the device's minimum linear texture "
+         "alignment (" +
+         std::to_string(alignment) + ")")
+            .c_str());
+  }
   size_t requiredBytes = bytesPerRow * descr.size.y;
   if (buffer.size() < requiredBytes) {
     throw std::invalid_argument(
@@ -651,6 +669,11 @@ ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_,
   mem = [buffer.mem.get() newTextureWithDescriptor:textureDescriptor.get()
                                             offset:0
                                        bytesPerRow:bytesPerRow];
+  if (!mem.get()) {
+    throw ghost::unsupported_error(
+        "Failed to create a shared texture aliasing the buffer; its storage "
+        "mode or row layout is incompatible with a linear texture");
+  }
 }
 
 ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_,
@@ -1575,9 +1598,14 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
     if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *)) {
       if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, *)) {
         if ([dev.get() supportsFamily:MTLGPUFamilyApple10]) {
-          v = 32786;
+          v = 32768;
         }
-      } else if (![dev.get() supportsFamily:MTLGPUFamilyApple3]) {
+      }
+      // Only the oldest iOS GPUs (Apple1/Apple2 = A7/A8) cap at 8192.
+      // Mac1/Mac2 and Apple3+ all support 16384, so don't downgrade them.
+      if (![dev.get() supportsFamily:MTLGPUFamilyApple3] &&
+          ![dev.get() supportsFamily:MTLGPUFamilyMac2] &&
+          ![dev.get() supportsFamily:MTLGPUFamilyMac1]) {
         v = 8192;
       }
     } else {
