@@ -1044,6 +1044,16 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
     barrierResources.clear();
     barrierOverflow = false;
   };
+  // memoryBarrierWithResources: is whole-resource per the Metal spec, so it
+  // should equal memoryBarrierWithScope: for any single buffer. But non-Apple
+  // (Intel/AMD, MTLGPUFamilyMac2) drivers don't honor the resource-list form
+  // for aliased sub-buffers of one parent MTLBuffer (reused-slot WAR/WAW under
+  // concurrent dispatch), while the scope form is honored. Gate the narrow
+  // per-resource barrier to Apple GPUs. (NOT hasUnifiedMemory: Intel UHD 630
+  // reports YES.)
+  bool perResourceBarriers = false;
+  if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *))
+    perResourceBarriers = [_dev.dev.get() supportsFamily:MTLGPUFamilyApple1];
 
   for (auto &command : commands) {
     std::visit(
@@ -1126,17 +1136,18 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
           } else if constexpr (std::is_same_v<T, CopyImageToHostCmd>) {
             cmd.src->copyTo(enc, cmd.dst, cmd.layout);
           } else if constexpr (std::is_same_v<T, BarrierCmd>) {
-            // Compute->compute: order just the resources dispatches touched
-            // since the last barrier (memoryBarrierWithResources:), which
-            // keeps more of the concurrent encoder's overlap than the coarse
-            // memoryBarrierWithScope:(Buffers|Textures) on barrier-dense
-            // graphs. The tracked set covers both buffers and textures
-            // (Ghost Images), preserving barrier()'s order-everything
-            // semantics. An empty set means nothing was dispatched since the
-            // last barrier, so there is nothing to order. A pending
-            // compute<->blit transition still needs the cross-encoder fence;
-            // fall back to endEncoding() when no compute encoder is open or
-            // the API is unavailable.
+            // Compute->compute. On Apple GPUs, order just the resources
+            // dispatches touched since the last barrier
+            // (memoryBarrierWithResources:), which keeps more of the concurrent
+            // encoder's overlap than the coarse memoryBarrierWithScope:
+            // (Buffers|Textures) on barrier-dense graphs. Non-Apple drivers
+            // fall back to the scope barrier (see perResourceBarriers above).
+            // The tracked set covers both buffers and textures (Ghost Images),
+            // preserving barrier()'s order-everything semantics. An empty set
+            // means nothing was dispatched since the last barrier, so there is
+            // nothing to order. A pending compute<->blit transition still needs
+            // the cross-encoder fence; fall back to endEncoding() when no
+            // compute encoder is open or the API is unavailable.
             if (computeEncoder.get() && !blitEncoder.get()) {
               if (!concurrent) {
                 // Serial encoder (MTLDispatchTypeSerial): consecutive
@@ -1146,12 +1157,16 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
                 clearBarrierResources();
               } else if (@available(macOS 10.14, iOS 12.0, tvOS 12.0,
                                     macCatalyst 13.0, *)) {
-                if (barrierOverflow) {
-                  // Too many resources to order individually; the coarse scope
-                  // barrier is O(1) and strictly broader, so still correct.
-                  [computeEncoder.get()
-                      memoryBarrierWithScope:MTLBarrierScopeBuffers |
-                                             MTLBarrierScopeTextures];
+                if (barrierOverflow || !perResourceBarriers) {
+                  // Too many resources to list, or a non-Apple driver that
+                  // doesn't honor per-resource barriers for aliased
+                  // sub-buffers: the coarse scope barrier is O(1), strictly
+                  // broader, and reliably honored.
+                  if (barrierOverflow || !barrierResources.empty()) {
+                    [computeEncoder.get()
+                        memoryBarrierWithScope:MTLBarrierScopeBuffers |
+                                               MTLBarrierScopeTextures];
+                  }
                 } else if (!barrierResources.empty()) {
                   [computeEncoder.get()
                       memoryBarrierWithResources:barrierResources.data()
