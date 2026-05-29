@@ -108,7 +108,7 @@ class ptr {
  public:
   explicit ptr(cl_type obj = nullptr, bool retainObject = false)
       : object_(obj) {
-    if (!retainObject) retain();
+    if (retainObject) retain();
   }
 
   ptr(const ptr& rhs) : object_(rhs.object_) { retain(); }
@@ -146,13 +146,8 @@ class ptr {
     return &object_;
   }
 
-  ptr& operator=(cl_type rhs) {
-    reset();
-    object_ = rhs;
-    retain();
-    return *this;
-  }
-
+  // No operator=(cl_type): assign through an explicit ptr so the ownership
+  // choice (adopt vs. retain) is always visible at the call site.
   ptr& operator=(const ptr& rhs) {
     if (get() != rhs.get()) {
       reset();

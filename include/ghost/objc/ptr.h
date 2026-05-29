@@ -48,7 +48,7 @@ class ptr {
 
  public:
   explicit ptr(obj_type obj = nil, bool retainObject = true) : object_(obj) {
-    if (!retainObject) retain();
+    if (retainObject) retain();
   }
 
   ptr(const ptr& rhs) : object_(rhs.object_) { retain(); }

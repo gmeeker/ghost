@@ -222,14 +222,14 @@ StreamOpenCL::StreamOpenCL(const DeviceOpenCL& dev,
     if (dev.checkVersion("2.0")) {
 #ifdef CL_VERSION_2_0
       cl_queue_properties p[] = {CL_QUEUE_PROPERTIES, queueProperties, 0};
-      queue =
-          clCreateCommandQueueWithProperties(dev.context, devices[0], p, &err);
+      queue = opencl::ptr<cl_command_queue>(
+          clCreateCommandQueueWithProperties(dev.context, devices[0], p, &err));
       checkError(err);
 #endif
     }
     if (!queue) {
-      queue =
-          clCreateCommandQueue(dev.context, devices[0], queueProperties, &err);
+      queue = opencl::ptr<cl_command_queue>(
+          clCreateCommandQueue(dev.context, devices[0], queueProperties, &err));
       checkError(err);
     }
   }
@@ -1041,9 +1041,9 @@ ghost::Buffer DeviceOpenCL::allocateBuffer(size_t bytes,
   }
   if (auto* a = allocator()) {
     if (void* handle = a->allocateBuffer(bytes, opts)) {
-      // retainObject=true here means "I'm transferring ownership; no retain"
-      opencl::ptr<cl_mem> mem(reinterpret_cast<cl_mem>(handle),
-                              /*retainObject=*/true);
+      // Allocator owns this handle and reclaims it in freeBuffer() via
+      // mem.release() (no clRelease). Adopt it without retaining.
+      opencl::ptr<cl_mem> mem(reinterpret_cast<cl_mem>(handle));
       auto ptr = std::make_shared<implementation::BufferOpenCL>(mem, bytes);
       ptr->setAllocator(a);
       return ghost::Buffer(ptr);
@@ -1057,8 +1057,8 @@ ghost::MappedBuffer DeviceOpenCL::allocateMappedBuffer(
     size_t bytes, const BufferOptions& opts) const {
   if (auto* a = allocator()) {
     if (void* handle = a->allocateMappedBuffer(bytes, opts)) {
-      opencl::ptr<cl_mem> mem(reinterpret_cast<cl_mem>(handle),
-                              /*retainObject=*/true);
+      // Allocator-owned; adopt without retaining (reclaimed via mem.release()).
+      opencl::ptr<cl_mem> mem(reinterpret_cast<cl_mem>(handle));
       auto ptr = std::make_shared<implementation::MappedBufferOpenCL>(
           mem, bytes, bytes);
       ptr->setAllocator(a);
@@ -1092,8 +1092,8 @@ ghost::Image DeviceOpenCL::allocateImage(const ImageDescription& descr) const {
   }
   if (auto* a = allocator()) {
     if (void* handle = a->allocateImage(descr)) {
-      opencl::ptr<cl_mem> mem(reinterpret_cast<cl_mem>(handle),
-                              /*retainObject=*/true);
+      // Allocator-owned; adopt without retaining (reclaimed via mem.release()).
+      opencl::ptr<cl_mem> mem(reinterpret_cast<cl_mem>(handle));
       auto ptr = std::make_shared<implementation::ImageOpenCL>(mem, descr);
       ptr->setAllocator(a);
       return ghost::Image(ptr);
@@ -1118,17 +1118,19 @@ ghost::Image DeviceOpenCL::sharedImage(const ImageDescription& descr,
 }
 
 ghost::Buffer DeviceOpenCL::wrapBuffer(const SharedBuffer& shared) const {
-  // retainObject=false makes opencl::ptr call clRetainMemObject on construct
-  // and clReleaseMemObject on destroy: balanced, host's count unchanged.
+  // Host retains ownership. retainObject=true makes opencl::ptr call
+  // clRetainMemObject on construct and clReleaseMemObject on destroy:
+  // balanced, host's count unchanged.
   opencl::ptr<cl_mem> mem(reinterpret_cast<cl_mem>(shared.handle),
-                          /*retainObject=*/false);
+                          /*retainObject=*/true);
   auto ptr = std::make_shared<implementation::BufferOpenCL>(mem, shared.bytes);
   return ghost::Buffer(ptr);
 }
 
 ghost::Image DeviceOpenCL::wrapImage(const SharedImage& shared) const {
+  // Host retains ownership; retain+release to leave its count unchanged.
   opencl::ptr<cl_mem> mem(reinterpret_cast<cl_mem>(shared.handle),
-                          /*retainObject=*/false);
+                          /*retainObject=*/true);
   auto ptr = std::make_shared<implementation::ImageOpenCL>(mem, shared.descr);
   return ghost::Image(ptr);
 }
