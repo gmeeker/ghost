@@ -200,11 +200,20 @@ double EventOpenCL::elapsed(const Event& other) const {
 }
 
 StreamOpenCL::StreamOpenCL(opencl::ptr<cl_command_queue> queue_)
-    : queue(queue_), outOfOrder(true) {}
+    : queue(queue_), outOfOrder(true) {
+  if (queue.get() != nullptr) {
+    cl_command_queue_properties props = 0;
+    cl_int err = clGetCommandQueueInfo(queue, CL_QUEUE_PROPERTIES,
+                                       sizeof(props), &props, nullptr);
+    if (err == CL_SUCCESS) {
+      outOfOrder = (props & CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE) != 0;
+    }
+  }
+}
 
 StreamOpenCL::StreamOpenCL(const DeviceOpenCL& dev,
                            const StreamOptions& options)
-    : outOfOrder(true) {
+    : outOfOrder(options.concurrent) {
   cl_int err;
   cl_command_queue_properties queueProperties = 0;
   cl_command_queue_properties devQueueProperties = 0;
