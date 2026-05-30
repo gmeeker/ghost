@@ -178,6 +178,25 @@ class CommandBufferVulkan : public RecordedCommandBuffer, public VulkanEncoder {
   void submit(const ghost::Stream& stream) override;
   void reset() override;
 
+  /// @brief Defer a native Vulkan encoding step to submit-time replay.
+  ///
+  /// At replay, Ghost ensures @c commandBuffer is in the recording state
+  /// and invokes @p body with this encoder. Record @c vkCmdXxx directly
+  /// onto @c encoder.commandBuffer.
+  ///
+  /// Body contract (initial, may tighten as concrete uses appear):
+  ///   1. Do not call @c vkEndCommandBuffer on @c commandBuffer.
+  ///   2. If the body writes resources that subsequently recorded Ghost
+  ///      commands read, issue a @c vkCmdPipelineBarrier (or sync2
+  ///      equivalent) at the end of the body whose @c dstStageMask covers
+  ///      @c VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT and
+  ///      @c VK_PIPELINE_STAGE_TRANSFER_BIT with matching access masks
+  ///      for the resources written.
+  ///   3. Resource state (image layouts in particular) must be left in
+  ///      the state the body found it in unless the body owns the
+  ///      resource.
+  void encodeNative(std::function<void(VulkanEncoder&)> body);
+
  private:
   vk::ptr<VkCommandPool> _commandPool;
   vk::ptr<VkFence> _fence;

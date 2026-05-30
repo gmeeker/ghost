@@ -17,7 +17,9 @@
 
 #include <ghost/cuda/cu_ptr.h>
 #include <ghost/device.h>
+#include <ghost/implementation/recorded_command_buffer.h>
 
+#include <functional>
 #include <vector>
 
 namespace ghost {
@@ -46,6 +48,43 @@ class StreamCUDA : public Stream {
   virtual std::shared_ptr<Event> record() override;
   virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
   virtual void barrier() override;
+};
+
+/// @brief Record-and-replay @c CommandBuffer for CUDA, adding native
+/// interop via @ref encodeNative.
+///
+/// CUDA has no native command-buffer concept that maps onto Ghost's
+/// recording cb (CUDA graphs are a separate model that most libraries
+/// don't use), so the cb still replays its variants directly onto the
+/// target stream's @c CUstream at submit time. This subclass exists to
+/// add @ref encodeNative on top of the default @ref RecordedCommandBuffer
+/// machinery.
+class CommandBufferCUDA : public RecordedCommandBuffer {
+ public:
+  /// @brief Defer a native CUDA encoding step to submit-time replay.
+  ///
+  /// At replay, @p body is invoked with the target stream's @c CUstream.
+  /// Ordering against adjacent Ghost-recorded work is automatic by
+  /// CUDA's in-order stream semantics — issue your work onto @p stream
+  /// and it slots between the surrounding recorded commands.
+  ///
+  /// Body contract:
+  ///   1. All work must be enqueued on @p stream (or on a stream that
+  ///      synchronizes against it before this body returns).
+  ///   2. Do not call @c cuStreamSynchronize / @c cuCtxSynchronize.
+  ///
+  /// Typical use — splicing cuDNN/cuBLAS into a Ghost batch:
+  /// @code
+  /// cb_cuda->encodeNative([=](CUstream s) {
+  ///   cudnnSetStream(handle, s);
+  ///   cudnnConvolutionForward(handle, ...);
+  /// });
+  /// @endcode
+  void encodeNative(std::function<void(CUstream stream)> body);
+
+ protected:
+  void replayEncodeNative(const EncodeNativeCmd& cmd,
+                          const ghost::Stream& stream) override;
 };
 
 class BufferCUDA : public Buffer {
@@ -210,6 +249,9 @@ class DeviceCUDA : public Device {
 
   virtual ghost::Stream createStream(
       const StreamOptions& options = {}) const override;
+
+  virtual std::shared_ptr<CommandBuffer> createCommandBuffer(
+      const CommandBufferOptions& options = {}) const override;
 
   virtual size_t getMemoryPoolSize() const override;
   virtual void setMemoryPoolSize(size_t bytes) override;

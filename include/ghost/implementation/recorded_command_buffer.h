@@ -122,12 +122,23 @@ struct RecordEventCmd {
   std::shared_ptr<implementation::Event> event;
 };
 
+/// @brief Native-API encoding step deferred to submit-time replay.
+///
+/// Used by per-backend @c encodeNative entry points (see e.g.
+/// @c CommandBufferMetal::encodeNative). The body is type-erased here so
+/// the shared variant stays closed; each backend's public entry point
+/// wraps a typed callback into this form, and the backend's replay site
+/// passes the matching native context pointer when invoking @c body.
+struct EncodeNativeCmd {
+  std::function<void(void* nativeContext)> body;
+};
+
 using Command =
     std::variant<DispatchCmd, DispatchIndirectCmd, CopyBufferCmd,
                  CopyBufferRawCmd, ReadBufferCmd, FillBufferCmd,
                  FillBufferPatternCmd, CopyImageCmd, CopyImageFromBufferCmd,
                  CopyImageFromHostCmd, CopyImageToBufferCmd, CopyImageToHostCmd,
-                 BarrierCmd, WaitEventCmd, RecordEventCmd>;
+                 BarrierCmd, WaitEventCmd, RecordEventCmd, EncodeNativeCmd>;
 
 /// @brief Record-and-replay @ref CommandBuffer used as the fallback for
 /// backends without a native command-buffer concept (CUDA, OpenCL, CPU).
@@ -237,6 +248,13 @@ class RecordedCommandBuffer : public CommandBuffer {
   std::shared_ptr<implementation::Event> addRecordEvent(
       const ghost::Stream& stream) override;
 
+  /// @brief Record a native-API encoding step. Backend-specific public
+  /// @c encodeNative entry points wrap their typed callback into the
+  /// @c std::function<void(void*)> form expected here.
+  void addEncodeNative(std::function<void(void*)> body) {
+    commands.push_back(EncodeNativeCmd{std::move(body)});
+  }
+
   void submit(const ghost::Stream& stream) override;
 
   void reset() override {
@@ -270,6 +288,18 @@ class RecordedCommandBuffer : public CommandBuffer {
   /// operation on the encoder. Used by the fallback @c submit and by
   /// backend subclasses that want to replay onto their own native cb.
   void replayInto(const ghost::Encoder& enc, const ghost::Stream& stream);
+
+  /// @brief Invoked from @c replayInto when an @c EncodeNativeCmd is hit.
+  ///
+  /// Default throws @c ghost::unsupported_error — the fallback (CPU) path
+  /// has no native API to interop with. Backends whose @c CommandBuffer
+  /// flows through @c RecordedCommandBuffer::submit (i.e. CUDA, OpenCL)
+  /// override this to invoke @c cmd.body with the appropriate native
+  /// context. Backends with their own @c submit replay loop (Metal,
+  /// Vulkan, DirectX) handle @c EncodeNativeCmd inline and never reach
+  /// this hook.
+  virtual void replayEncodeNative(const EncodeNativeCmd& cmd,
+                                  const ghost::Stream& stream);
 };
 
 }  // namespace implementation

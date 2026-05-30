@@ -1183,6 +1183,20 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
             throw ghost::unsupported_error();
           } else if constexpr (std::is_same_v<T, RecordEventCmd>) {
             throw ghost::unsupported_error();
+          } else if constexpr (std::is_same_v<T, EncodeNativeCmd>) {
+            // End any active Ghost encoder so the callback starts with a
+            // clean slate; this also updates fence with our writes-so-far.
+            endEncoding();
+            // The barrier-resource tracking set is reset below because no
+            // compute encoder is open after endEncoding().
+            cmd.body(static_cast<MetalEncoder *>(this));
+            // Per the documented contract, the body ended its own encoder
+            // and (if it cares about ordering subsequent Ghost work)
+            // already updateFence:fence. The next recorded command will
+            // open a fresh encoder which waitForFence:s. Set
+            // pendingFenceWait so that path doesn't skip the wait when no
+            // Ghost encoder was open before the body ran.
+            pendingFenceWait = true;
           }
         },
         command);
@@ -1251,6 +1265,15 @@ void CommandBufferMetal::onCompletion(std::function<void()> handler) {
   // Use the RecordedCommandBuffer field so submit() can hand it off uniformly
   // with the rest of the variant-replay machinery.
   pendingCompletionHandlers.push_back(std::move(handler));
+}
+
+void CommandBufferMetal::encodeNative(
+    std::function<void(MetalEncoder &)> body) {
+  // Wrap the typed body into the EncodeNativeCmd's type-erased shape.
+  // submit()'s visitor passes `this` as the native context.
+  addEncodeNative([body = std::move(body)](void *ctx) {
+    body(*static_cast<MetalEncoder *>(ctx));
+  });
 }
 
 // ---------------------------------------------------------------------------

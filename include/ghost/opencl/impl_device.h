@@ -16,8 +16,10 @@
 #define GHOST_OPENCL_IMPL_DEVICE_H
 
 #include <ghost/device.h>
+#include <ghost/implementation/recorded_command_buffer.h>
 #include <ghost/opencl/ptr.h>
 
+#include <functional>
 #include <list>
 #include <set>
 
@@ -55,6 +57,37 @@ class StreamOpenCL : public Stream {
 
  protected:
   opencl::ptr<cl_event> lastEvent;
+};
+
+/// @brief Record-and-replay @c CommandBuffer for OpenCL, adding native
+/// interop via @ref encodeNative.
+///
+/// The OpenCL backend has no native command-buffer concept that maps onto
+/// Ghost's recording cb (the @c cl_khr_command_buffer extension records a
+/// closed Khronos-blessed command set that external libraries like clBLAS
+/// / clBlast / MIOpen do not use), so the cb still replays its variants
+/// directly onto the target stream's @c cl_command_queue at submit time.
+/// This subclass exists to add @ref encodeNative on top of the default
+/// @ref RecordedCommandBuffer machinery.
+class CommandBufferOpenCL : public RecordedCommandBuffer {
+ public:
+  /// @brief Defer a native OpenCL encoding step to submit-time replay.
+  ///
+  /// At replay, @p body is invoked with the target stream's
+  /// @c cl_command_queue. Issue your work via @c clEnqueueXxx on
+  /// @p queue. Ordering follows the queue's properties: an in-order
+  /// queue (the default) chains automatically with adjacent Ghost
+  /// dispatches; an out-of-order queue requires the body to manage
+  /// its own event dependencies.
+  ///
+  /// Body contract:
+  ///   1. All work must be enqueued on @p queue.
+  ///   2. Do not call @c clFinish / @c clWaitForEvents on @p queue.
+  void encodeNative(std::function<void(cl_command_queue queue)> body);
+
+ protected:
+  void replayEncodeNative(const EncodeNativeCmd& cmd,
+                          const ghost::Stream& stream) override;
 };
 
 class BufferOpenCL : public Buffer {
@@ -232,6 +265,9 @@ class DeviceOpenCL : public Device {
 
   virtual ghost::Stream createStream(
       const StreamOptions& options = {}) const override;
+
+  virtual std::shared_ptr<CommandBuffer> createCommandBuffer(
+      const CommandBufferOptions& options = {}) const override;
 
   virtual size_t getMemoryPoolSize() const override;
   virtual void setMemoryPoolSize(size_t bytes) override;

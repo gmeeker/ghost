@@ -163,6 +163,36 @@ class CommandBufferMetal : public RecordedCommandBuffer, public MetalEncoder {
   void reset() override;
   void onCompletion(std::function<void()> handler) override;
 
+  /// @brief Defer a native Metal encoding step to submit-time replay.
+  ///
+  /// At replay, Ghost ends any active encoder (updating @c fence so the
+  /// next Ghost encoder honors prior writes) and invokes @p body with
+  /// this object — its @c commandBuffer is the live @c MTLCommandBuffer,
+  /// @c fence is the per-cb cross-encoder fence, and @c concurrent
+  /// mirrors the cb's option.
+  ///
+  /// Body contract:
+  ///   1. End every encoder it creates before returning. The callback
+  ///      may instead use @c getComputeEncoder() / @c getBlitEncoder()
+  ///      to share Ghost's encoder bookkeeping, in which case Ghost
+  ///      ends it.
+  ///   2. If subsequent Ghost-recorded work must wait for the body's
+  ///      writes, @c [encoder updateFence:fence.get()] immediately
+  ///      before the body's @c endEncoding (mirrors what
+  ///      @c MetalEncoder::endEncoding does for Ghost-owned encoders).
+  ///   3. Do not commit or retain @c commandBuffer past return.
+  ///
+  /// Typical use — splicing MPS into a Ghost batch without a forced
+  /// out-of-order cb flush:
+  /// @code
+  /// cb_metal->encodeNative([=](MetalEncoder& enc) {
+  ///   enc.endEncoding();
+  ///   [mpsMatMul encodeToCommandBuffer:enc.commandBuffer.get()
+  ///                         leftMatrix:A rightMatrix:B resultMatrix:C];
+  /// });
+  /// @endcode
+  void encodeNative(std::function<void(MetalEncoder&)> body);
+
  private:
   const DeviceMetal& _dev;
   // The committed cb from the most recent submit(). Held until reset() or

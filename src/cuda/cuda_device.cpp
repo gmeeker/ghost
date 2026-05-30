@@ -187,6 +187,18 @@ void StreamCUDA::barrier() {
   // visibility is provided by the caller's Stream::sync() after submit().
 }
 
+void CommandBufferCUDA::encodeNative(std::function<void(CUstream)> body) {
+  addEncodeNative([body = std::move(body)](void* ctx) {
+    body(static_cast<CUstream>(ctx));
+  });
+}
+
+void CommandBufferCUDA::replayEncodeNative(const EncodeNativeCmd& cmd,
+                                           const ghost::Stream& stream) {
+  auto* sCu = static_cast<StreamCUDA*>(stream.impl().get());
+  cmd.body(sCu->queue.get());
+}
+
 BufferCUDA::BufferCUDA(cu::ptr<CUdeviceptr> mem_, size_t bytes)
     : mem(mem_), _size(bytes) {}
 
@@ -1141,6 +1153,15 @@ SharedContext DeviceCUDA::shareContext() const {
 ghost::Stream DeviceCUDA::createStream(const StreamOptions& options) const {
   auto ptr = std::make_shared<implementation::StreamCUDA>(context.get());
   return ghost::Stream(ptr);
+}
+
+std::shared_ptr<CommandBuffer> DeviceCUDA::createCommandBuffer(
+    const CommandBufferOptions&) const {
+  // CUDA has no native command-buffer concept aligned with Ghost's recording
+  // cb (CUDA graphs are a separate model that most CUDA libraries don't use).
+  // The subclass exists to expose encodeNative on top of the default
+  // record-and-replay machinery.
+  return std::make_shared<CommandBufferCUDA>();
 }
 
 size_t DeviceCUDA::getMemoryPoolSize() const {

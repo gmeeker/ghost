@@ -1339,6 +1339,8 @@ void CommandBufferVulkan::submit(const ghost::Stream& stream) {
             throw ghost::unsupported_error();
           } else if constexpr (std::is_same_v<T, RecordEventCmd>) {
             throw ghost::unsupported_error();
+          } else if constexpr (std::is_same_v<T, EncodeNativeCmd>) {
+            cmd.body(static_cast<VulkanEncoder*>(this));
           }
         },
         command);
@@ -1388,6 +1390,13 @@ void CommandBufferVulkan::reset() {
   pendingCompletionHandlers.clear();
   _pendingStaging.clear();
   deferredReads.clear();
+}
+
+void CommandBufferVulkan::encodeNative(
+    std::function<void(VulkanEncoder&)> body) {
+  addEncodeNative([body = std::move(body)](void* ctx) {
+    body(*static_cast<VulkanEncoder*>(ctx));
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -180,6 +180,24 @@ class CommandBufferDirectX : public RecordedCommandBuffer,
   void submit(const ghost::Stream& stream) override;
   void reset() override;
 
+  /// @brief Defer a native DirectX 12 encoding step to submit-time replay.
+  ///
+  /// At replay, Ghost ensures @c commandList is in the recording state,
+  /// binds the per-cb descriptor heaps via @c bindDescriptorHeaps(), and
+  /// invokes @p body with this encoder. Record commands directly onto
+  /// @c encoder.commandList.
+  ///
+  /// Body contract (initial, may tighten as concrete uses appear):
+  ///   1. Do not call @c Close on @c commandList.
+  ///   2. If the body binds different descriptor heaps via
+  ///      @c SetDescriptorHeaps, it must restore the encoder's heaps via
+  ///      @c encoder.bindDescriptorHeaps() before returning.
+  ///   3. If the body writes UAVs that subsequently recorded Ghost
+  ///      commands read, issue the matching
+  ///      @c D3D12_RESOURCE_BARRIER_TYPE_UAV barrier (or transition
+  ///      barriers for non-UAV resources) before returning.
+  void encodeNative(std::function<void(DirectXEncoder&)> body);
+
  private:
   ComPtr<ID3D12CommandAllocator> _commandAllocator;
   ComPtr<ID3D12Fence> _fence;

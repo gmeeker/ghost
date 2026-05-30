@@ -290,6 +290,19 @@ void StreamOpenCL::barrier() {
   // before it. Host visibility is provided by the caller's Stream::sync().
 }
 
+void CommandBufferOpenCL::encodeNative(
+    std::function<void(cl_command_queue)> body) {
+  addEncodeNative([body = std::move(body)](void* ctx) {
+    body(static_cast<cl_command_queue>(ctx));
+  });
+}
+
+void CommandBufferOpenCL::replayEncodeNative(const EncodeNativeCmd& cmd,
+                                             const ghost::Stream& stream) {
+  auto* sCL = static_cast<StreamOpenCL*>(stream.impl().get());
+  cmd.body(sCL->queue.get());
+}
+
 BufferOpenCL::BufferOpenCL(opencl::ptr<cl_mem> mem_, size_t bytes)
     : mem(mem_), _size(bytes) {}
 
@@ -1001,6 +1014,14 @@ SharedContext DeviceOpenCL::shareContext() const {
 ghost::Stream DeviceOpenCL::createStream(const StreamOptions& options) const {
   auto ptr = std::make_shared<implementation::StreamOpenCL>(*this, options);
   return ghost::Stream(ptr);
+}
+
+std::shared_ptr<CommandBuffer> DeviceOpenCL::createCommandBuffer(
+    const CommandBufferOptions&) const {
+  // OpenCL has no native command-buffer concept aligned with Ghost's
+  // recording cb; the subclass exists to expose encodeNative on top of
+  // the default record-and-replay machinery.
+  return std::make_shared<CommandBufferOpenCL>();
 }
 
 size_t DeviceOpenCL::getMemoryPoolSize() const {

@@ -500,6 +500,13 @@ void CommandBufferDirectX::submit(const ghost::Stream& stream) {
             throw ghost::unsupported_error();
           } else if constexpr (std::is_same_v<T, RecordEventCmd>) {
             throw ghost::unsupported_error();
+          } else if constexpr (std::is_same_v<T, EncodeNativeCmd>) {
+            // Ensure the encoder's descriptor heaps are bound before the
+            // body runs so a body that issues a dispatch using Ghost's
+            // SRV/sampler tables finds them. The body is responsible for
+            // restoring them via bindDescriptorHeaps() if it changes them.
+            bindDescriptorHeaps();
+            cmd.body(static_cast<DirectXEncoder*>(this));
           }
         },
         command);
@@ -539,6 +546,13 @@ void CommandBufferDirectX::reset() {
   deferredReads.clear();
   srvNextSlot = 0;
   samplerNextSlot = 0;
+}
+
+void CommandBufferDirectX::encodeNative(
+    std::function<void(DirectXEncoder&)> body) {
+  addEncodeNative([body = std::move(body)](void* ctx) {
+    body(*static_cast<DirectXEncoder*>(ctx));
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -100,10 +100,19 @@ void RecordedCommandBuffer::replayInto(const ghost::Encoder& enc,
                 ->waitForEvent(cmd.event);
           } else if constexpr (std::is_same_v<T, RecordEventCmd>) {
             static_cast<implementation::Stream*>(stream.impl().get())->record();
+          } else if constexpr (std::is_same_v<T, EncodeNativeCmd>) {
+            replayEncodeNative(cmd, stream);
           }
         },
         command);
   }
+}
+
+void RecordedCommandBuffer::replayEncodeNative(const EncodeNativeCmd&,
+                                               const ghost::Stream&) {
+  // Fallback (CPU) has no native API to interop with; backends with
+  // native interop override this hook.
+  throw ghost::unsupported_error();
 }
 
 std::shared_ptr<CommandBuffer> CommandBuffer::createDefault() {
