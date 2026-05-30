@@ -184,8 +184,13 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
 
         texptr texObj;
         checkError(cuTexObjectCreate(&texObj, &resDesc, &texDesc, nullptr));
+        // Move ownership into the deferred-release list, then point the kernel
+        // parameter at the value stored IN the list node -- NOT at the
+        // loop-local texObj, whose stack slot is reused by later locals before
+        // cuLaunchKernel reads *params (manifests as all-zero tex2D fetches on
+        // Windows). std::list never relocates nodes, so the address is stable.
         textures.push_back(texObj);
-        params.push_back(&texObj.value);
+        params.push_back(&textures.back().value);
         break;
       }
       case Attribute::Type_ArgumentBuffer: {

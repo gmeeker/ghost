@@ -443,3 +443,99 @@ TEST_P(ImageTest, SharedImageTallNarrow) {
 }
 
 GHOST_INSTANTIATE_BACKEND_TESTS(ImageTest);
+
+// ---------------------------------------------------------------------------
+// Kernel-side sampling of a buffer-backed shared image (tex2D path)
+// ---------------------------------------------------------------------------
+//
+// The SharedImageFromBuffer* tests above validate via img.copyTo() (host
+// readback). On Windows CUDA that path passed even while kernel-side tex2D
+// fetches returned all-zero: the bug was in the texture object the kernel
+// sampled, not in the host copy. So those tests could not catch it.
+//
+// This fixture dispatches an actual sampling kernel (tex2D / read_imagef /
+// texture.sample) against a buffer-backed shared image and checks the values.
+// It is the regression guard for Ghost commit 24557d6 ("Fix releasing of CUDA
+// textures"), which fixed two real causes of the all-zero reads:
+//   1. pitchInBytes came from descr.stride.x, which is 0 for tight-packed
+//      images -> degenerate texture. Now resolved to width*pixelSize.
+//   2. the CUtexObject was destroyed at the end of execute(), before the async
+//      kernel ran. Now deferred via cuLaunchHostFunc until kernel completion.
+// (The "tight packing" variant below specifically exercises cause #1.)
+
+class ImageKernelTest : public GhostKernelTest {
+ protected:
+  void runSampleTest(bool tightPacking) {
+    const char* src = sampleImageSource();
+    if (!src)
+      GTEST_SKIP() << "No image-sampling kernel for " << BackendName(backend());
+
+    const int W = 128, H = 8;
+    const size_t pixelCount = static_cast<size_t>(W) * static_cast<size_t>(H);
+    const size_t rowBytes = static_cast<size_t>(W) * sizeof(float);
+    const size_t dataSize = pixelCount * sizeof(float);
+
+    // Single-channel (R) float image. stride.x == 0 means tight packing, which
+    // here equals W*sizeof(float) == rowBytes.
+    ImageDescription descr(
+        Size3(W, H, 1), PixelOrder_RGBA, DataType_Float,
+        Stride2(tightPacking ? 0 : static_cast<int32_t>(rowBytes), 0));
+    descr.channels = 1;
+
+    auto buf = device().allocateBuffer(dataSize);
+
+    Image img(nullptr);
+    try {
+      img = device().sharedImage(descr, buf);
+    } catch (const ghost::unsupported_error&) {
+      GTEST_SKIP() << "Shared images not supported on "
+                   << BackendName(backend());
+    } catch (const std::exception& e) {
+      GTEST_SKIP() << "Shared image failed: " << e.what();
+    }
+
+    std::vector<float> input(pixelCount);
+    for (size_t i = 0; i < pixelCount; i++)
+      input[i] = static_cast<float>(i + 1);  // all non-zero
+    std::vector<float> output(pixelCount, -1.0f);
+
+    buf.copy(stream(), input.data(), dataSize);
+
+    Library lib(nullptr);
+    Function fn(nullptr);
+    try {
+      lib = device().loadLibraryFromText(src);
+      fn = lib.lookupFunction("sample_image");
+    } catch (const std::exception& e) {
+      GTEST_SKIP() << "Kernel compile/lookup failed: " << e.what();
+    }
+
+    auto outBuf = device().allocateBuffer(dataSize);
+
+    LaunchArgs la;
+    la.global_size(static_cast<size_t>(W), static_cast<size_t>(H))
+        .local_size(16, 8);
+    fn(la, stream())(outBuf, img, static_cast<int32_t>(W),
+                     static_cast<int32_t>(H));
+    outBuf.copyTo(stream(), output.data(), dataSize);
+    stream().sync();
+
+    float maxVal = 0.0f;
+    for (float v : output)
+      if (v > maxVal) maxVal = v;
+    EXPECT_GT(maxVal, 0.0f) << "kernel read all-zero from a buffer-backed "
+                               "shared image (the Windows-CUDA tex2D bug)";
+    for (size_t i = 0; i < pixelCount; i++)
+      EXPECT_FLOAT_EQ(output[i], input[i]) << "index " << i;
+  }
+};
+
+TEST_P(ImageKernelTest, SharedImageKernelSampleReadsBufferValues) {
+  runSampleTest(/*tightPacking=*/false);
+}
+
+TEST_P(ImageKernelTest, SharedImageKernelSampleTightPacking) {
+  runSampleTest(/*tightPacking=*/true);
+}
+
+GHOST_INSTANTIATE_KERNEL_TESTS(ImageKernelTest);

@@ -261,6 +261,64 @@ extern "C" __global__ void mult_const_2d(float* out, const float* A, float scale
   }
 }
 
+// sample_image: out[y * W + x] = <texel (x, y) read from a 2D image>.
+// Exercises kernel-side image sampling (tex2D / read_imagef / texture.sample)
+// for a buffer-backed shared image -- the path that read all-zero on Windows
+// CUDA before the texture-lifetime / pitch=0 fix. Single-channel (R) float.
+inline const char* sampleImageKernelSource(Backend backend) {
+  switch (backend) {
+    case Backend::OpenCL:
+#if WITH_OPENCL
+      return R"(
+__constant sampler_t samp =
+    CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP | CLK_FILTER_NEAREST;
+__kernel void sample_image(__global float* out, read_only image2d_t img,
+                           int W, int H) {
+    int x = get_global_id(0);
+    int y = get_global_id(1);
+    if (x >= W || y >= H) return;
+    out[y * W + x] = read_imagef(img, samp, (int2)(x, y)).x;
+})";
+#else
+      return nullptr;
+#endif
+    case Backend::Metal:
+#if WITH_METAL
+      return R"(
+#include <metal_stdlib>
+using namespace metal;
+kernel void sample_image(device float* out [[buffer(0)]],
+                         texture2d<float, access::sample> img [[texture(0)]],
+                         constant int& W [[buffer(1)]],
+                         constant int& H [[buffer(2)]],
+                         uint2 gid [[thread_position_in_grid]]) {
+    if (int(gid.x) >= W || int(gid.y) >= H) return;
+    constexpr sampler samp(coord::pixel, address::clamp_to_edge,
+                           filter::nearest);
+    out[int(gid.y) * W + int(gid.x)] =
+        img.sample(samp, float2(float(gid.x) + 0.5f, float(gid.y) + 0.5f)).x;
+})";
+#else
+      return nullptr;
+#endif
+    case Backend::CUDA:
+#if WITH_CUDA
+      return R"(
+extern "C" __global__ void sample_image(float* out, cudaTextureObject_t img,
+                                        int W, int H) {
+    int x = threadIdx.x + blockIdx.x * blockDim.x;
+    int y = threadIdx.y + blockIdx.y * blockDim.y;
+    if (x >= W || y >= H) return;
+    out[y * W + x] = tex2D<float>(img, (float)x + 0.5f, (float)y + 0.5f);
+})";
+#else
+      return nullptr;
+#endif
+    default:
+      return nullptr;
+  }
+}
+
 // mult_const_3d: out[z * H * W + y * W + x] = A[...] * scale
 inline const char* multConst3DKernelSource(Backend backend) {
   switch (backend) {
@@ -477,6 +535,10 @@ class GhostKernelTest : public GhostTest {
 
   const char* multConst2DSource() const {
     return multConst2DKernelSource(GetParam());
+  }
+
+  const char* sampleImageSource() const {
+    return sampleImageKernelSource(GetParam());
   }
 
   const char* multConst3DSource() const {
