@@ -43,11 +43,30 @@ class StreamCUDA : public Stream {
 
   StreamCUDA(cu::ptr<CUstream> queue_);
   StreamCUDA(CUcontext dev);
+  ~StreamCUDA();
 
   void sync();
   virtual std::shared_ptr<Event> record() override;
   virtual void waitForEvent(const std::shared_ptr<Event>& e) override;
   virtual void barrier() override;
+
+  /// @brief Capture a reference to @p owner alongside a freshly recorded
+  /// event on this stream. The owner is released when the pending-memory
+  /// list is reaped (sync, or opportunistic poll at the next enqueue). Used
+  /// to keep host memory alive across an async HtoD/DtoH copy when the
+  /// caller hands ownership to Ghost via @c HostBytes::adopt.
+  void retainHostUntilDone(std::shared_ptr<void> owner);
+
+  /// @brief Drop entries whose events have completed.
+  void reapPendingHostMemory();
+
+ protected:
+  struct PendingHostMemory {
+    cu::ptr<CUevent> event;
+    std::shared_ptr<void> owner;
+  };
+
+  std::vector<PendingHostMemory> pendingHostMemory;
 };
 
 /// @brief Record-and-replay @c CommandBuffer for CUDA, adding native
@@ -119,6 +138,11 @@ class BufferCUDA : public Buffer {
   virtual void copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
                       size_t bytes) const override;
 
+  virtual void copy(const ghost::Encoder& s, HostBytes src, size_t dstOffset,
+                    size_t bytes) override;
+  virtual void copyTo(const ghost::Encoder& s, HostBytes dst, size_t srcOffset,
+                      size_t bytes) const override;
+
   virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
                     uint8_t value) override;
   virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
@@ -183,6 +207,10 @@ class ImageCUDA : public Image {
   virtual void copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                       const BufferLayout& layout) const override;
   virtual void copyTo(const ghost::Encoder& s, void* dst,
+                      const BufferLayout& layout) const override;
+  virtual void copy(const ghost::Encoder& s, HostBytes src,
+                    const BufferLayout& layout) override;
+  virtual void copyTo(const ghost::Encoder& s, HostBytes dst,
                       const BufferLayout& layout) const override;
   virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     const BufferLayout& layout,

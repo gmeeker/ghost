@@ -17,6 +17,7 @@
 
 #include <ghost/command_buffer.h>
 
+#include <cstring>
 #include <functional>
 #include <variant>
 #include <vector>
@@ -53,16 +54,27 @@ struct CopyBufferCmd {
 
 struct CopyBufferRawCmd {
   std::shared_ptr<implementation::Buffer> dst;
-  // Host bytes are captured by value at record time. The original host source
-  // pointer is not retained — see Buffer::copy(Encoder, void*, ...) contract.
-  std::vector<uint8_t> src;
+  // src.ownsBytes() distinguishes:
+  // - Recorded from copyBufferRaw(void*, ...): src is HostBytes::adopt of a
+  //   Ghost-allocated snapshot (caller's pointer may have been a stack local).
+  // - Recorded from copyBufferRaw(HostBytes, ...): src is the caller's
+  //   HostBytes verbatim; backends may lifetime-extend src.owner() to keep
+  //   the upload async.
+  HostBytes src;
   size_t dstOffset;
   size_t bytes;
 };
 
 struct ReadBufferCmd {
   std::shared_ptr<const implementation::Buffer> src;
-  void* dst;
+  // dst.ownsBytes() distinguishes:
+  // - Recorded from readBuffer(void*, ...): dst is HostBytes::borrow of the
+  //   caller's pointer; caller keeps it alive until stream.sync() per the
+  //   documented contract.
+  // - Recorded from readBuffer(HostBytes, ...): dst is the caller's HostBytes
+  //   verbatim; backends may lifetime-extend dst.owner() to keep the readback
+  //   async without burdening the caller with lifetime tracking.
+  HostBytes dst;
   size_t srcOffset;
   size_t bytes;
 };
@@ -94,9 +106,8 @@ struct CopyImageFromBufferCmd {
 
 struct CopyImageFromHostCmd {
   std::shared_ptr<implementation::Image> dst;
-  // Host bytes are captured by value at record time. The original host source
-  // pointer is not retained — see Image::copy(Encoder, void*, ...) contract.
-  std::vector<uint8_t> src;
+  // See @c CopyBufferRawCmd::src for the ownsBytes() distinction.
+  HostBytes src;
   BufferLayout layout;
 };
 
@@ -108,7 +119,8 @@ struct CopyImageToBufferCmd {
 
 struct CopyImageToHostCmd {
   std::shared_ptr<const implementation::Image> src;
-  void* dst;
+  // See @c ReadBufferCmd::dst for the ownsBytes() distinction.
+  HostBytes dst;
   BufferLayout layout;
 };
 
@@ -179,16 +191,31 @@ class RecordedCommandBuffer : public CommandBuffer {
   void copyBufferRaw(std::shared_ptr<implementation::Buffer> dst,
                      const void* src, size_t dstOffset, size_t bytes) override {
     // Capture by value: the user's source pointer may be a stack local that
-    // dies before submit().
-    std::vector<uint8_t> owned(static_cast<const uint8_t*>(src),
-                               static_cast<const uint8_t*>(src) + bytes);
+    // dies before submit(). Wrap the snapshot in a HostBytes so the backend's
+    // owned-handle replay path can lifetime-extend it past reset().
+    auto* buf = new uint8_t[bytes];
+    std::memcpy(buf, src, bytes);
+    HostBytes owned = HostBytes::adopt(
+        buf, [](void* p) { delete[] static_cast<uint8_t*>(p); });
     commands.push_back(
         CopyBufferRawCmd{dst, std::move(owned), dstOffset, bytes});
   }
 
+  void copyBufferRaw(std::shared_ptr<implementation::Buffer> dst, HostBytes src,
+                     size_t dstOffset, size_t bytes) override {
+    commands.push_back(CopyBufferRawCmd{dst, std::move(src), dstOffset, bytes});
+  }
+
   void readBuffer(std::shared_ptr<const implementation::Buffer> src, void* dst,
                   size_t srcOffset, size_t bytes) override {
-    commands.push_back(ReadBufferCmd{src, dst, srcOffset, bytes});
+    // Borrow: caller is documented to keep @c dst valid until @c stream.sync().
+    commands.push_back(
+        ReadBufferCmd{src, HostBytes::borrow(dst), srcOffset, bytes});
+  }
+
+  void readBuffer(std::shared_ptr<const implementation::Buffer> src,
+                  HostBytes dst, size_t srcOffset, size_t bytes) override {
+    commands.push_back(ReadBufferCmd{src, std::move(dst), srcOffset, bytes});
   }
 
   void fillBuffer(std::shared_ptr<implementation::Buffer> dst, size_t offset,
@@ -223,9 +250,16 @@ class RecordedCommandBuffer : public CommandBuffer {
     size_t rowStride = layout.rowBytes(pixelSize);
     size_t sliceStride = layout.sliceBytes(rowStride);
     size_t bytes = sliceStride * layout.size.z;
-    std::vector<uint8_t> owned(static_cast<const uint8_t*>(src),
-                               static_cast<const uint8_t*>(src) + bytes);
+    auto* buf = new uint8_t[bytes];
+    std::memcpy(buf, src, bytes);
+    HostBytes owned = HostBytes::adopt(
+        buf, [](void* p) { delete[] static_cast<uint8_t*>(p); });
     commands.push_back(CopyImageFromHostCmd{dst, std::move(owned), layout});
+  }
+
+  void copyImageFromHost(std::shared_ptr<implementation::Image> dst,
+                         HostBytes src, const BufferLayout& layout) override {
+    commands.push_back(CopyImageFromHostCmd{dst, std::move(src), layout});
   }
 
   void copyImageToBuffer(std::shared_ptr<const implementation::Image> src,
@@ -236,7 +270,12 @@ class RecordedCommandBuffer : public CommandBuffer {
 
   void copyImageToHost(std::shared_ptr<const implementation::Image> src,
                        void* dst, const BufferLayout& layout) override {
-    commands.push_back(CopyImageToHostCmd{src, dst, layout});
+    commands.push_back(CopyImageToHostCmd{src, HostBytes::borrow(dst), layout});
+  }
+
+  void copyImageToHost(std::shared_ptr<const implementation::Image> src,
+                       HostBytes dst, const BufferLayout& layout) override {
+    commands.push_back(CopyImageToHostCmd{src, std::move(dst), layout});
   }
 
   void addBarrier() override { commands.push_back(BarrierCmd{}); }

@@ -154,6 +154,17 @@ StreamCUDA::StreamCUDA(CUcontext dev) {
   checkError(err);
 }
 
+StreamCUDA::~StreamCUDA() {
+  // Drain before letting owner deleters run for any host memory still held
+  // alive by a queued DMA. Same reasoning as ~StreamOpenCL().
+  if (!pendingHostMemory.empty()) {
+    if (queue)
+      cuStreamSynchronize(queue);
+    else
+      cuCtxSynchronize();
+  }
+}
+
 void StreamCUDA::sync() {
   CUresult err;
   if (queue)
@@ -161,6 +172,43 @@ void StreamCUDA::sync() {
   else
     err = cuCtxSynchronize();
   checkError(err);
+  // After sync, every enqueued op has completed → drop all retained owners
+  // (which will run their user-supplied deleters here on this thread).
+  pendingHostMemory.clear();
+}
+
+void StreamCUDA::retainHostUntilDone(std::shared_ptr<void> owner) {
+  if (!owner) return;
+  reapPendingHostMemory();
+  cu::ptr<CUevent> ev;
+  // CU_EVENT_DISABLE_TIMING: we only need completion signaling, not the
+  // per-op latency tracking that timing-enabled events incur.
+  CUresult err = cuEventCreate(&ev, CU_EVENT_DISABLE_TIMING);
+  if (err == CUDA_SUCCESS) err = cuEventRecord(ev, queue);
+  if (err != CUDA_SUCCESS) {
+    // Couldn't get a per-op event → still keep the owner alive, but fall back
+    // to bulk release on sync() (null-event entry).
+    pendingHostMemory.push_back({cu::ptr<CUevent>(), std::move(owner)});
+    return;
+  }
+  pendingHostMemory.push_back({std::move(ev), std::move(owner)});
+}
+
+void StreamCUDA::reapPendingHostMemory() {
+  auto it = pendingHostMemory.begin();
+  while (it != pendingHostMemory.end()) {
+    if (it->event.get() == nullptr) {
+      // Null event → wait for sync().
+      ++it;
+      continue;
+    }
+    CUresult err = cuEventQuery(it->event);
+    if (err == CUDA_SUCCESS) {
+      it = pendingHostMemory.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 std::shared_ptr<Event> StreamCUDA::record() {
@@ -291,6 +339,26 @@ void BufferCUDA::copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
   err =
       cuMemcpyDtoHAsync(dst, mem.get() + srcOffset, bytes, stream_impl->queue);
   checkError(err);
+}
+
+void BufferCUDA::copy(const ghost::Encoder& s, HostBytes src, size_t dstOffset,
+                      size_t bytes) {
+  auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  markUsed(stream_impl->queue);
+  CUresult err = cuMemcpyHtoDAsync(mem.get() + dstOffset, src.data(), bytes,
+                                   stream_impl->queue);
+  checkError(err);
+  if (src.ownsBytes()) stream_impl->retainHostUntilDone(src.owner());
+}
+
+void BufferCUDA::copyTo(const ghost::Encoder& s, HostBytes dst,
+                        size_t srcOffset, size_t bytes) const {
+  auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+  const_cast<BufferCUDA*>(this)->markUsed(stream_impl->queue);
+  CUresult err = cuMemcpyDtoHAsync(dst.data(), mem.get() + srcOffset, bytes,
+                                   stream_impl->queue);
+  checkError(err);
+  if (dst.ownsBytes()) stream_impl->retainHostUntilDone(dst.owner());
 }
 
 void BufferCUDA::fill(const ghost::Encoder& s, size_t offset, size_t size,
@@ -644,6 +712,15 @@ void ImageCUDA::copy(const ghost::Encoder& s, const void* src,
   }
 }
 
+void ImageCUDA::copy(const ghost::Encoder& s, HostBytes src,
+                     const BufferLayout& layout) {
+  this->copy(s, src.data(), layout);
+  if (src.ownsBytes()) {
+    auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    stream_impl->retainHostUntilDone(src.owner());
+  }
+}
+
 void ImageCUDA::copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                        const BufferLayout& layout) const {
   auto dst_impl = static_cast<implementation::BufferCUDA*>(dst.impl().get());
@@ -773,6 +850,15 @@ void ImageCUDA::copyTo(const ghost::Encoder& s, void* dst,
     CUresult err;
     err = cuMemcpy2DAsync(&a, stream_impl->queue);
     checkError(err);
+  }
+}
+
+void ImageCUDA::copyTo(const ghost::Encoder& s, HostBytes dst,
+                       const BufferLayout& layout) const {
+  this->copyTo(s, dst.data(), layout);
+  if (dst.ownsBytes()) {
+    auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
+    stream_impl->retainHostUntilDone(dst.owner());
   }
 }
 

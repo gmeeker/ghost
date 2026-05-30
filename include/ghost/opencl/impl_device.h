@@ -47,6 +47,7 @@ class StreamOpenCL : public Stream {
 
   StreamOpenCL(opencl::ptr<cl_command_queue> queue_);
   StreamOpenCL(const DeviceOpenCL& dev, const StreamOptions& options = {});
+  ~StreamOpenCL();
 
   virtual void sync() override;
   virtual std::shared_ptr<Event> record() override;
@@ -55,8 +56,35 @@ class StreamOpenCL : public Stream {
   void addEvent();
   cl_event* event();
 
+  /// @brief Event slot used by owned-handle (HostBytes) overloads. Unlike
+  /// @c event(), this always returns the slot regardless of @c outOfOrder so
+  /// the caller can request an event to retain on the pending-memory list,
+  /// even on in-order queues.
+  cl_event* eventForOwned();
+
+  /// @brief Capture a reference to @p owner alongside @c lastEvent. The
+  /// owner is released when the pending-memory list is reaped (sync, or
+  /// opportunistic poll at the next enqueue). Caller must have populated
+  /// @c lastEvent via @c eventForOwned() in the immediately preceding
+  /// enqueue call.
+  void retainHostUntilDone(std::shared_ptr<void> owner);
+
+  /// @brief Drop entries whose events have completed. Cheap to call; one
+  /// @c clGetEventInfo per pending entry.
+  void reapPendingHostMemory();
+
  protected:
   opencl::ptr<cl_event> lastEvent;
+
+  /// @brief Owners whose host memory must outlive a queued DMA. Populated
+  /// by @c retainHostUntilDone; cleared by @c sync() (bulk) and
+  /// @c reapPendingHostMemory (opportunistic).
+  struct PendingHostMemory {
+    opencl::ptr<cl_event> event;
+    std::shared_ptr<void> owner;
+  };
+
+  std::vector<PendingHostMemory> pendingHostMemory;
 };
 
 /// @brief Record-and-replay @c CommandBuffer for OpenCL, adding native
@@ -114,6 +142,11 @@ class BufferOpenCL : public Buffer {
   virtual void copy(const ghost::Encoder& s, const void* src, size_t dstOffset,
                     size_t bytes) override;
   virtual void copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
+                      size_t bytes) const override;
+
+  virtual void copy(const ghost::Encoder& s, HostBytes src, size_t dstOffset,
+                    size_t bytes) override;
+  virtual void copyTo(const ghost::Encoder& s, HostBytes dst, size_t srcOffset,
                       size_t bytes) const override;
 
   virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
@@ -175,6 +208,10 @@ class ImageOpenCL : public Image {
   virtual void copyTo(const ghost::Encoder& s, ghost::Buffer& dst,
                       const BufferLayout& layout) const override;
   virtual void copyTo(const ghost::Encoder& s, void* dst,
+                      const BufferLayout& layout) const override;
+  virtual void copy(const ghost::Encoder& s, HostBytes src,
+                    const BufferLayout& layout) override;
+  virtual void copyTo(const ghost::Encoder& s, HostBytes dst,
                       const BufferLayout& layout) const override;
   virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     const BufferLayout& layout,

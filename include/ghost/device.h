@@ -104,6 +104,10 @@ class Buffer {
   /// @param src Pointer to host source data. Bytes are read at call time; the
   /// pointer is not retained. (On a @c CommandBuffer encoder the bytes are
   /// captured by value into the record, so stack-local sources are safe.)
+  /// Caveat: on CUDA, page-locked (pinned) host memory cannot be staged
+  /// synchronously by the driver — pass pinned sources via the @c HostBytes
+  /// overload (using @c HostBytes::adopt) so Ghost can keep the upload async
+  /// without requiring the caller to track its lifetime.
   /// @param bytes Number of bytes to copy.
   void copy(const Encoder& s, const void* src, size_t bytes);
 
@@ -112,6 +116,9 @@ class Buffer {
   /// @c CommandBuffer, the copy is deferred until @c cb.submit() and the
   /// host @p dst pointer must remain valid until @c stream.sync() returns.
   /// When @p s is a @c Stream, the call is synchronous.
+  /// Caveat: on CUDA, page-locked (pinned) destinations are async even on the
+  /// Stream path — pass pinned destinations via the @c HostBytes overload so
+  /// the DMA can stay async with Ghost-managed lifetime.
   /// @param[out] dst Pointer to host destination buffer.
   /// @param bytes Number of bytes to copy.
   void copyTo(const Encoder& s, void* dst, size_t bytes) const;
@@ -125,6 +132,18 @@ class Buffer {
 
   /// @brief Copy data from this buffer at an offset to host memory.
   void copyTo(const Encoder& s, void* dst, size_t srcOffset,
+              size_t bytes) const;
+
+  /// @brief Owned-handle upload. Ownership of @p src is shared with Ghost
+  /// until any in-flight DMA completes. Lets the caller drop its reference
+  /// immediately after the call; the bytes stay alive (and the deleter
+  /// stays unpinned) until the GPU is done with them. Use
+  /// @c HostBytes::adopt to wrap a buffer with a custom deallocator
+  /// (@c cuMemFreeHost, @c munmap, foreign-library frees, etc.).
+  void copy(const Encoder& s, HostBytes src, size_t dstOffset, size_t bytes);
+
+  /// @brief Owned-handle readback. See @c copy(Encoder, HostBytes, ...).
+  void copyTo(const Encoder& s, HostBytes dst, size_t srcOffset,
               size_t bytes) const;
 
   /// @brief Fill a region of this buffer with a byte value.
@@ -242,6 +261,11 @@ class Image {
   /// @brief Copy image data to host memory.
   /// @param layout Buffer memory layout (dimensions and strides).
   void copyTo(const Encoder& s, void* dst, const BufferLayout& layout) const;
+
+  /// @brief Owned-handle upload / readback. See @c Buffer::copy(HostBytes).
+  void copy(const Encoder& s, HostBytes src, const BufferLayout& layout);
+  void copyTo(const Encoder& s, HostBytes dst,
+              const BufferLayout& layout) const;
 
   /// @}
   /// @name Subrect copies (buffer <-> image region)

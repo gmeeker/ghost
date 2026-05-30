@@ -274,6 +274,12 @@ class ImageMetal : public Image {
  public:
   objc::ptr<id<MTLTexture>> mem;
   ImageDescription descr;
+  /// @brief When this image aliases a buffer (constructed via
+  /// @c DeviceMetal::sharedImage(buffer)), holds a ref to that buffer.
+  /// Function::execute calls @c useResource: on this buffer when binding the
+  /// texture so the compute encoder's residency / cache state covers both
+  /// views of the aliased memory.
+  objc::ptr<id<MTLBuffer>> aliasedBuffer;
 
   ImageMetal(objc::ptr<id<MTLTexture>> mem_, const ImageDescription& descr);
   ImageMetal(const DeviceMetal& dev, const ImageDescription& descr);

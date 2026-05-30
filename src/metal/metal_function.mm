@@ -358,6 +358,19 @@ void FunctionMetal::execute(const ghost::Encoder &s,
       auto metal =
           static_cast<implementation::ImageMetal *>(i->imageImpl().get());
       [computeEncoder setTexture:metal->mem.get() atIndex:textureIndex++];
+      // Buffer-backed (aliased) textures: Metal needs to know the GPU is
+      // touching the underlying buffer through the texture view. Without
+      // useResource:, the buffer's writes (or the texture's caches) can be
+      // out of sync with the texture read. See Apple's docs for
+      // newTextureWithDescriptor:offset:bytesPerRow:.
+      if (metal->aliasedBuffer.get()) {
+        MTLResourceUsage usage = MTLResourceUsageRead;
+        if (metal->descr.access == Access::WriteOnly ||
+            metal->descr.access == Access::ReadWrite) {
+          usage |= MTLResourceUsageWrite;
+        }
+        [computeEncoder useResource:metal->aliasedBuffer.get() usage:usage];
+      }
       break;
     }
     case Attribute::Type_ArgumentBuffer: {
@@ -458,6 +471,19 @@ void FunctionMetal::executeIndirect(
       auto metal =
           static_cast<implementation::ImageMetal *>(i->imageImpl().get());
       [computeEncoder setTexture:metal->mem.get() atIndex:textureIndex++];
+      // Buffer-backed (aliased) textures: Metal needs to know the GPU is
+      // touching the underlying buffer through the texture view. Without
+      // useResource:, the buffer's writes (or the texture's caches) can be
+      // out of sync with the texture read. See Apple's docs for
+      // newTextureWithDescriptor:offset:bytesPerRow:.
+      if (metal->aliasedBuffer.get()) {
+        MTLResourceUsage usage = MTLResourceUsageRead;
+        if (metal->descr.access == Access::WriteOnly ||
+            metal->descr.access == Access::ReadWrite) {
+          usage |= MTLResourceUsageWrite;
+        }
+        [computeEncoder useResource:metal->aliasedBuffer.get() usage:usage];
+      }
       break;
     }
     case Attribute::Type_ArgumentBuffer: {

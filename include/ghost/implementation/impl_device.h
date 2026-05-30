@@ -18,6 +18,7 @@
 #include <ghost/attribute.h>
 #include <ghost/binary_cache.h>
 #include <ghost/gpu_info.h>
+#include <ghost/host_bytes.h>
 #include <ghost/image.h>
 #include <ghost/implementation/impl_function.h>
 #include <ghost/thread_pool.h>
@@ -396,6 +397,20 @@ class Buffer {
   virtual void copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
                       size_t bytes) const = 0;
 
+  /// @brief Owned-handle upload. Default forwards to the void* overload —
+  /// backends that can keep the upload async (OpenCL, CUDA-pinned) override
+  /// to retain @c src.owner() on the stream until the DMA completes.
+  /// @c src.ownsBytes() indicates whether the override should bother
+  /// retaining (false → caller manages lifetime, same as borrow).
+  virtual void copy(const ghost::Encoder& s, HostBytes src, size_t dstOffset,
+                    size_t bytes);
+
+  /// @brief Owned-handle readback. Default forwards to the void* overload —
+  /// backends that can keep the readback async override to retain
+  /// @c dst.owner() on the stream until the DMA completes.
+  virtual void copyTo(const ghost::Encoder& s, HostBytes dst, size_t srcOffset,
+                      size_t bytes) const;
+
   virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
                     uint8_t value) = 0;
   virtual void fill(const ghost::Encoder& s, size_t offset, size_t size,
@@ -452,6 +467,12 @@ class Image {
                       const BufferLayout& layout) const = 0;
   virtual void copyTo(const ghost::Encoder& s, void* dst,
                       const BufferLayout& layout) const = 0;
+
+  /// @brief Owned-handle upload / readback. See @c Buffer::copy(HostBytes).
+  virtual void copy(const ghost::Encoder& s, HostBytes src,
+                    const BufferLayout& layout);
+  virtual void copyTo(const ghost::Encoder& s, HostBytes dst,
+                      const BufferLayout& layout) const;
 
   virtual void copy(const ghost::Encoder& s, const ghost::Buffer& src,
                     const BufferLayout& layout, const Origin3& imageOrigin);

@@ -63,6 +63,19 @@ void Buffer::copyTo(const ghost::Encoder&, void*, size_t, size_t) const {
   throw ghost::unsupported_error();
 }
 
+void Buffer::copy(const ghost::Encoder& s, HostBytes src, size_t dstOffset,
+                  size_t bytes) {
+  // Default forwarder: dispatch to the borrow-style override. Backends that
+  // can keep the upload async (OpenCL, CUDA-pinned) override this entry
+  // point and lifetime-extend src.owner() on the stream instead.
+  this->copy(s, src.data(), dstOffset, bytes);
+}
+
+void Buffer::copyTo(const ghost::Encoder& s, HostBytes dst, size_t srcOffset,
+                    size_t bytes) const {
+  this->copyTo(s, dst.data(), srcOffset, bytes);
+}
+
 void Buffer::fill(const ghost::Encoder&, size_t, size_t, uint8_t) {
   throw ghost::unsupported_error();
 }
@@ -136,6 +149,16 @@ void Image::copy(const ghost::Encoder& s, const ghost::Image& src,
                  const Size3& region, const Origin3& srcOrigin,
                  const Origin3& dstOrigin) {
   throw ghost::unsupported_error();
+}
+
+void Image::copy(const ghost::Encoder& s, HostBytes src,
+                 const BufferLayout& layout) {
+  this->copy(s, src.data(), layout);
+}
+
+void Image::copyTo(const ghost::Encoder& s, HostBytes dst,
+                   const BufferLayout& layout) const {
+  this->copyTo(s, dst.data(), layout);
 }
 }  // namespace implementation
 
@@ -221,6 +244,24 @@ void Buffer::copyTo(const Encoder& s, void* dst, size_t srcOffset,
     cb->readBuffer(_impl, dst, srcOffset, bytes);
   else
     _impl->copyTo(s, dst, srcOffset, bytes);
+}
+
+void Buffer::copy(const Encoder& s, HostBytes src, size_t dstOffset,
+                  size_t bytes) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyBufferRaw(_impl, std::move(src), dstOffset, bytes);
+  else
+    _impl->copy(s, std::move(src), dstOffset, bytes);
+}
+
+void Buffer::copyTo(const Encoder& s, HostBytes dst, size_t srcOffset,
+                    size_t bytes) const {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->readBuffer(_impl, std::move(dst), srcOffset, bytes);
+  else
+    _impl->copyTo(s, std::move(dst), srcOffset, bytes);
 }
 
 void Buffer::fill(const Encoder& s, size_t offset, size_t size, uint8_t value) {
@@ -350,6 +391,23 @@ void Image::copyTo(const Encoder& s, void* dst,
     cb->copyImageToHost(_impl, dst, layout);
   else
     _impl->copyTo(s, dst, layout);
+}
+
+void Image::copy(const Encoder& s, HostBytes src, const BufferLayout& layout) {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageFromHost(_impl, std::move(src), layout);
+  else
+    _impl->copy(s, std::move(src), layout);
+}
+
+void Image::copyTo(const Encoder& s, HostBytes dst,
+                   const BufferLayout& layout) const {
+  auto* cb = s.impl()->asCommandBuffer();
+  if (cb)
+    cb->copyImageToHost(_impl, std::move(dst), layout);
+  else
+    _impl->copyTo(s, std::move(dst), layout);
 }
 
 void Image::copy(const Encoder& s, const Buffer& src,

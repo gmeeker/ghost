@@ -359,8 +359,16 @@ BufferMetal::~BufferMetal() {
 BufferMetal::BufferMetal(const DeviceMetal &dev, size_t bytes,
                          const BufferOptions &opts)
     : _size(bytes) {
-  MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache |
-                               MTLResourceHazardTrackingModeUntracked;
+  MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache;
+  // AllocHint::Shared promises the buffer will back a texture. The aliased
+  // texture's contents must reflect the buffer's writes, which means Metal
+  // has to hazard-track the aliased pair — without tracking, the texture's
+  // cached fetch can return stale data even after the CPU write to the
+  // buffer is visible in unified memory. Other hints leave Ghost's default
+  // untracked fast path in place.
+  if (opts.hint != AllocHint::Shared) {
+    options |= MTLResourceHazardTrackingModeUntracked;
+  }
   // Staging and Shared hints route to host-visible shared storage. Staging is
   // for CPU<->GPU transfers; Shared backs a buffer-aliased texture where the
   // CPU writes the buffer and reads it back through the texture, so it must be
@@ -674,6 +682,10 @@ ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_,
         "Failed to create a shared texture aliasing the buffer; its storage "
         "mode or row layout is incompatible with a linear texture");
   }
+  // Remember the backing buffer so Function::execute can pass it to
+  // useResource: when binding the texture. Apple's docs explicitly require
+  // managing coherency between the two views when both are accessed.
+  aliasedBuffer = buffer.mem;
 }
 
 ImageMetal::ImageMetal(const DeviceMetal &dev, const ImageDescription &descr_,
@@ -953,6 +965,10 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
     size_t srcOff;
     void *dst;
     size_t bytes;
+    // Keeps a HostBytes-adopted owner alive past cb.reset() so the deleter
+    // doesn't run between submit() and the completion handler's memcpy.
+    // Null for borrow-style dst.
+    std::shared_ptr<void> dstOwner;
   };
   auto readFinalizers = std::make_shared<std::vector<ReadFinalizer>>();
 
@@ -1081,7 +1097,7 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
             cmd.dst->copy(enc, srcWrap, cmd.srcOffset, cmd.dstOffset,
                           cmd.bytes);
           } else if constexpr (std::is_same_v<T, CopyBufferRawCmd>) {
-            cmd.dst->copy(enc, cmd.src.data(), cmd.dstOffset, cmd.bytes);
+            cmd.dst->copy(enc, cmd.src, cmd.dstOffset, cmd.bytes);
           } else if constexpr (std::is_same_v<T, ReadBufferCmd>) {
             // BufferMetal::copyTo's stream-only path can't run on a cb
             // encoder (it would do a synchronous sync()). Encode the blit
@@ -1092,7 +1108,8 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
             size_t effOff = srcImpl->baseOffset() + cmd.srcOffset;
             MTLStorageMode mode = srcImpl->mem.get().storageMode;
             ReadFinalizer fin;
-            fin.dst = cmd.dst;
+            fin.dst = cmd.dst.data();
+            fin.dstOwner = cmd.dst.owner();
             fin.bytes = cmd.bytes;
             if (mode == MTLStorageModePrivate) {
               fin.staging = [srcImpl->mem.get().device
@@ -1129,7 +1146,7 @@ void CommandBufferMetal::submit(const ghost::Stream &stream) {
             srcWrap.impl() = cmd.src;
             cmd.dst->copy(enc, srcWrap, cmd.layout);
           } else if constexpr (std::is_same_v<T, CopyImageFromHostCmd>) {
-            cmd.dst->copy(enc, cmd.src.data(), cmd.layout);
+            cmd.dst->copy(enc, cmd.src, cmd.layout);
           } else if constexpr (std::is_same_v<T, CopyImageToBufferCmd>) {
             dstWrap.impl() = cmd.dst;
             cmd.src->copyTo(enc, dstWrap, cmd.layout);

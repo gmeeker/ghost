@@ -467,7 +467,7 @@ void CommandBufferDirectX::submit(const ghost::Stream& stream) {
             cmd.dst->copy(enc, srcWrap, cmd.srcOffset, cmd.dstOffset,
                           cmd.bytes);
           } else if constexpr (std::is_same_v<T, CopyBufferRawCmd>) {
-            cmd.dst->copy(enc, cmd.src.data(), cmd.dstOffset, cmd.bytes);
+            cmd.dst->copy(enc, cmd.src, cmd.dstOffset, cmd.bytes);
           } else if constexpr (std::is_same_v<T, ReadBufferCmd>) {
             cmd.src->copyTo(enc, cmd.dst, cmd.srcOffset, cmd.bytes);
           } else if constexpr (std::is_same_v<T, FillBufferCmd>) {
@@ -485,7 +485,7 @@ void CommandBufferDirectX::submit(const ghost::Stream& stream) {
             srcWrap.impl() = cmd.src;
             cmd.dst->copy(enc, srcWrap, cmd.layout);
           } else if constexpr (std::is_same_v<T, CopyImageFromHostCmd>) {
-            cmd.dst->copy(enc, cmd.src.data(), cmd.layout);
+            cmd.dst->copy(enc, cmd.src, cmd.layout);
           } else if constexpr (std::is_same_v<T, CopyImageToBufferCmd>) {
             dstWrap.impl() = cmd.dst;
             cmd.src->copyTo(enc, dstWrap, cmd.layout);

@@ -284,18 +284,23 @@ __kernel void sample_image(__global float* out, read_only image2d_t img,
 #endif
     case Backend::Metal:
 #if WITH_METAL
+      // Ghost packs all scalar kernel arguments into a single MTLBuffer at
+      // the next buffer index after device buffers (see ProgramParams in
+      // metal_function.mm). Declaring W and H at separate buffer indices
+      // would leave buffer(2) unbound — read as zero — so the kernel must
+      // see them as adjacent fields in one struct at the packed index.
       return R"(
 #include <metal_stdlib>
 using namespace metal;
+struct SampleImageArgs { int W; int H; };
 kernel void sample_image(device float* out [[buffer(0)]],
                          texture2d<float, access::sample> img [[texture(0)]],
-                         constant int& W [[buffer(1)]],
-                         constant int& H [[buffer(2)]],
+                         constant SampleImageArgs& args [[buffer(1)]],
                          uint2 gid [[thread_position_in_grid]]) {
-    if (int(gid.x) >= W || int(gid.y) >= H) return;
+    if (int(gid.x) >= args.W || int(gid.y) >= args.H) return;
     constexpr sampler samp(coord::pixel, address::clamp_to_edge,
                            filter::nearest);
-    out[int(gid.y) * W + int(gid.x)] =
+    out[int(gid.y) * args.W + int(gid.x)] =
         img.sample(samp, float2(float(gid.x) + 0.5f, float(gid.y) + 0.5f)).x;
 })";
 #else

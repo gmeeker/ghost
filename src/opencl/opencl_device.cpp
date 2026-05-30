@@ -200,33 +200,37 @@ double EventOpenCL::elapsed(const Event& other) const {
 }
 
 StreamOpenCL::StreamOpenCL(opencl::ptr<cl_command_queue> queue_)
-    : queue(queue_), outOfOrder(true) {
-  if (queue.get() != nullptr) {
-    cl_command_queue_properties props = 0;
-    cl_int err = clGetCommandQueueInfo(queue, CL_QUEUE_PROPERTIES,
-                                       sizeof(props), &props, nullptr);
-    if (err == CL_SUCCESS) {
-      outOfOrder = (props & CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE) != 0;
-    }
-  }
-}
+    // outOfOrder here means "use the event-chain machinery to order dependent
+    // ops" (addEvent / event() / sync's wait-on-events path), not "the queue
+    // is OOO." The event chain works correctly against both OOO and in-order
+    // queues — wait_list is honored regardless — so we always enable it for
+    // externally-supplied queues. Querying the queue's actual OOO bit and
+    // disabling the chain on in-order queues (e.g. Apple's OpenCL 1.2, which
+    // doesn't expose OOO queues) leaves dependent fill→read pairs racing on
+    // the host-driver path: BufferTest.Fill* and similar fail.
+    : queue(queue_), outOfOrder(true) {}
 
 StreamOpenCL::StreamOpenCL(const DeviceOpenCL& dev,
                            const StreamOptions& options)
-    : outOfOrder(options.concurrent) {
+    // outOfOrder here means "use the event-chain machinery to order
+    // dependent ops" (addEvent / event() / sync's wait-on-events path), not
+    // "the queue type is OOO." The event chain works correctly against both
+    // OOO and in-order queues — wait_list is honored regardless — so we
+    // always enable it. Drivers that don't expose an OOO queue (Apple's
+    // OpenCL 1.2) silently get an in-order queue below; the event chain
+    // still orders dependent ops correctly there. forceEventChain is
+    // therefore redundant and kept only for source compatibility.
+    : outOfOrder(true) {
   cl_int err;
   cl_command_queue_properties queueProperties = 0;
   cl_command_queue_properties devQueueProperties = 0;
   auto devices = dev.getDevices();
-  if (outOfOrder) queueProperties |= CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE;
+  queueProperties |= CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE;
   if (options.profiling) queueProperties |= CL_QUEUE_PROFILING_ENABLE;
   err = clGetDeviceInfo(devices[0], CL_DEVICE_QUEUE_PROPERTIES,
                         sizeof(devQueueProperties), &devQueueProperties, NULL);
   checkError(err);
   queueProperties &= devQueueProperties;
-  outOfOrder = (queueProperties & CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE) != 0;
-  // forceEventChain: use event chaining even on in-order queues
-  if (options.forceEventChain && !outOfOrder) outOfOrder = true;
   if (queue.get() == nullptr && dev.context.get() != nullptr) {
     if (dev.checkVersion("2.0")) {
 #ifdef CL_VERSION_2_0
@@ -244,6 +248,16 @@ StreamOpenCL::StreamOpenCL(const DeviceOpenCL& dev,
   }
 }
 
+StreamOpenCL::~StreamOpenCL() {
+  // Drain before letting owner deleters run for any host memory still held
+  // alive by a queued DMA. Without this, async owned-handle uploads/readbacks
+  // could free their backing memory while the GPU is still reading or
+  // writing it.
+  if (!pendingHostMemory.empty() && queue.get()) {
+    clFinish(queue);
+  }
+}
+
 void StreamOpenCL::sync() {
   cl_int err = CL_SUCCESS;
   if (outOfOrder) {
@@ -254,6 +268,9 @@ void StreamOpenCL::sync() {
     err = clFinish(queue);
   }
   checkError(err);
+  // After sync, every enqueued op has completed → drop all retained owners
+  // (which will run their user-supplied deleters here on this thread).
+  pendingHostMemory.clear();
 }
 
 void StreamOpenCL::addEvent() {
@@ -264,6 +281,28 @@ void StreamOpenCL::addEvent() {
 }
 
 cl_event* StreamOpenCL::event() { return outOfOrder ? &lastEvent : nullptr; }
+
+cl_event* StreamOpenCL::eventForOwned() { return &lastEvent; }
+
+void StreamOpenCL::retainHostUntilDone(std::shared_ptr<void> owner) {
+  if (!owner || lastEvent.get() == nullptr) return;
+  reapPendingHostMemory();
+  pendingHostMemory.push_back({lastEvent, std::move(owner)});
+}
+
+void StreamOpenCL::reapPendingHostMemory() {
+  auto it = pendingHostMemory.begin();
+  while (it != pendingHostMemory.end()) {
+    cl_int status = CL_QUEUED;
+    cl_int err = clGetEventInfo(it->event, CL_EVENT_COMMAND_EXECUTION_STATUS,
+                                sizeof(status), &status, nullptr);
+    if (err == CL_SUCCESS && status == CL_COMPLETE) {
+      it = pendingHostMemory.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
 
 std::shared_ptr<Event> StreamOpenCL::record() {
   cl_event ev;
@@ -361,6 +400,9 @@ void BufferOpenCL::copy(const ghost::Encoder& s, const void* src,
                         size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
+  // Borrow contract: src must be consumed before returning. The owned-handle
+  // overload below (HostBytes) keeps the upload async via a per-stream
+  // lifetime list. See copy(Encoder, HostBytes, ...).
   err = clEnqueueWriteBuffer(stream_impl->queue, mem, false, 0, bytes, src,
                              stream_impl->events.size(), stream_impl->events,
                              stream_impl->event());
@@ -372,6 +414,9 @@ void BufferOpenCL::copyTo(const ghost::Encoder& s, void* dst,
                           size_t bytes) const {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
+  // Borrow contract: Stream-path copyTo is documented synchronous; dst is
+  // valid only for the duration of this call. The owned-handle overload
+  // (HostBytes) keeps the readback async via the stream's lifetime list.
   err = clEnqueueReadBuffer(stream_impl->queue, mem, false, 0, bytes, dst,
                             stream_impl->events.size(), stream_impl->events,
                             stream_impl->event());
@@ -395,6 +440,9 @@ void BufferOpenCL::copy(const ghost::Encoder& s, const void* src,
                         size_t dstOffset, size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
+  // Borrow contract: src must be consumed before returning. The owned-handle
+  // overload below (HostBytes) keeps the upload async via a per-stream
+  // lifetime list. See copy(Encoder, HostBytes, ...).
   err = clEnqueueWriteBuffer(stream_impl->queue, mem, false, dstOffset, bytes,
                              src, stream_impl->events.size(),
                              stream_impl->events, stream_impl->event());
@@ -402,14 +450,50 @@ void BufferOpenCL::copy(const ghost::Encoder& s, const void* src,
   stream_impl->addEvent();
 }
 
+void BufferOpenCL::copy(const ghost::Encoder& s, HostBytes src,
+                        size_t dstOffset, size_t bytes) {
+  if (!src.ownsBytes()) {
+    // Borrow → fall through to the synchronous-consume overload.
+    this->copy(s, src.data(), dstOffset, bytes);
+    return;
+  }
+  auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
+  cl_int err;
+  err = clEnqueueWriteBuffer(stream_impl->queue, mem, /*blocking=*/false,
+                             dstOffset, bytes, src.data(),
+                             stream_impl->events.size(), stream_impl->events,
+                             stream_impl->eventForOwned());
+  checkError(err);
+  stream_impl->retainHostUntilDone(src.owner());
+  stream_impl->addEvent();
+}
+
 void BufferOpenCL::copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
                           size_t bytes) const {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
+  // Borrow contract: see BufferOpenCL::copyTo(Encoder, void*, bytes).
   err = clEnqueueReadBuffer(stream_impl->queue, mem, false, srcOffset, bytes,
                             dst, stream_impl->events.size(),
                             stream_impl->events, stream_impl->event());
   checkError(err);
+  stream_impl->addEvent();
+}
+
+void BufferOpenCL::copyTo(const ghost::Encoder& s, HostBytes dst,
+                          size_t srcOffset, size_t bytes) const {
+  if (!dst.ownsBytes()) {
+    this->copyTo(s, dst.data(), srcOffset, bytes);
+    return;
+  }
+  auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
+  cl_int err;
+  err = clEnqueueReadBuffer(stream_impl->queue, mem, /*blocking=*/false,
+                            srcOffset, bytes, dst.data(),
+                            stream_impl->events.size(), stream_impl->events,
+                            stream_impl->eventForOwned());
+  checkError(err);
+  stream_impl->retainHostUntilDone(dst.owner());
   stream_impl->addEvent();
 }
 
@@ -632,11 +716,32 @@ void ImageOpenCL::copy(const ghost::Encoder& s, const void* src,
   cl_int err;
   size_t origin[] = {0, 0, 0};
   size_t region[] = {layout.size.x, layout.size.y, layout.size.z};
+  // Borrow contract: see BufferOpenCL::copy(Encoder, void*, ...). The owned
+  // overload below keeps async via the stream's lifetime list.
   err = clEnqueueWriteImage(stream_impl->queue, mem, false, origin, region,
                             layout.stride.x, layout.stride.y, src,
                             stream_impl->events.size(), stream_impl->events,
                             stream_impl->event());
   checkError(err);
+  stream_impl->addEvent();
+}
+
+void ImageOpenCL::copy(const ghost::Encoder& s, HostBytes src,
+                       const BufferLayout& layout) {
+  if (!src.ownsBytes()) {
+    this->copy(s, src.data(), layout);
+    return;
+  }
+  auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
+  cl_int err;
+  size_t origin[] = {0, 0, 0};
+  size_t region[] = {layout.size.x, layout.size.y, layout.size.z};
+  err = clEnqueueWriteImage(stream_impl->queue, mem, /*blocking=*/false, origin,
+                            region, layout.stride.x, layout.stride.y,
+                            src.data(), stream_impl->events.size(),
+                            stream_impl->events, stream_impl->eventForOwned());
+  checkError(err);
+  stream_impl->retainHostUntilDone(src.owner());
   stream_impl->addEvent();
 }
 
@@ -661,11 +766,31 @@ void ImageOpenCL::copyTo(const ghost::Encoder& s, void* dst,
   cl_int err;
   size_t origin[] = {0, 0, 0};
   size_t region[] = {layout.size.x, layout.size.y, layout.size.z};
+  // Borrow contract: see BufferOpenCL::copyTo(Encoder, void*, bytes).
   err = clEnqueueReadImage(stream_impl->queue, mem, false, origin, region,
                            layout.stride.x, layout.stride.y, dst,
                            stream_impl->events.size(), stream_impl->events,
                            stream_impl->event());
   checkError(err);
+  stream_impl->addEvent();
+}
+
+void ImageOpenCL::copyTo(const ghost::Encoder& s, HostBytes dst,
+                         const BufferLayout& layout) const {
+  if (!dst.ownsBytes()) {
+    this->copyTo(s, dst.data(), layout);
+    return;
+  }
+  auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
+  cl_int err;
+  size_t origin[] = {0, 0, 0};
+  size_t region[] = {layout.size.x, layout.size.y, layout.size.z};
+  err = clEnqueueReadImage(stream_impl->queue, mem, /*blocking=*/false, origin,
+                           region, layout.stride.x, layout.stride.y, dst.data(),
+                           stream_impl->events.size(), stream_impl->events,
+                           stream_impl->eventForOwned());
+  checkError(err);
+  stream_impl->retainHostUntilDone(dst.owner());
   stream_impl->addEvent();
 }
 

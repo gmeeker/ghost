@@ -59,7 +59,18 @@ class CommandBuffer : public Encoder {
   virtual void copyBufferRaw(std::shared_ptr<Buffer> dst, const void* src,
                              size_t dstOffset, size_t bytes) = 0;
 
+  /// @brief Record a host-to-device upload with caller-supplied ownership of
+  /// the source bytes. See @c ghost::Buffer::copy(Encoder, HostBytes, ...).
+  virtual void copyBufferRaw(std::shared_ptr<Buffer> dst, HostBytes src,
+                             size_t dstOffset, size_t bytes) = 0;
+
   virtual void readBuffer(std::shared_ptr<const Buffer> src, void* dst,
+                          size_t srcOffset, size_t bytes) = 0;
+
+  /// @brief Record a device-to-host readback with caller-supplied ownership
+  /// of the destination bytes. See @c ghost::Buffer::copyTo(Encoder, HostBytes,
+  /// ...).
+  virtual void readBuffer(std::shared_ptr<const Buffer> src, HostBytes dst,
                           size_t srcOffset, size_t bytes) = 0;
 
   virtual void fillBuffer(std::shared_ptr<Buffer> dst, size_t offset,
@@ -79,11 +90,19 @@ class CommandBuffer : public Encoder {
   virtual void copyImageFromHost(std::shared_ptr<Image> dst, const void* src,
                                  const BufferLayout& layout) = 0;
 
+  /// @brief Owned-handle variant of @c copyImageFromHost.
+  virtual void copyImageFromHost(std::shared_ptr<Image> dst, HostBytes src,
+                                 const BufferLayout& layout) = 0;
+
   virtual void copyImageToBuffer(std::shared_ptr<const Image> src,
                                  std::shared_ptr<Buffer> dst,
                                  const BufferLayout& layout) = 0;
 
   virtual void copyImageToHost(std::shared_ptr<const Image> src, void* dst,
+                               const BufferLayout& layout) = 0;
+
+  /// @brief Owned-handle variant of @c copyImageToHost.
+  virtual void copyImageToHost(std::shared_ptr<const Image> src, HostBytes dst,
                                const BufferLayout& layout) = 0;
 
   virtual void submit(const ghost::Stream& stream) = 0;
