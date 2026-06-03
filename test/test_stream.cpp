@@ -262,7 +262,7 @@ TEST_P(TimedTest, TimedDispatch) {
   }
 }
 
-GHOST_INSTANTIATE_BACKEND_TESTS(TimedTest);
+GHOST_INSTANTIATE_KERNEL_TESTS(TimedTest);
 
 // ---------------------------------------------------------------------------
 // Forced event chain tests (exercise event chaining on in-order queues)
