@@ -400,12 +400,11 @@ void BufferOpenCL::copy(const ghost::Encoder& s, const void* src,
                         size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
-  // Borrow contract: src must be consumed before returning. The owned-handle
-  // overload below (HostBytes) keeps the upload async via a per-stream
-  // lifetime list. See copy(Encoder, HostBytes, ...).
-  err = clEnqueueWriteBuffer(stream_impl->queue, mem, false, 0, bytes, src,
-                             stream_impl->events.size(), stream_impl->events,
-                             stream_impl->event());
+  // Sync: src is consumed before return (HostBytes::borrow contract). The
+  // HostBytes::adopt overload below is the async-with-managed-lifetime path.
+  err = clEnqueueWriteBuffer(stream_impl->queue, mem, /*blocking=*/true, 0,
+                             bytes, src, stream_impl->events.size(),
+                             stream_impl->events, stream_impl->event());
   checkError(err);
   stream_impl->addEvent();
 }
@@ -414,12 +413,11 @@ void BufferOpenCL::copyTo(const ghost::Encoder& s, void* dst,
                           size_t bytes) const {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
-  // Borrow contract: Stream-path copyTo is documented synchronous; dst is
-  // valid only for the duration of this call. The owned-handle overload
-  // (HostBytes) keeps the readback async via the stream's lifetime list.
-  err = clEnqueueReadBuffer(stream_impl->queue, mem, false, 0, bytes, dst,
-                            stream_impl->events.size(), stream_impl->events,
-                            stream_impl->event());
+  // Sync: readback completes before return (HostBytes::borrow contract). The
+  // HostBytes::adopt overload below is the async-with-managed-lifetime path.
+  err = clEnqueueReadBuffer(stream_impl->queue, mem, /*blocking=*/true, 0,
+                            bytes, dst, stream_impl->events.size(),
+                            stream_impl->events, stream_impl->event());
   checkError(err);
   stream_impl->addEvent();
 }
@@ -440,11 +438,9 @@ void BufferOpenCL::copy(const ghost::Encoder& s, const void* src,
                         size_t dstOffset, size_t bytes) {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
-  // Borrow contract: src must be consumed before returning. The owned-handle
-  // overload below (HostBytes) keeps the upload async via a per-stream
-  // lifetime list. See copy(Encoder, HostBytes, ...).
-  err = clEnqueueWriteBuffer(stream_impl->queue, mem, false, dstOffset, bytes,
-                             src, stream_impl->events.size(),
+  // Sync: see BufferOpenCL::copy(Encoder, const void*, size_t).
+  err = clEnqueueWriteBuffer(stream_impl->queue, mem, /*blocking=*/true,
+                             dstOffset, bytes, src, stream_impl->events.size(),
                              stream_impl->events, stream_impl->event());
   checkError(err);
   stream_impl->addEvent();
@@ -472,9 +468,9 @@ void BufferOpenCL::copyTo(const ghost::Encoder& s, void* dst, size_t srcOffset,
                           size_t bytes) const {
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   cl_int err;
-  // Borrow contract: see BufferOpenCL::copyTo(Encoder, void*, bytes).
-  err = clEnqueueReadBuffer(stream_impl->queue, mem, false, srcOffset, bytes,
-                            dst, stream_impl->events.size(),
+  // Sync: see BufferOpenCL::copyTo(Encoder, void*, size_t).
+  err = clEnqueueReadBuffer(stream_impl->queue, mem, /*blocking=*/true,
+                            srcOffset, bytes, dst, stream_impl->events.size(),
                             stream_impl->events, stream_impl->event());
   checkError(err);
   stream_impl->addEvent();
@@ -716,10 +712,9 @@ void ImageOpenCL::copy(const ghost::Encoder& s, const void* src,
   cl_int err;
   size_t origin[] = {0, 0, 0};
   size_t region[] = {layout.size.x, layout.size.y, layout.size.z};
-  // Borrow contract: see BufferOpenCL::copy(Encoder, void*, ...). The owned
-  // overload below keeps async via the stream's lifetime list.
-  err = clEnqueueWriteImage(stream_impl->queue, mem, false, origin, region,
-                            layout.stride.x, layout.stride.y, src,
+  // Sync: see BufferOpenCL::copy(Encoder, const void*, size_t).
+  err = clEnqueueWriteImage(stream_impl->queue, mem, /*blocking=*/true, origin,
+                            region, layout.stride.x, layout.stride.y, src,
                             stream_impl->events.size(), stream_impl->events,
                             stream_impl->event());
   checkError(err);
@@ -766,9 +761,9 @@ void ImageOpenCL::copyTo(const ghost::Encoder& s, void* dst,
   cl_int err;
   size_t origin[] = {0, 0, 0};
   size_t region[] = {layout.size.x, layout.size.y, layout.size.z};
-  // Borrow contract: see BufferOpenCL::copyTo(Encoder, void*, bytes).
-  err = clEnqueueReadImage(stream_impl->queue, mem, false, origin, region,
-                           layout.stride.x, layout.stride.y, dst,
+  // Sync: see BufferOpenCL::copyTo(Encoder, void*, size_t).
+  err = clEnqueueReadImage(stream_impl->queue, mem, /*blocking=*/true, origin,
+                           region, layout.stride.x, layout.stride.y, dst,
                            stream_impl->events.size(), stream_impl->events,
                            stream_impl->event());
   checkError(err);

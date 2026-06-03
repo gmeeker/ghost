@@ -69,8 +69,8 @@ struct ReadBufferCmd {
   std::shared_ptr<const implementation::Buffer> src;
   // dst.ownsBytes() distinguishes:
   // - Recorded from readBuffer(void*, ...): dst is HostBytes::borrow of the
-  //   caller's pointer; caller keeps it alive until stream.sync() per the
-  //   documented contract.
+  //   caller's pointer; caller keeps it alive until submit() returns (cb
+  //   replay blocks per op for the void* readback path).
   // - Recorded from readBuffer(HostBytes, ...): dst is the caller's HostBytes
   //   verbatim; backends may lifetime-extend dst.owner() to keep the readback
   //   async without burdening the caller with lifetime tracking.

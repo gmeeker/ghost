@@ -160,16 +160,19 @@
   **Performance impact for clients that batched many such calls** (e.g.
   Inferency feeding a sequence of uploads or pulling a sequence of
   readbacks): host-driver pipelining is gone — each call now stalls the
-  host. To recover the async path *and* get a documented lifetime
-  contract, pass the host buffer through `HostBytes::adopt`:
+  host. The call site is unchanged; only the semantics shifted:
 
   ```cpp
-  // Was (undocumented async; caller had to keep host alive until sync):
+  // Same call site, new semantics: returns once src_ptr has been consumed,
+  // so src_ptr can be freed immediately (previously: undocumented async,
+  // caller had to keep src_ptr alive until stream.sync()).
   buf.copy(stream, src_ptr, n);
+  ```
 
-  // Now (sync; src_ptr can be freed immediately):
-  buf.copy(stream, src_ptr, n);
+  To recover the async path *and* get a documented lifetime contract,
+  pass the host buffer through `HostBytes::adopt`:
 
+  ```cpp
   // Async-with-Ghost-managed-lifetime (matches old perf, documented contract):
   buf.copy(stream, ghost::HostBytes::adopt(src_ptr, free), 0, n);
   ```
