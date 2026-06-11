@@ -54,22 +54,6 @@ inline void checkNVRTCError(nvrtcResult err) {
 namespace implementation {
 using namespace cu;
 
-namespace {
-typedef ptr<CUtexObject, cu::detail<GhostCUtexObject>> texptr;
-
-// Owns per-launch texture objects so they can be released after the kernel
-// completes. cuTexObjectDestroy is synchronous; without this, the texptrs go
-// out of scope at the end of execute() and the kernel reads a destroyed
-// texture (manifests as all-zero tex2D fetches on Windows CUDA).
-struct DeferredTextureRelease {
-  std::list<texptr> textures;
-};
-
-void CUDA_CB releaseTexturesCallback(void* p) {
-  delete static_cast<DeferredTextureRelease*>(p);
-}
-}  // namespace
-
 FunctionCUDA::FunctionCUDA(const DeviceCUDA& dev, CUfunction k)
     : kernel(k), _dev(dev) {}
 
@@ -79,7 +63,9 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
   CUresult err;
   size_t local_mem = 0;
   std::vector<void*> params;
-  std::list<texptr> textures;
+  // Opportunistic destroy of texture objects parked by dead images whose
+  // guarding work has since completed.
+  _dev.reapDeferredTextures();
 
   for (auto i = args.begin(); i != args.end(); ++i) {
     switch (i->type()) {
@@ -106,7 +92,7 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
       case Attribute::Type_Buffer: {
         auto cuda =
             static_cast<implementation::BufferCUDA*>(i->bufferImpl().get());
-        params.push_back(&cuda->mem.value);
+        params.push_back(cuda->mem.handleAddress());
         break;
       }
       case Attribute::Type_Image: {
@@ -137,60 +123,12 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
           }
           normalizedCoords = s->normalizedCoords;
         }
-        CUDA_RESOURCE_DESC resDesc;
-        CUDA_TEXTURE_DESC texDesc;
-
-        memset(&resDesc, 0, sizeof(resDesc));
-        memset(&texDesc, 0, sizeof(texDesc));
-
-        CUarray_format f;
-        switch (cuda->descr.type) {
-          default:
-          case DataType_UInt8:
-            f = CU_AD_FORMAT_UNSIGNED_INT8;
-            break;
-          case DataType_UInt16:
-            f = CU_AD_FORMAT_UNSIGNED_INT16;
-            break;
-          case DataType_Int8:
-            f = CU_AD_FORMAT_SIGNED_INT8;
-            break;
-          case DataType_Int16:
-            f = CU_AD_FORMAT_SIGNED_INT16;
-            break;
-          case DataType_Float16:
-            f = CU_AD_FORMAT_HALF;
-            break;
-          case DataType_Float:
-            f = CU_AD_FORMAT_FLOAT;
-            break;
-        };
-        texDesc.addressMode[0] = addressMode;
-        texDesc.addressMode[1] = addressMode;
-        texDesc.filterMode = filterMode;
-        if (normalizedCoords) {
-          texDesc.flags |= CU_TRSF_NORMALIZED_COORDINATES;
-        }
-
-        resDesc.resType = CU_RESOURCE_TYPE_PITCH2D;
-        resDesc.res.pitch2D.devPtr = cuda->mem.get();
-        resDesc.res.pitch2D.format = f;
-        resDesc.res.pitch2D.numChannels = (unsigned int)cuda->descr.channels;
-        resDesc.res.pitch2D.width = cuda->descr.size.x;
-        resDesc.res.pitch2D.height = cuda->descr.size.y;
-        // stride.x == 0 means tight packing; resolve to width*pixelSize.
-        resDesc.res.pitch2D.pitchInBytes =
-            cuda->descr.rowBytes(cuda->descr.pixelSize());
-
-        texptr texObj;
-        checkError(cuTexObjectCreate(&texObj, &resDesc, &texDesc, nullptr));
-        // Move ownership into the deferred-release list, then point the kernel
-        // parameter at the value stored IN the list node -- NOT at the
-        // loop-local texObj, whose stack slot is reused by later locals before
-        // cuLaunchKernel reads *params (manifests as all-zero tex2D fetches on
-        // Windows). std::list never relocates nodes, so the address is stable.
-        textures.push_back(texObj);
-        params.push_back(&textures.back().value);
+        // Cached on the image and reused across launches; the returned
+        // address is the handle's stable heap storage, valid until the
+        // texture is destroyed (deferred behind in-flight work when the
+        // image dies — see ImageCUDA::~ImageCUDA).
+        params.push_back(
+            cuda->lookupTexture(addressMode, filterMode, normalizedCoords));
         break;
       }
       case Attribute::Type_ArgumentBuffer: {
@@ -200,7 +138,7 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
         } else {
           auto cuda =
               static_cast<implementation::BufferCUDA*>(ab->bufferImpl().get());
-          params.push_back(&cuda->mem.value);
+          params.push_back(cuda->mem.handleAddress());
         }
         break;
       }
@@ -220,13 +158,13 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
       case Attribute::Type_Buffer: {
         auto buf =
             static_cast<implementation::BufferCUDA*>(i->bufferImpl().get());
-        buf->markUsed(stream_impl->queue);
+        buf->markUsed(*stream_impl);
         break;
       }
       case Attribute::Type_Image: {
         auto img =
             static_cast<implementation::ImageCUDA*>(i->imageImpl().get());
-        img->markUsed(stream_impl->queue);
+        img->markUsed(*stream_impl);
         break;
       }
       case Attribute::Type_ArgumentBuffer: {
@@ -234,7 +172,7 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
         if (!ab->isStruct()) {
           auto buf =
               static_cast<implementation::BufferCUDA*>(ab->bufferImpl().get());
-          buf->markUsed(stream_impl->queue);
+          buf->markUsed(*stream_impl);
         }
         break;
       }
@@ -273,17 +211,6 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
                          stream_impl->queue, &params[0], nullptr);
   }
   checkError(err);
-  // Hand the per-launch texture objects off to a host callback so they're
-  // destroyed only after the kernel completes. Fallback: synchronous release
-  // (the prior buggy behavior) if scheduling the callback fails.
-  if (!textures.empty()) {
-    auto* d = new DeferredTextureRelease{std::move(textures)};
-    CUresult hostErr =
-        cuLaunchHostFunc(stream_impl->queue, &releaseTexturesCallback, d);
-    if (hostErr != CUDA_SUCCESS) {
-      delete d;
-    }
-  }
 }
 
 Attribute FunctionCUDA::getAttribute(FunctionAttributeId what) const {

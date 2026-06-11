@@ -460,12 +460,15 @@ GHOST_INSTANTIATE_BACKEND_TESTS(ImageTest);
 //   1. pitchInBytes came from descr.stride.x, which is 0 for tight-packed
 //      images -> degenerate texture. Now resolved to width*pixelSize.
 //   2. the CUtexObject was destroyed at the end of execute(), before the async
-//      kernel ran. Now deferred via cuLaunchHostFunc until kernel completion.
-// (The "tight packing" variant below specifically exercises cause #1.)
+//      kernel ran. Texture objects are now cached on the image and, when the
+//      image dies with work in flight, destroyed via an event-guarded reap
+//      list (cuTexObjectDestroy may not run in a cuLaunchHostFunc callback).
+// (The "tight packing" variant below specifically exercises cause #1; the
+// "drop before sync" variant exercises cause #2's replacement machinery.)
 
 class ImageKernelTest : public GhostKernelTest {
  protected:
-  void runSampleTest(bool tightPacking) {
+  void runSampleTest(bool tightPacking, bool dropBeforeSync = false) {
     const char* src = sampleImageSource();
     if (!src)
       GTEST_SKIP() << "No image-sampling kernel for " << BackendName(backend());
@@ -517,6 +520,13 @@ class ImageKernelTest : public GhostKernelTest {
         .local_size(16, 8);
     fn(la, stream())(outBuf, img, static_cast<int32_t>(W),
                      static_cast<int32_t>(H));
+    if (dropBeforeSync) {
+      // Drop the image (and donor buffer) wrappers with the kernel possibly
+      // still in flight: the backend must keep the sampled memory AND its
+      // texture state alive until the kernel completes.
+      img = Image(nullptr);
+      buf = Buffer(nullptr);
+    }
     outBuf.copyTo(stream(), output.data(), dataSize);
     stream().sync();
 
@@ -536,6 +546,10 @@ TEST_P(ImageKernelTest, SharedImageKernelSampleReadsBufferValues) {
 
 TEST_P(ImageKernelTest, SharedImageKernelSampleTightPacking) {
   runSampleTest(/*tightPacking=*/true);
+}
+
+TEST_P(ImageKernelTest, SharedImageKernelSampleDropBeforeSync) {
+  runSampleTest(/*tightPacking=*/false, /*dropBeforeSync=*/true);
 }
 
 GHOST_INSTANTIATE_KERNEL_TESTS(ImageKernelTest);

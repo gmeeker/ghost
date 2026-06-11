@@ -19,6 +19,9 @@
 #include <ghost/cuda/exception.h>
 #include <ghost/exception.h>
 
+#include <memory>
+#include <utility>
+
 namespace ghost {
 namespace cu {
 template <typename TYPE>
@@ -95,78 +98,123 @@ class detail<CUmemoryPool> {
 };
 #endif
 
+/// @brief Reference-counted handle wrapper for CUDA driver objects.
+///
+/// Owning ptrs (constructed with @c retainObject=true, assigned a raw
+/// handle, or written through @c operator&) share a heap-allocated control
+/// node; @c DETAIL::release fires when the last sharing ptr drops. Copies
+/// share ownership — copying never transfers or steals it — matching the
+/// OpenCL/Metal wrapper semantics. Non-owning ptrs (retainObject=false)
+/// carry just the raw value and never release it.
 template <typename TYPE, typename DETAIL = detail<TYPE>>
 class ptr {
  protected:
-  bool _owned;
+  // Owns the handle; releases it when the last sharing ptr drops. Lives on
+  // the heap so the storage address is stable for the whole ownership
+  // lifetime regardless of how the ptr objects themselves move (see
+  // handleAddress()).
+  struct Destroyer {
+    TYPE value;
 
- public:
-  TYPE value;
+    explicit Destroyer(TYPE v = (TYPE)0) : value(v) {}
 
-  explicit ptr(TYPE v = 0, bool retainObject = true)
-      : value(v), _owned(retainObject) {}
+    Destroyer(const Destroyer&) = delete;
+    Destroyer& operator=(const Destroyer&) = delete;
 
-  ptr(ptr& v) : value(v.value), _owned(v._owned) { v._owned = false; }
-
-  ptr(ptr&& v) : value(v.value), _owned(v._owned) { v._owned = false; }
-
-  ~ptr() { destroy(); }
-
-  void destroy() {
-    if (_owned && value) {
-      CUresult err = DETAIL::release(value);
-      if (err != CUDA_SUCCESS) {
-        try {
-          throw cu::runtime_error(err);
-        } catch (...) {
-          ghost::detail::stashError(std::current_exception());
+    ~Destroyer() {
+      if (value) {
+        CUresult err = DETAIL::release(value);
+        if (err != CUDA_SUCCESS) {
+          try {
+            throw cu::runtime_error(err);
+          } catch (...) {
+            ghost::detail::stashError(std::current_exception());
+          }
         }
       }
     }
-    _owned = false;
+  };
+
+  std::shared_ptr<Destroyer> _destroy;  // null when non-owning
+  TYPE value;                           // used only when non-owning
+
+ public:
+  explicit ptr(TYPE v = (TYPE)0, bool retainObject = true) : value(v) {
+    if (retainObject && v) {
+      _destroy = std::make_shared<Destroyer>(v);
+    }
+  }
+
+  ptr(const ptr& v) : _destroy(v._destroy), value(v.value) {}
+
+  ptr(ptr&& v) : _destroy(std::move(v._destroy)), value(v.value) {
+    v.value = (TYPE)0;
+  }
+
+  ~ptr() = default;
+
+  TYPE get() const { return _destroy ? _destroy->value : value; }
+
+  bool owned() const { return _destroy != nullptr; }
+
+  operator TYPE() const { return get(); }
+
+  /// @brief Stable address of the live handle storage, valid for the
+  /// lifetime of the ownership node (owning) or of this ptr (non-owning).
+  /// CUDA kernel parameter arrays dereference at launch time and need this
+  /// rather than a pointer into a relocatable ptr object.
+  TYPE* handleAddress() { return _destroy ? &_destroy->value : &value; }
+
+  /// @brief Drop this ptr's reference (and value). The handle is released
+  /// only when the last sharing ptr lets go.
+  void destroy() {
+    _destroy.reset();
     value = (TYPE)0;
   }
 
   void reset() { destroy(); }
 
+  /// @brief Disarm and return the handle: no sharing ptr will release it,
+  /// and every sharer observes the value as cleared. The caller assumes
+  /// ownership of the returned handle.
   TYPE release() {
-    TYPE v = value;
-    _owned = false;
+    TYPE v = get();
+    if (_destroy) {
+      _destroy->value = (TYPE)0;
+      _destroy.reset();
+    }
+    value = (TYPE)0;
     return v;
   }
 
-  TYPE get() const { return value; }
-
-  bool owned() const { return _owned; }
-
-  operator TYPE() const { return value; }
-
+  /// @brief Out-parameter accessor: drops the current handle and arms a
+  /// fresh owning node for the API call to write into.
   TYPE* operator&() {
     destroy();
-    _owned = true;
-    return &value;
+    _destroy = std::make_shared<Destroyer>();
+    return &_destroy->value;
   }
 
   ptr& operator=(TYPE v) {
     destroy();
     value = v;
-    _owned = true;
+    if (v) _destroy = std::make_shared<Destroyer>(v);
     return *this;
   }
 
-  ptr& operator=(ptr& v) {
-    destroy();
+  ptr& operator=(const ptr& v) {
+    // std::addressof: unary & is overloaded as the out-parameter accessor.
+    if (this == std::addressof(v)) return *this;
+    _destroy = v._destroy;
     value = v.value;
-    _owned = v._owned;
-    v._owned = false;
     return *this;
   }
 
   ptr& operator=(ptr&& v) {
-    destroy();
+    if (this == std::addressof(v)) return *this;
+    _destroy = std::move(v._destroy);
     value = v.value;
-    _owned = v._owned;
-    v._owned = false;
+    v.value = (TYPE)0;
     return *this;
   }
 };

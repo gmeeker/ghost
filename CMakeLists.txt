@@ -389,6 +389,7 @@ if(GTest_FOUND)
     test/test_buffer.cpp
     test/test_command_buffer.cpp
     test/test_cpu_kernel.cpp
+    test/test_cuda_pool.cpp
     test/test_device.cpp
     test/test_image.cpp
     test/test_kernel.cpp

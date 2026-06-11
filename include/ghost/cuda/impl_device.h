@@ -20,6 +20,8 @@
 #include <ghost/implementation/recorded_command_buffer.h>
 
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <vector>
 
 namespace ghost {
@@ -40,6 +42,11 @@ class EventCUDA : public Event {
 class StreamCUDA : public Stream {
  public:
   cu::ptr<CUstream> queue;
+
+  /// @brief Liveness witness recorded by buffers/images in markUsed().
+  /// Expires when this StreamCUDA is destroyed, letting deferred release
+  /// detect that the recorded @c CUstream handle is no longer valid.
+  std::shared_ptr<void> aliveToken = std::make_shared<char>(0);
 
   StreamCUDA(cu::ptr<CUstream> queue_);
   StreamCUDA(CUcontext dev);
@@ -106,6 +113,17 @@ class CommandBufferCUDA : public RecordedCommandBuffer {
                           const ghost::Stream& stream) override;
 };
 
+/// @brief A stream a buffer/image has been used on, with a liveness witness
+/// so release paths can tell whether the raw handle is still valid.
+struct StreamUse {
+  CUstream stream;
+  std::weak_ptr<void> alive;
+};
+
+/// @brief Owning texture-object handle (see the CUtexObject aliasing note in
+/// cu_ptr.h for why the DETAIL parameter is spelled out).
+typedef cu::ptr<CUtexObject, cu::detail<cu::GhostCUtexObject>> TexturePtr;
+
 class BufferCUDA : public Buffer {
  public:
   cu::ptr<CUdeviceptr> mem;
@@ -117,10 +135,22 @@ class BufferCUDA : public Buffer {
   ~BufferCUDA();
 
   /// @brief Record that this buffer has been used on a stream. The destructor
-  /// will defer @c cuMemFree until pending work on each recorded stream has
+  /// defers the free until pending work on each recorded stream has
   /// completed, so callers may drop the wrapper immediately after a
-  /// fire-and-forget dispatch without synchronizing first.
-  virtual void markUsed(CUstream s);
+  /// fire-and-forget dispatch without synchronizing first. For pool-backed
+  /// buffers, a stream's first use also takes a device-side dependency on
+  /// the asynchronous allocation's completion.
+  virtual void markUsed(const StreamCUDA& s);
+
+#if CUDA_VERSION >= 11020
+  /// @brief Mark this buffer as backed by the device's @c CUmemoryPool.
+  /// The allocation was stream-ordered on @p allocStream and completes when
+  /// @p ready fires. The shared @p pool reference keeps the pool alive until
+  /// the destructor has enqueued the stream-ordered free that returns the
+  /// memory to it.
+  void setPoolBacked(const cu::ptr<CUmemoryPool>& pool, CUstream allocStream,
+                     cu::ptr<CUevent>&& ready);
+#endif
 
   virtual size_t size() const override;
 
@@ -153,7 +183,15 @@ class BufferCUDA : public Buffer {
 
  protected:
   // Streams that have enqueued work referencing this buffer's memory.
-  std::vector<CUstream> _useStreams;
+  std::vector<StreamUse> _useStreams;
+#if CUDA_VERSION >= 11020
+  // Pool-backed buffers: shared keepalive for the pool and completion event
+  // of the asynchronous allocation (see setPoolBacked).
+  cu::ptr<CUmemoryPool> _pool;
+  cu::ptr<CUevent> _ready;
+#endif
+  // Stream a pool-backed allocation was ordered on; null otherwise.
+  CUstream _allocStream = nullptr;
 };
 
 class SubBufferCUDA : public BufferCUDA {
@@ -163,7 +201,7 @@ class SubBufferCUDA : public BufferCUDA {
   SubBufferCUDA(std::shared_ptr<Buffer> parent, cu::ptr<CUdeviceptr> mem_,
                 size_t bytes);
 
-  void markUsed(CUstream s) override;
+  void markUsed(const StreamCUDA& s) override;
 };
 
 class MappedBufferCUDA : public BufferCUDA {
@@ -185,17 +223,34 @@ class ImageCUDA : public Image {
   cu::ptr<CUdeviceptr> mem;
   ImageDescription descr;
 
-  ImageCUDA(cu::ptr<CUdeviceptr> mem_, const ImageDescription& descr_);
+  ImageCUDA(cu::ptr<CUdeviceptr> mem_, const ImageDescription& descr_,
+            const DeviceCUDA* dev = nullptr);
   ImageCUDA(const DeviceCUDA& dev, const ImageDescription& descr_);
+  /// @brief Shared image over @p buffer's memory. The image holds a
+  /// non-owning view plus a reference that keeps the donor alive; the donor
+  /// keeps ownership and frees (with full use-stream ordering — markUsed
+  /// propagates to it) once both wrappers are gone.
   ImageCUDA(const DeviceCUDA& dev, const ImageDescription& descr_,
-            BufferCUDA& buffer);
+            const std::shared_ptr<Buffer>& buffer);
+  /// @brief Shared image over @p image's memory. Same donor semantics as
+  /// the buffer overload.
   ImageCUDA(const DeviceCUDA& dev, const ImageDescription& descr_,
-            ImageCUDA& image);
+            const std::shared_ptr<Image>& image);
   ~ImageCUDA();
 
   /// @brief Record that this image has been used on a stream. See
   /// @c BufferCUDA::markUsed.
-  void markUsed(CUstream s);
+  void markUsed(const StreamCUDA& s);
+
+  /// @brief Return the address of a cached @c CUtexObject for sampling this
+  /// image with the given configuration, creating it on first use. The
+  /// returned pointer is stable for the texture's lifetime (it points into
+  /// the handle's heap node) and is suitable for CUDA kernel parameter
+  /// arrays. Cached textures are destroyed when the image is — deferred
+  /// behind in-flight work via the device's reap list (see
+  /// @c DeviceCUDA::deferTextureRelease).
+  CUtexObject* lookupTexture(CUaddress_mode addressMode,
+                             CUfilter_mode filterMode, bool normalizedCoords);
 
   virtual const ImageDescription& description() const override { return descr; }
 
@@ -223,7 +278,29 @@ class ImageCUDA : public Image {
                     const Origin3& dstOrigin) override;
 
  protected:
-  std::vector<CUstream> _useStreams;
+  struct CachedTexture {
+    CUaddress_mode address;
+    CUfilter_mode filter;
+    bool normalized;
+    TexturePtr tex;
+  };
+
+  /// @brief Move the cached texture handles out (for handoff to the
+  /// device's deferred-release list), leaving the cache empty.
+  std::vector<TexturePtr> takeTextures();
+
+  std::vector<StreamUse> _useStreams;
+  std::vector<CachedTexture> _textures;
+  // Owning device, used to park cached textures for deferred destruction
+  // when the image dies with work in flight. Null for wrapper images
+  // created without one; those fall back to a stream drain. Images do not
+  // outlive their device (documented contract).
+  const DeviceCUDA* _device = nullptr;
+  // sharedImage donors: this image's mem is a non-owning view into the
+  // donor's allocation; the reference keeps the donor (and so the memory)
+  // alive for this image's lifetime.
+  std::shared_ptr<Buffer> _donorBuffer;
+  std::shared_ptr<Image> _donorImage;
 };
 
 // Class to track thread's current context, even if other libraries change it.
@@ -249,6 +326,9 @@ class DeviceCUDA : public Device {
   cu::ptr<CUstream> queue;
   CUdevice device;
 #if CUDA_VERSION >= 11020
+  // cu::ptr shares ownership on copy, so pool-backed buffers keep the pool
+  // alive across a setMemoryPoolSize() swap while their stream-ordered
+  // frees are pending.
   cu::ptr<CUmemoryPool> memPool;
 #endif
 
@@ -298,6 +378,28 @@ class DeviceCUDA : public Device {
   virtual ghost::Image wrapImage(const SharedImage& shared) const override;
 
   virtual Attribute getAttribute(DeviceAttributeId what) const override;
+
+  /// @brief Park texture objects for destruction once the work currently
+  /// pending on @p streams completes (events are recorded here, on the
+  /// calling host thread — never inside a driver callback, which must not
+  /// make CUDA API calls). Entries are destroyed by later
+  /// @ref reapDeferredTextures passes.
+  void deferTextureRelease(std::vector<TexturePtr>&& textures,
+                           const std::vector<CUstream>& streams) const;
+
+  /// @brief Destroy parked texture objects whose guarding events have
+  /// completed. With @p waitAll, block until every entry is destroyable
+  /// (device teardown).
+  void reapDeferredTextures(bool waitAll = false) const;
+
+ protected:
+  struct PendingTextureRelease {
+    std::vector<TexturePtr> textures;
+    std::vector<cu::ptr<CUevent>> events;
+  };
+
+  mutable std::mutex _texReapMutex;
+  mutable std::vector<PendingTextureRelease> _texReap;
 };
 }  // namespace implementation
 }  // namespace ghost

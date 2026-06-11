@@ -51,6 +51,18 @@ namespace ghost {
 /// and images do not outlive their device, so the allocator is guaranteed to be
 /// alive when @c freeBuffer / @c freeImage / @c freeHostMemory is called on
 /// resources that survive long enough to need it.
+///
+/// **Precedence.** An installed allocator is consulted before every other
+/// allocation path Ghost has, including backend memory pools enabled via
+/// @c Device::setMemoryPoolSize. Declining (returning @c nullptr) falls
+/// through to those paths.
+///
+/// **Free ordering.** Ghost drains device work that references a resource
+/// before passing its handle to the matching @c free* method, so the host may
+/// recycle the memory as soon as the call returns. Backends whose handles are
+/// reference-counted objects (Metal, OpenCL) rely on that instead and may
+/// invoke @c free* with work still in flight; the retained reference keeps the
+/// resource alive until it completes.
 class Allocator {
  public:
   virtual ~Allocator() = default;
