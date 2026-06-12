@@ -401,7 +401,11 @@ if(GTest_FOUND)
   endif()
   target_link_libraries(TestGhostGTest ${PROJECT_NAME} GTest::gtest_main)
   include(GoogleTest)
-  gtest_discover_tests(TestGhostGTest)
+  # Default POST_BUILD discovery runs the test exe on the build host to
+  # enumerate cases, which faults on a cross build (e.g. ARM64EC from x64).
+  # PRE_TEST defers enumeration to test-run time. Always on, since cross builds
+  # for the same OS (Windows ARM64 on x64) don't set CMAKE_CROSSCOMPILING.
+  gtest_discover_tests(TestGhostGTest DISCOVERY_MODE PRE_TEST)
 
   # Generated headers go here
   set(GHOST_TEST_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/test/generated)
