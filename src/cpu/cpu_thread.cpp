@@ -34,6 +34,10 @@
 #include <unistd.h>
 #endif
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -43,6 +47,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #ifdef WITH_GCD
 #include <dispatch/dispatch.h>
@@ -125,6 +130,64 @@ thread_local size_t ThreadPoolDefault::_nestingDepth = 0;
 
 #else  // !__APPLE_CC__
 
+#if WIN32
+/// One entry per physical core: the processor group and the affinity mask of
+/// all its logical processors (both SMT siblings on an SMT core).
+struct PhysicalCore {
+  WORD group;
+  KAFFINITY mask;
+};
+
+/// Enumerates physical cores via
+/// GetLogicalProcessorInformationEx(RelationProcessorCore). Returns an empty
+/// vector on failure — callers must treat that as "no placement hints".
+std::vector<PhysicalCore> enumeratePhysicalCores() {
+  std::vector<PhysicalCore> cores;
+  DWORD bytes = 0;
+  GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &bytes);
+  if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || bytes == 0) return cores;
+  std::vector<uint8_t> buffer(bytes);
+  auto* info =
+      reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data());
+  if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &bytes)) {
+    return cores;
+  }
+  for (DWORD offset = 0; offset < bytes;) {
+    auto* entry = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(
+        buffer.data() + offset);
+    if (entry->Relationship == RelationProcessorCore &&
+        entry->Processor.GroupCount >= 1) {
+      cores.push_back({entry->Processor.GroupMask[0].Group,
+                       entry->Processor.GroupMask[0].Mask});
+    }
+    offset += entry->Size;
+  }
+  return cores;
+}
+
+/// Sets a helper thread's ideal processor to the first logical processor of
+/// the given physical core. An ideal processor is a soft scheduler hint —
+/// no privilege required, the affinity masks and CPU sets still win,
+/// and the scheduler may run the thread elsewhere under contention. The hint
+/// is enough to stop the Windows scheduler's default behavior of stacking
+/// fork-join workers onto SMT siblings of already-busy cores (measured on a
+/// Zen 3 5900: one-per-core placement is ~15% e2e on a conv-heavy workload
+/// dispatched at workers == physical core count).
+void setIdealProcessor(std::thread& t, const PhysicalCore& core) {
+  KAFFINITY mask = core.mask;
+  BYTE number = 0;
+  while (mask > 1 && (mask & 1) == 0) {
+    mask >>= 1;
+    ++number;
+  }
+  PROCESSOR_NUMBER pn = {};
+  pn.Group = core.group;
+  pn.Number = number;
+  SetThreadIdealProcessorEx(static_cast<HANDLE>(t.native_handle()), &pn,
+                            nullptr);
+}
+#endif  // WIN32
+
 /// @brief Default ThreadPool implementation — OpenMP-style fork-join.
 ///
 /// Modeled on libgomp's `parallel for` and TBB's `task_arena`:
@@ -199,6 +262,22 @@ class ThreadPoolDefault : public ghost::ThreadPool {
     for (size_t i = 0; i < helpers; i++) {
       _threads.emplace_back(&ThreadPoolDefault::worker, this, i);
     }
+#if WIN32
+    // Spread helpers one-per-physical-core via ideal-processor hints.
+    // Unlike Linux's CFS, the Windows scheduler will happily co-schedule
+    // helper threads onto SMT siblings of busy cores; for a fork-join team
+    // sized to the physical core count that serializes pairs of slices and
+    // shows up as negative scaling past ~half the team size. Helper i is
+    // hinted to core (i + 1) % numCores, leaving core 0 as the natural home
+    // of the calling thread (participant 0). Soft hints only: the
+    // process affinity / CPU sets always take precedence.
+    const auto cores = enumeratePhysicalCores();
+    if (cores.size() > 1) {
+      for (size_t i = 0; i < _threads.size(); i++) {
+        setIdealProcessor(_threads[i], cores[(i + 1) % cores.size()]);
+      }
+    }
+#endif
   }
 
   ~ThreadPoolDefault() override {
@@ -481,7 +560,18 @@ class ThreadPoolDefault : public ghost::ThreadPool {
   }
 
   static void cpuPause() {
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(_MSC_VER) && (defined(_M_ARM64) || defined(_M_ARM64EC))
+    // Checked before _M_X64: ARM64EC defines both _M_ARM64EC and _M_X64,
+    // and should use the native yield rather than emulated _mm_pause.
+    __yield();
+#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+    // MSVC defines _M_X64/_M_IX86, not __x86_64__ — before this branch
+    // existed, MSVC builds fell through to std::this_thread::yield(), i.e.
+    // a SwitchToThread syscall on EVERY spin iteration. That turns the
+    // "tight spin" phases (worker wait and parent spinWaitDone) into a
+    // syscall storm and invites the scheduler to migrate spinning workers.
+    _mm_pause();
+#elif defined(__x86_64__) || defined(__i386__)
     __builtin_ia32_pause();
 #elif defined(__aarch64__) || defined(__arm__)
     asm volatile("yield" ::: "memory");
