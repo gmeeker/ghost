@@ -4,6 +4,7 @@ from conan import ConanFile
 from conan.tools.apple import is_apple_os
 from conan.tools.build import check_min_cppstd
 from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
+from conan.tools.scm import Version
 
 required_conan_version = ">=1.54.0"
 
@@ -55,6 +56,10 @@ class GhostConan(ConanFile):
     def _supports_opencl(self):
         return self.settings.os in ("Windows", "Linux", "Macos")
 
+    def _cuda_version(self):
+        version = self.settings.get_safe("cuda.version")
+        return Version(version) if version else None
+
     @property
     def cuda_toolkit_path(self):
         if self.settings.os == "Windows":
@@ -73,6 +78,20 @@ class GhostConan(ConanFile):
         if (self.settings.os != "Windows"
                 and self.options.get_safe("with_cuda_link") == "delaylib"):
             self.options.rm_safe("with_cuda_link")
+        # CUDA 12+ ships cuda.lib as an import wrapper, so /DELAYLOAD against
+        # nvcuda.dll no longer resolves the way it did with the old static
+        # cuda.lib. Fall back to plain linking (the closest equivalent, since
+        # our own wrapper doesn't cover every CUDA entry point) and warn.
+        cuda_version = self._cuda_version()
+        if (self.options.get_safe("with_cuda_link") == "delaylib"
+                and cuda_version is not None
+                and cuda_version >= "12"):
+            self.output.warning(
+                "with_cuda_link=delaylib is not supported with CUDA "
+                + str(self.settings.cuda.version)
+                + " (cuda.lib is now an import wrapper and delay loading "
+                "nvcuda.dll no longer works); switching to with_cuda_link=True.")
+            self.options.with_cuda_link = True
 
     def config_options(self):
         if self.settings.os == 'Windows':
