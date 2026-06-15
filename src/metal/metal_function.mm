@@ -23,6 +23,7 @@
 #include <ghost/metal/impl_function.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 
@@ -607,6 +608,10 @@ void LibraryMetal::saveArchive() const {
   if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
     if (!_archiveDirty || !_archive.get())
       return;
+    // serializeToURL won't create intermediate directories; mirror the
+    // generic on-disk cache which create_directories() before writing.
+    std::error_code ec;
+    std::filesystem::create_directories(_archivePath.parent_path(), ec);
     NSError *err = nil;
     NSURL *url = [NSURL
         fileURLWithPath:[NSString stringWithUTF8String:_archivePath.string()
