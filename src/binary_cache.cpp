@@ -142,6 +142,7 @@ bool BinaryCache::loadBinaries(
   sizes.resize(size_t(v));
   for (i = 0; i < sizes.size(); i++) {
     file.read(&v, sizeof(v));
+    sizes[i] = size_t(v);
   }
   for (i = 0; i < sizes.size(); i++) {
     if (sizes[i] > 0) {
@@ -182,7 +183,7 @@ void BinaryCache::saveBinaries(const implementation::Device& dev,
     file.write(digest, sizeof(digest));
     Digest b;
     for (i = 0; i < binaries.size(); i++) {
-      b.update(&binaries[i], sizes[i]);
+      b.update(binaries[i], sizes[i]);
     }
     b.get(digest);
     file.write(digest, sizeof(digest));
@@ -195,7 +196,7 @@ void BinaryCache::saveBinaries(const implementation::Device& dev,
       file.write(&v, sizeof(v));
     }
     for (i = 0; i < binaries.size(); i++) {
-      file.write(&binaries[i], sizes[i]);
+      file.write(binaries[i], sizes[i]);
     }
   }
 }

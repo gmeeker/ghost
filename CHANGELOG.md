@@ -122,6 +122,30 @@
   packed struct (matches the convention used by every other Metal
   test kernel in `ghost_test.h`).
 
+- On-disk binary cache corruption / non-reuse (`BinaryCache::saveBinaries`
+  and `loadBinaries`). `saveBinaries` hashed and wrote `&binaries[i]` (the
+  address of an 8-byte pointer slot) for `sizes[i]` bytes ΓÇö an
+  out-of-bounds read that wrote garbage to the cache file and could crash
+  with an access violation (an SEH exception the surrounding
+  `catch (...)` could not swallow). `loadBinaries` read each binary's
+  size into a throwaway local and never stored it, so every entry stayed
+  size 0, the integrity digest never matched, and the cache could never be
+  reused (silent recompile on every launch). Affected every backend that
+  uses the disk cache: CUDA, OpenCL, Vulkan, DirectX. Only triggered when
+  a cache path was set (the default is disabled).
+
+- Vulkan and DirectX did not implement `kDeviceCount`, so
+  `getAttribute(kDeviceCount)` returned a default-constructed `Attribute`.
+  `BinaryCache::loadBinaries` casts that to the entry count, so on those
+  backends the cache key never matched what `saveBinaries` wrote (cache
+  never reused) and a garbage count could make digest computation loop
+  for a very long time. Both backends now report a device count of 1.
+
+- `Attribute`'s default constructor left its numeric unions
+  uninitialized, so `asInt()`/`asFloat()`/etc. on an unsupported attribute
+  returned garbage. The unions are now value-initialized to 0, so an
+  unimplemented attribute reads as a safe zero.
+
 ### Changed
 
 - `Buffer::copy(const CommandBuffer&, const void* src, ...)` and
@@ -193,3 +217,22 @@
 
   `StreamOptions::forceEventChain` is now redundant (the chain is always
   on) and kept only for source compatibility.
+
+- **The binary cache is now a per-device member instead of a process-global
+  singleton.** `Device::binaryCache()` is no longer `static` ΓÇö it returns
+  the cache owned by that specific device, so a CUDA and an OpenCL device
+  (or any two devices) can target different paths or purge policies.
+  Configure caching per device:
+
+  ```cpp
+  // Before: one global cache for the whole process.
+  ghost::Device::binaryCache().cachePath = "/path/to/cache";
+
+  // After: set the path on each device that should cache.
+  auto dev = ghost::createDevice(backend);
+  dev->binaryCache().cachePath = "/path/to/cache";
+  ```
+
+  There is intentionally no global default that new devices inherit:
+  seeding from a static would be subtly broken if the static were changed
+  after a device was created. Each device must be configured on its own.

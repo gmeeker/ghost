@@ -1938,6 +1938,8 @@ Attribute DeviceVulkan::getAttribute(DeviceAttributeId what) const {
       return Attribute(std::to_string(VK_VERSION_MAJOR(properties.apiVersion)) +
                        "." +
                        std::to_string(VK_VERSION_MINOR(properties.apiVersion)));
+    case kDeviceCount:
+      return Attribute((int32_t)1);
     case kDeviceProcessorCount:
       return Attribute((int32_t)properties.limits.maxComputeWorkGroupCount[0]);
     case kDeviceUnifiedMemory:

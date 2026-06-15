@@ -386,9 +386,13 @@ class Device {
   /// device. @p prev is the handle returned by a paired activate() call.
   void deactivate(void* prev = nullptr);
 
-  /// @brief Get the global binary cache instance.
-  /// @return Reference to the shared BinaryCache.
-  static BinaryCache& binaryCache();
+  /// @brief Get this device's binary cache.
+  ///
+  /// Each device owns its own cache, so a CUDA and an OpenCL device (or two
+  /// devices of any kind) can target different paths or purge policies. Set
+  /// its @c cachePath to enable on-disk caching for this device.
+  /// @return Reference to this device's BinaryCache.
+  BinaryCache& binaryCache() const;
 
   /// @brief Purge cached compiled binaries older than @p days.
   /// @param days Maximum age in days (default 30).

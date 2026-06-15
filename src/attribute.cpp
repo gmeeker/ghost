@@ -26,7 +26,7 @@ namespace ghost {
 // shared_ptr destructors are emitted in a TU where the pointee types are
 // complete.
 
-Attribute::Attribute() : _type(Type_Unknown), _count(0) {}
+Attribute::Attribute() : _type(Type_Unknown), _count(0), _u{}, _u64{} {}
 
 Attribute::~Attribute() = default;
 Attribute::Attribute(const Attribute&) = default;

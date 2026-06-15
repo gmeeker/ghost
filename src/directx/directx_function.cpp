@@ -397,7 +397,7 @@ LibraryDirectX::~LibraryDirectX() {}
 
 void LibraryDirectX::loadFromCache(const void* data, size_t length,
                                    const CompilerOptions& options) {
-  auto& cache = Device::binaryCache();
+  auto& cache = _dev.binaryCache();
   if (!cache.isEnabled()) return;
 
   std::vector<std::vector<unsigned char>> binaries;
@@ -409,7 +409,7 @@ void LibraryDirectX::loadFromCache(const void* data, size_t length,
 
 void LibraryDirectX::saveToCache(const void* data, size_t length,
                                  const CompilerOptions& options) const {
-  auto& cache = Device::binaryCache();
+  auto& cache = _dev.binaryCache();
   if (!cache.isEnabled()) return;
 
   std::vector<unsigned char*> binaries = {

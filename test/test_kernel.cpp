@@ -486,38 +486,7 @@ TEST_P(KernelTest, FunctionPrivateMemory) {
   EXPECT_GE(attr.asInt(), 0);
 }
 
-// ---------------------------------------------------------------------------
-// Binary cache
-// ---------------------------------------------------------------------------
-
-TEST_P(KernelTest, BinaryCacheCreatesFiles) {
-  auto& cache = Device::binaryCache();
-  // Use a temporary directory for cache.
-  std::filesystem::path tmpDir =
-      std::filesystem::temp_directory_path() /
-      ("ghost_test_cache_" + std::to_string(reinterpret_cast<uintptr_t>(this)));
-  cache.cachePath = tmpDir;
-
-  const char* src = multConstSource();
-  if (!src) GTEST_SKIP();
-
-  // First compile — should create cache file.
-  auto lib = device().loadLibraryFromText(src);
-  auto fn = lib.lookupFunction("mult_const_f");
-  EXPECT_NE(fn.impl().get(), nullptr);
-
-  // Verify cache is enabled.
-  EXPECT_TRUE(cache.isEnabled());
-
-  // Second compile of same source — should hit cache.
-  auto lib2 = device().loadLibraryFromText(src);
-  auto fn2 = lib2.lookupFunction("mult_const_f");
-  EXPECT_NE(fn2.impl().get(), nullptr);
-
-  // Purge and clean up.
-  device().purgeBinaries(0);
-  cache.cachePath.clear();
-}
+// Binary cache coverage lives in test_binary_cache.cpp.
 
 // ---------------------------------------------------------------------------
 // Argument buffer tests

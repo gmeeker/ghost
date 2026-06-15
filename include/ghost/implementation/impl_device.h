@@ -514,7 +514,10 @@ class Device {
   /// @brief Get the installed allocator, or @c nullptr.
   ghost::Allocator* allocator() const { return _allocator.get(); }
 
-  static BinaryCache& binaryCache();
+  /// @brief Per-device binary cache. Each device owns its own cache so
+  /// different backends (or devices) can target different paths/policies.
+  BinaryCache& binaryCache() const { return _cache; }
+
   virtual ghost::Library loadLibraryFromText(
       const std::string& text,
       const CompilerOptions& options = CompilerOptions(),
@@ -613,7 +616,9 @@ class Device {
 
  private:
   size_t _poolSize;
-  static BinaryCache _cache;
+  // Mutable so const device methods (e.g. a backend's const saveToCache) can
+  // reach the cache; the cache is device-owned configuration, not device state.
+  mutable BinaryCache _cache;
 };
 }  // namespace implementation
 }  // namespace ghost

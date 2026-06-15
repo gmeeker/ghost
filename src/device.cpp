@@ -84,10 +84,6 @@ void Buffer::fill(const ghost::Encoder&, size_t, size_t, const void*, size_t) {
   throw ghost::unsupported_error();
 }
 
-BinaryCache Device::_cache;
-
-BinaryCache& Device::binaryCache() { return _cache; }
-
 ghost::Library Device::loadLibraryFromFile(
     const std::filesystem::path& filename) const {
   throw ghost::unsupported_error();
@@ -431,9 +427,7 @@ void Device::setDefaultStream(std::shared_ptr<implementation::Stream> stream) {
   _stream.impl() = stream;
 }
 
-BinaryCache& Device::binaryCache() {
-  return implementation::Device::binaryCache();
-}
+BinaryCache& Device::binaryCache() const { return _impl->binaryCache(); }
 
 void Device::purgeBinaries(int days) {
   binaryCache().purgeBinaries(*_impl, days);

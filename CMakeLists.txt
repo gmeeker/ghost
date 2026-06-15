@@ -384,6 +384,7 @@ if(GTest_FOUND)
   add_executable(TestGhostGTest
     test/test_allocator.cpp
     test/test_attribute.cpp
+    test/test_binary_cache.cpp
     test/test_binary_cache_access.cpp
     test/test_binary_load.cpp
     test/test_buffer.cpp

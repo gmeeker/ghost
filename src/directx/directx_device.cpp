@@ -1477,6 +1477,8 @@ Attribute DeviceDirectX::getAttribute(DeviceAttributeId what) const {
       return Attribute("DirectX 12");
     case kDeviceFamily:
       return Attribute("12.0");
+    case kDeviceCount:
+      return Attribute((int32_t)1);
     case kDeviceProcessorCount:
       return Attribute((int32_t)0);
     case kDeviceUnifiedMemory:
