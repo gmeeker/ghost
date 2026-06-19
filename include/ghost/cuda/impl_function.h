@@ -18,6 +18,8 @@
 #include <ghost/cuda/cu_ptr.h>
 #include <ghost/implementation/impl_function.h>
 
+#include <atomic>
+
 namespace ghost {
 namespace implementation {
 class DeviceCUDA;
@@ -37,6 +39,10 @@ class FunctionCUDA : public Function {
 
  private:
   const DeviceCUDA& _dev;
+  // High-water mark of the dynamic shared-memory size (bytes) we've already
+  // opted this CUfunction into via cuFuncSetAttribute. Lets execute() skip
+  // redundant driver calls once a large-enough budget has been granted.
+  std::atomic<size_t> _maxDynamicSharedBytes{0};
 };
 
 class LibraryCUDA : public Library {

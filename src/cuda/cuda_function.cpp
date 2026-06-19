@@ -200,6 +200,26 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
     grid_size[i] = narrowDim(launchArgs.count(i), kDimNames[i]);
     local_size[i] = narrowDim(launchArgs.local_size()[i], kLocalNames[i]);
   }
+  // CUDA caps a block's shared memory at 48 KB unless the function explicitly
+  // opts into the larger per-block budget (sm_80/90 ~164 KB, sm_86 ~100 KB,
+  // sm_100 ~227 KB). Without the opt-in, a launch requesting more than 48 KB of
+  // dynamic shared memory fails with CUDA_ERROR_INVALID_VALUE. Do it lazily
+  // here so callers only need to pass the byte count via
+  // Attribute::localMem(N): when a launch asks for more than the static cap,
+  // grant exactly that much. The driver caches the value per CUfunction, so we
+  // track a high-water mark to skip redundant cuFuncSetAttribute calls on
+  // subsequent launches. Small-shape launches (<= 48 KB) never touch this path.
+  // Stealing shared from the unified L1/shared lowers occupancy, so requesting
+  // large amounts is the caller's (compute-bound, large-shape) trade-off to
+  // make.
+  static const size_t kStaticSharedCap = 48 * 1024;
+  if (local_mem > kStaticSharedCap &&
+      local_mem > _maxDynamicSharedBytes.load(std::memory_order_relaxed)) {
+    checkError(cuFuncSetAttribute(
+        kernel, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+        (int)local_mem));
+    _maxDynamicSharedBytes.store(local_mem, std::memory_order_relaxed);
+  }
   if (launchArgs.is_cooperative()) {
     err = cuLaunchCooperativeKernel(kernel, grid_size[0], grid_size[1],
                                     grid_size[2], local_size[0], local_size[1],
