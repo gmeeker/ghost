@@ -436,13 +436,12 @@ void CommandBufferDirectX::begin() {
   _recording = true;
 }
 
-void CommandBufferDirectX::submit(const ghost::Stream& stream) {
-  begin();
-
+void CommandBufferDirectX::replayCommandsIntoList() {
   // Replay variants onto our own command list. Same shape as
   // RecordedCommandBuffer::replayInto, with BarrierCmd → native UAV
   // barrier, WaitEventCmd / RecordEventCmd unsupported on a native
   // DirectX CommandBuffer (cross-queue semaphore wiring would be needed).
+  // Assumes commandList is already in the recording state.
   ghost::Encoder enc(std::shared_ptr<implementation::Encoder>(
       static_cast<implementation::Encoder*>(this), [](auto*) {}));
 
@@ -511,31 +510,53 @@ void CommandBufferDirectX::submit(const ghost::Stream& stream) {
         },
         command);
   }
+}
 
-  checkHR(commandList->Close());
-  _recording = false;
-
-  auto* streamDx = dynamic_cast<StreamDirectX*>(stream.impl().get());
-  if (!streamDx) throw ghost::unsupported_error();
-
-  // Submit on the stream's queue. The stream owns the queue; we own the
-  // allocator + cb + fence. We need access to the queue — read it via the
-  // friend hook below (we don't expose _commandQueue publicly today; the
-  // Stream's submit/sync routines use it directly, so we mirror that
-  // pattern by submitting through StreamDirectX::executeOnQueue).
-  //
-  // For now, mirror the StreamDirectX::submit() pattern inline: extract the
-  // queue from the Stream and call ExecuteCommandLists directly. This
-  // requires the queue to be accessible — see the StreamDirectX header
-  // refactor below if this is gated by privacy.
+void CommandBufferDirectX::executeRecorded(StreamDirectX* streamDx) {
+  // The stream owns the queue; we own the allocator + cb + fence. Submit our
+  // closed command list through StreamDirectX::executeOnQueue (which flushes
+  // any in-flight stream recording first, then ExecuteCommandLists + signals
+  // our fence).
   ID3D12CommandList* cmdLists[] = {commandList.Get()};
   streamDx->executeOnQueue(cmdLists, 1, _fence.Get(), ++_fenceValue);
   _submitted = true;
+}
+
+void CommandBufferDirectX::submit(const ghost::Stream& stream) {
+  auto* streamDx = dynamic_cast<StreamDirectX*>(stream.impl().get());
+  if (!streamDx) throw ghost::unsupported_error();
+
+  begin();
+  replayCommandsIntoList();
+  checkHR(commandList->Close());
+  _recording = false;
+
   inFlightCompletionHandlers.insert(
       inFlightCompletionHandlers.end(),
       std::make_move_iterator(pendingCompletionHandlers.begin()),
       std::make_move_iterator(pendingCompletionHandlers.end()));
   pendingCompletionHandlers.clear();
+
+  executeRecorded(streamDx);
+}
+
+void CommandBufferDirectX::recordResubmittable() {
+  // begin() resets the allocator + command list and the descriptor-heap
+  // bump-allocator, then records once. We do not begin() again before
+  // resubmitting, so the descriptor slots referenced by the closed list stay
+  // valid across executions.
+  begin();
+  replayCommandsIntoList();
+  checkHR(commandList->Close());
+  _recording = false;
+}
+
+void CommandBufferDirectX::submitRecorded(const ghost::Stream& stream) {
+  auto* streamDx = dynamic_cast<StreamDirectX*>(stream.impl().get());
+  if (!streamDx) throw ghost::unsupported_error();
+  // Serialize against the prior submission before re-executing the same list.
+  waitForCompletion();
+  executeRecorded(streamDx);
 }
 
 void CommandBufferDirectX::reset() {
@@ -553,6 +574,60 @@ void CommandBufferDirectX::encodeNative(
   addEncodeNative([body = std::move(body)](void* ctx) {
     body(*static_cast<DirectXEncoder*>(ctx));
   });
+}
+
+namespace {
+
+// Whether a recorded sequence can be pre-recorded once into a re-executable
+// command list. Device-side ops only (dispatch / indirect dispatch /
+// device-to-device copy / fill / image blit / barrier / native interop): host
+// transfers stage through per-submit deferred readbacks, and events need
+// cross-queue fence wiring — both unsafe to bake into a re-executed list.
+bool isDxExecutable(const std::vector<Command>& commands) {
+  for (const auto& command : commands) {
+    bool ok = std::visit(
+        [](const auto& cmd) -> bool {
+          using T = std::decay_t<decltype(cmd)>;
+          if constexpr (std::is_same_v<T, DispatchCmd> ||
+                        std::is_same_v<T, DispatchIndirectCmd> ||
+                        std::is_same_v<T, CopyBufferCmd> ||
+                        std::is_same_v<T, FillBufferCmd> ||
+                        std::is_same_v<T, FillBufferPatternCmd> ||
+                        std::is_same_v<T, CopyImageCmd> ||
+                        std::is_same_v<T, CopyImageFromBufferCmd> ||
+                        std::is_same_v<T, CopyImageToBufferCmd> ||
+                        std::is_same_v<T, BarrierCmd> ||
+                        std::is_same_v<T, EncodeNativeCmd>) {
+            return true;
+          } else {
+            return false;
+          }
+        },
+        command);
+    if (!ok) return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+std::shared_ptr<RecordedCommandBuffer> CommandBufferDirectX::cloneEmpty()
+    const {
+  return std::make_shared<CommandBufferDirectX>(
+      dev, CommandBufferOptions{concurrent});
+}
+
+std::shared_ptr<Executable> CommandBufferDirectX::compile(
+    const CompileOptions& options) {
+  if (!isDxExecutable(commands)) {
+    if (options.requireAccelerated) throw ghost::unsupported_error();
+    return RecordedCommandBuffer::compile(options);
+  }
+  auto cb = std::make_shared<CommandBufferDirectX>(
+      dev, CommandBufferOptions{concurrent});
+  cb->commands = commands;
+  cb->recordResubmittable();
+  return std::make_shared<ExecutableDirectX>(cb);
 }
 
 // ---------------------------------------------------------------------------

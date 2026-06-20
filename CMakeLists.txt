@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10...4.1)
-project(Ghost VERSION 1.0.1 LANGUAGES C CXX)
+project(Ghost VERSION 2.0 LANGUAGES C CXX)
 if(APPLE)
     enable_language(OBJC OBJCXX)
 endif()
@@ -64,6 +64,10 @@ if(WITH_METAL AND APPLE)
 endif()
 if(WITH_OPENCL AND OpenCL_FOUND)
   add_compile_definitions(WITH_OPENCL)
+  # cl_khr_command_buffer (and its mutable_dispatch layer) are still tagged
+  # "beta" in the OpenCL-Headers, so the finalized declarations live behind
+  # CL_ENABLE_BETA_EXTENSIONS. ExecutableOpenCL needs them.
+  add_compile_definitions(CL_ENABLE_BETA_EXTENSIONS)
   include_directories(${OPENCL_INCLUDE_DIRS})
 endif()
 if(WITH_VULKAN)
@@ -118,6 +122,7 @@ set(GHOST_PUBLIC_HEADERS
     include/ghost/exception.h
     include/ghost/argument_buffer.h
     include/ghost/command_buffer.h
+    include/ghost/executable.h
     include/ghost/gpu_info.h
     include/ghost/function.h
     include/ghost/io.h
@@ -169,6 +174,7 @@ set(GHOST_SOURCES
     src/create_device.cpp
     src/device.cpp
     src/digest.cpp
+    src/executable.cpp
     src/exception.cpp
     src/function.cpp
     src/image.cpp
@@ -390,6 +396,7 @@ if(GTest_FOUND)
     test/test_buffer.cpp
     test/test_command_buffer.cpp
     test/test_cpu_kernel.cpp
+    test/test_executable.cpp
     test/test_cuda_pool.cpp
     test/test_device.cpp
     test/test_image.cpp
@@ -407,6 +414,28 @@ if(GTest_FOUND)
   # PRE_TEST defers enumeration to test-run time. Always on, since cross builds
   # for the same OS (Windows ARM64 on x64) don't set CMAKE_CROSSCOMPILING.
   gtest_discover_tests(TestGhostGTest DISCOVERY_MODE PRE_TEST)
+
+  # Optional: run the OpenCL tests against a pocl ICD. Off by default; enabled
+  # via the conan with_pocl_tests option (which sets GHOST_POCL_TESTS=ON and
+  # pins GHOST_POCL_VERSION). pocl is NOT a build dependency — it ships LLVM
+  # and isn't on ConanCenter — so provide it out of band (conda-forge / distro
+  # / CI build) and point GHOST_POCL_ICD at its ICD manifest (or a directory of
+  # manifests for OCL_ICD_VENDORS). Lets us exercise cl_khr_command_buffer /
+  # mutable_dispatch, which real GPU drivers don't reliably expose.
+  option(GHOST_POCL_TESTS "Run the OpenCL tests under a pocl ICD" OFF)
+  set(GHOST_POCL_VERSION "" CACHE STRING
+      "pocl runtime version the OpenCL tests are validated against")
+  if(GHOST_POCL_TESTS)
+    set(GHOST_POCL_ICD "" CACHE STRING
+        "Path to a pocl ICD manifest (or vendors dir) for OCL_ICD_VENDORS")
+    add_test(NAME TestGhostPocl
+             COMMAND TestGhostGTest "--gtest_filter=*/OpenCL:*OpenCL*")
+    set_tests_properties(TestGhostPocl PROPERTIES
+        ENVIRONMENT "OCL_ICD_VENDORS=${GHOST_POCL_ICD}")
+    message(STATUS
+        "pocl OpenCL tests enabled (expected pocl ${GHOST_POCL_VERSION}); "
+        "set GHOST_POCL_ICD to the pocl ICD manifest")
+  endif()
 
   # Generated headers go here
   set(GHOST_TEST_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/test/generated)

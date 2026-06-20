@@ -11,7 +11,7 @@ required_conan_version = ">=1.54.0"
 
 class GhostConan(ConanFile):
     name = "ghost"
-    version = "1.1"
+    version = "2.0"
     license = "BSD-3-Clause"
     author = "Digital Anarchy"
     description = "Compute engine"
@@ -29,7 +29,8 @@ class GhostConan(ConanFile):
                "with_gcd": [True, False],
                "with_metal": [True, False],
                "with_opencl": [True, False],
-               "with_vulkan": [True, False]}
+               "with_vulkan": [True, False],
+               "with_pocl_tests": [True, False]}
     default_options = {
                "shared": False,
                "fPIC": True,
@@ -41,8 +42,15 @@ class GhostConan(ConanFile):
                "with_gcd": False,
                "with_metal": True,
                "with_opencl": True,
-               "with_vulkan": False}
+               "with_vulkan": False,
+               "with_pocl_tests": False}
     short_paths = True
+
+    # pocl is not on ConanCenter (it builds against LLVM), so the ICD is supplied
+    # out-of-band (conda-forge / distro / CI build). with_pocl_tests just adds a
+    # CTest target that runs the OpenCL tests against pocl and asserts this exact
+    # runtime version, so the command-buffer extension level is deterministic.
+    _pocl_version = "7.0"
 
     def validate(self):
         check_min_cppstd(self, "17")
@@ -107,6 +115,7 @@ class GhostConan(ConanFile):
             self.options.rm_safe("with_metal")
         if not self._supports_opencl():
             self.options.rm_safe("with_opencl")
+            self.options.rm_safe("with_pocl_tests")
 
     def layout(self):
         cmake_layout(self)
@@ -114,8 +123,8 @@ class GhostConan(ConanFile):
     def requirements(self):
         if self.options.get_safe("with_opencl", False):
             if not is_apple_os(self):
-                self.requires("opencl-headers/2023.12.14")
-                self.requires("opencl-icd-loader/2023.12.14")
+                self.requires("opencl-headers/2025.07.22")
+                self.requires("opencl-icd-loader/2025.07.22")
         if self.options.get_safe("with_vulkan", False):
             if is_apple_os(self):
                 self.requires("moltenvk/1.2.2")
@@ -157,6 +166,9 @@ class GhostConan(ConanFile):
         if self.options.get_safe("with_gcd", False):
             tc.variables['WITH_GCD'] = 'ON'
         tc.variables['WITH_OPENCL'] = 'ON' if self.options.get_safe("with_opencl", False) else 'OFF'
+        if self.options.get_safe("with_pocl_tests", False):
+            tc.variables['GHOST_POCL_TESTS'] = 'ON'
+            tc.variables['GHOST_POCL_VERSION'] = self._pocl_version
         if self.options.get_safe("with_metal", False):
             tc.variables['WITH_METAL'] = 'ON'
         if self.options.get_safe("with_vulkan", False):

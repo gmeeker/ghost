@@ -15,11 +15,16 @@
 #if WITH_OPENCL
 
 #include <ghost/allocator.h>
+#include <ghost/argument_buffer.h>
+#include <ghost/exception.h>
 #include <ghost/opencl/device.h>
 #include <ghost/opencl/exception.h>
 #include <ghost/opencl/impl_device.h>
 #include <ghost/opencl/impl_function.h>
 #include <string.h>
+
+#include <type_traits>
+#include <variant>
 
 #ifndef __APPLE_CC__
 #include <CL/cl_ext.h>
@@ -1147,10 +1152,469 @@ ghost::Stream DeviceOpenCL::createStream(const StreamOptions& options) const {
 
 std::shared_ptr<CommandBuffer> DeviceOpenCL::createCommandBuffer(
     const CommandBufferOptions&) const {
-  // OpenCL has no native command-buffer concept aligned with Ghost's
-  // recording cb; the subclass exists to expose encodeNative on top of
-  // the default record-and-replay machinery.
-  return std::make_shared<CommandBufferOpenCL>();
+  // The cb still records-and-replays for immediate submit; passing the device
+  // lets compile() reach the cl_khr_command_buffer entry points to build a
+  // native ExecutableOpenCL when supported.
+  return std::make_shared<CommandBufferOpenCL>(this);
+}
+
+const CommandBufferExtCL* DeviceOpenCL::commandBufferExt() const {
+  if (!_cmdBufExtLoaded) {
+    _cmdBufExtLoaded = true;
+    if (checkExtension("cl_khr_command_buffer")) {
+      cl_platform_id platform = getPlatform();
+      auto load = [&](const char* name) {
+        return clGetExtensionFunctionAddressForPlatform(platform, name);
+      };
+      _cmdBufExt.create =
+          (clCreateCommandBufferKHR_fn)load("clCreateCommandBufferKHR");
+      _cmdBufExt.finalize =
+          (clFinalizeCommandBufferKHR_fn)load("clFinalizeCommandBufferKHR");
+      _cmdBufExt.release =
+          (clReleaseCommandBufferKHR_fn)load("clReleaseCommandBufferKHR");
+      _cmdBufExt.enqueue =
+          (clEnqueueCommandBufferKHR_fn)load("clEnqueueCommandBufferKHR");
+      _cmdBufExt.ndrange =
+          (ghost_clCommandNDRangeKernelKHR_fn)load("clCommandNDRangeKernelKHR");
+      _cmdBufExt.copyBuffer =
+          (ghost_clCommandCopyBufferKHR_fn)load("clCommandCopyBufferKHR");
+      _cmdBufExt.fillBuffer =
+          (ghost_clCommandFillBufferKHR_fn)load("clCommandFillBufferKHR");
+      _cmdBufExt.barrier = (ghost_clCommandBarrierWithWaitListKHR_fn)load(
+          "clCommandBarrierWithWaitListKHR");
+      _cmdBufExt.copyImage =
+          (ghost_clCommandCopyImageKHR_fn)load("clCommandCopyImageKHR");
+      _cmdBufExt.copyBufferToImage =
+          (ghost_clCommandCopyBufferToImageKHR_fn)load(
+              "clCommandCopyBufferToImageKHR");
+      _cmdBufExt.copyImageToBuffer =
+          (ghost_clCommandCopyImageToBufferKHR_fn)load(
+              "clCommandCopyImageToBufferKHR");
+      // mutable_dispatch is a layered extension; only load its entry point
+      // when the device advertises it.
+      if (checkExtension("cl_khr_command_buffer_mutable_dispatch")) {
+        _cmdBufExt.updateMutable =
+            (clUpdateMutableCommandsKHR_fn)load("clUpdateMutableCommandsKHR");
+        // Only enable our in-place arg patching if the device can actually
+        // mutate kernel arguments (CL_MUTABLE_DISPATCH_ARGUMENTS_KHR).
+        auto devices = getDevices();
+        if (!devices.empty()) {
+          cl_bitfield caps = 0;
+          if (clGetDeviceInfo(devices[0],
+                              CL_DEVICE_MUTABLE_DISPATCH_CAPABILITIES_KHR,
+                              sizeof(caps), &caps, nullptr) == CL_SUCCESS)
+            _cmdBufExt.mutableArgs =
+                (caps & CL_MUTABLE_DISPATCH_ARGUMENTS_KHR) != 0;
+        }
+      }
+    }
+  }
+  return _cmdBufExt.loaded() ? &_cmdBufExt : nullptr;
+}
+
+namespace {
+
+// Whether a recorded sequence can be recorded into a cl_command_buffer_khr via
+// the clCommand*KHR entry points. Dispatch / device-to-device buffer copy /
+// fill / barrier are always recordable; device-to-device image copies require
+// the (optional) image-command entry points. Host transfers (no clCommand*
+// analogue), host-side image transfers, events and native interop fall back
+// to command replay.
+bool isClExecutable(const std::vector<Command>& commands,
+                    const CommandBufferExtCL& ext) {
+  for (const auto& command : commands) {
+    bool ok = std::visit(
+        [&](const auto& cmd) -> bool {
+          using T = std::decay_t<decltype(cmd)>;
+          if constexpr (std::is_same_v<T, DispatchCmd> ||
+                        std::is_same_v<T, CopyBufferCmd> ||
+                        std::is_same_v<T, FillBufferCmd> ||
+                        std::is_same_v<T, FillBufferPatternCmd> ||
+                        std::is_same_v<T, BarrierCmd>) {
+            return true;
+          } else if constexpr (std::is_same_v<T, CopyImageCmd> ||
+                               std::is_same_v<T, CopyImageFromBufferCmd> ||
+                               std::is_same_v<T, CopyImageToBufferCmd>) {
+            return ext.images();
+          } else {
+            return false;
+          }
+        },
+        command);
+    if (!ok) return false;
+  }
+  return true;
+}
+
+// True when the recorded sequence is dispatch/barrier-only — the case where
+// mutable_dispatch can patch every dispatch's args on update() without having
+// to prove the non-dispatch (copy/fill) commands are unchanged.
+bool isDispatchOnly(const std::vector<Command>& commands) {
+  for (const auto& command : commands) {
+    bool ok = std::visit(
+        [](const auto& cmd) -> bool {
+          using T = std::decay_t<decltype(cmd)>;
+          return std::is_same_v<T, DispatchCmd> ||
+                 std::is_same_v<T, BarrierCmd>;
+        },
+        command);
+    if (!ok) return false;
+  }
+  return true;
+}
+
+// Backing storage + descriptors for one dispatch's mutable kernel args. Scalar
+// arg_values point into the live Attribute (valid for the update() call);
+// buffer/image cl_mem handles need a stable address, held in @c mems.
+struct DispatchArgStorage {
+  std::vector<cl_mem> mems;
+  std::vector<cl_mutable_dispatch_arg_khr> args;
+};
+
+// Collect the cl_mem objects a command references, so they can be migrated onto
+// the device before recording. Some runtimes (e.g. pocl's CPU driver) realize
+// a buffer's device storage lazily and reject clCommand*KHR recording of a
+// buffer that has never been used on the target device.
+void collectMems(const Command& command, std::vector<cl_mem>& mems) {
+  std::visit(
+      [&](const auto& cmd) {
+        using T = std::decay_t<decltype(cmd)>;
+        if constexpr (std::is_same_v<T, DispatchCmd>) {
+          for (const auto& a : cmd.args) {
+            if (a.type() == Attribute::Type_Buffer)
+              mems.push_back(
+                  static_cast<BufferOpenCL*>(a.bufferImpl().get())->mem.get());
+            else if (a.type() == Attribute::Type_Image)
+              mems.push_back(
+                  static_cast<ImageOpenCL*>(a.imageImpl().get())->mem.get());
+            else if (a.type() == Attribute::Type_ArgumentBuffer &&
+                     !a.argumentBuffer()->isStruct())
+              mems.push_back(static_cast<BufferOpenCL*>(
+                                 a.argumentBuffer()->bufferImpl().get())
+                                 ->mem.get());
+          }
+        } else if constexpr (std::is_same_v<T, CopyBufferCmd>) {
+          mems.push_back(static_cast<BufferOpenCL*>(
+                             const_cast<implementation::Buffer*>(cmd.src.get()))
+                             ->mem.get());
+          mems.push_back(static_cast<BufferOpenCL*>(cmd.dst.get())->mem.get());
+        } else if constexpr (std::is_same_v<T, FillBufferCmd> ||
+                             std::is_same_v<T, FillBufferPatternCmd>) {
+          mems.push_back(static_cast<BufferOpenCL*>(cmd.dst.get())->mem.get());
+        } else if constexpr (std::is_same_v<T, CopyImageCmd>) {
+          mems.push_back(static_cast<ImageOpenCL*>(
+                             const_cast<implementation::Image*>(cmd.src.get()))
+                             ->mem.get());
+          mems.push_back(static_cast<ImageOpenCL*>(cmd.dst.get())->mem.get());
+        } else if constexpr (std::is_same_v<T, CopyImageFromBufferCmd>) {
+          mems.push_back(static_cast<BufferOpenCL*>(cmd.src.get())->mem.get());
+          mems.push_back(static_cast<ImageOpenCL*>(cmd.dst.get())->mem.get());
+        } else if constexpr (std::is_same_v<T, CopyImageToBufferCmd>) {
+          mems.push_back(static_cast<ImageOpenCL*>(
+                             const_cast<implementation::Image*>(cmd.src.get()))
+                             ->mem.get());
+          mems.push_back(static_cast<BufferOpenCL*>(cmd.dst.get())->mem.get());
+        }
+      },
+      command);
+}
+
+// Build the mutable arg descriptor list for @p args, mirroring the index and
+// size rules of FunctionOpenCL::bindArgs.
+void fillMutableArgs(const std::vector<Attribute>& args,
+                     DispatchArgStorage& st) {
+  st.mems.reserve(args.size());  // stable addresses for &mems.back()
+  cl_uint idx = 0;
+  for (const auto& a : args) {
+    switch (a.type()) {
+      case Attribute::Type_Float: {
+        size_t c = a.count();
+        if (c == 3) c = 4;
+        st.args.push_back({idx++, sizeof(float) * c, a.floatArray()});
+        break;
+      }
+      case Attribute::Type_Int: {
+        size_t c = a.count();
+        if (c == 3) c = 4;
+        st.args.push_back({idx++, sizeof(int32_t) * c, a.intArray()});
+        break;
+      }
+      case Attribute::Type_UInt: {
+        size_t c = a.count();
+        if (c == 3) c = 4;
+        st.args.push_back({idx++, sizeof(uint32_t) * c, a.uintArray()});
+        break;
+      }
+      case Attribute::Type_Bool: {
+        size_t c = a.count();
+        if (c == 3) c = 4;
+        st.args.push_back({idx++, sizeof(bool) * c, a.boolArray()});
+        break;
+      }
+      case Attribute::Type_Buffer: {
+        st.mems.push_back(
+            static_cast<BufferOpenCL*>(a.bufferImpl().get())->mem.get());
+        st.args.push_back({idx++, sizeof(cl_mem), &st.mems.back()});
+        break;
+      }
+      case Attribute::Type_Image: {
+        st.mems.push_back(
+            static_cast<ImageOpenCL*>(a.imageImpl().get())->mem.get());
+        st.args.push_back({idx++, sizeof(cl_mem), &st.mems.back()});
+        break;
+      }
+      case Attribute::Type_ArgumentBuffer: {
+        auto ab = a.argumentBuffer();
+        if (ab->isStruct()) {
+          st.args.push_back({idx++, ab->size(), ab->data()});
+        } else {
+          st.mems.push_back(
+              static_cast<BufferOpenCL*>(ab->bufferImpl().get())->mem.get());
+          st.args.push_back({idx++, sizeof(cl_mem), &st.mems.back()});
+        }
+        break;
+      }
+      case Attribute::Type_LocalMem:
+        st.args.push_back({idx++, (size_t)a.asUInt(), nullptr});
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+}  // namespace
+
+std::shared_ptr<RecordedCommandBuffer> CommandBufferOpenCL::cloneEmpty() const {
+  return std::make_shared<CommandBufferOpenCL>(_device);
+}
+
+std::shared_ptr<Executable> CommandBufferOpenCL::compile(
+    const CompileOptions& options) {
+  const CommandBufferExtCL* ext =
+      _device ? _device->commandBufferExt() : nullptr;
+  if (!ext || !isClExecutable(commands, *ext)) {
+    if (options.requireAccelerated) throw ghost::unsupported_error();
+    return RecordedCommandBuffer::compile(options);
+  }
+  return std::make_shared<ExecutableOpenCL>(_device, ext, commands);
+}
+
+ExecutableOpenCL::ExecutableOpenCL(const DeviceOpenCL* device,
+                                   const CommandBufferExtCL* ext,
+                                   std::vector<Command> commands)
+    : _device(device), _ext(ext), _commands(std::move(commands)) {}
+
+ExecutableOpenCL::~ExecutableOpenCL() { releaseCommandBuffer(); }
+
+void ExecutableOpenCL::releaseCommandBuffer() {
+  if (_cb) {
+    _ext->release(_cb);
+    _cb = nullptr;
+    _builtForQueue = nullptr;
+  }
+  _mutableDispatches.clear();
+  _mutable = false;
+}
+
+void ExecutableOpenCL::build(cl_command_queue queue) {
+  releaseCommandBuffer();
+  _mutableDispatches.clear();
+  // Build mutable only for dispatch/barrier-only sequences, so update() can
+  // patch every dispatch's args without proving copy/fill commands unchanged.
+  _mutable = _ext->mutableDispatch() && isDispatchOnly(_commands);
+
+  cl_int err = CL_SUCCESS;
+  cl_command_buffer_properties_khr mutProps[] = {
+      CL_COMMAND_BUFFER_FLAGS_KHR, CL_COMMAND_BUFFER_MUTABLE_KHR, 0};
+  _cb = _ext->create(1, &queue, _mutable ? mutProps : nullptr, &err);
+  checkError(err);
+
+  // Materialize every referenced buffer/image on the target device before
+  // recording: runtimes that allocate device storage lazily (pocl CPU) reject
+  // recording a command against a buffer not yet resident on the device.
+  std::vector<cl_mem> mems;
+  for (auto& command : _commands) collectMems(command, mems);
+  if (!mems.empty()) {
+    checkError(clEnqueueMigrateMemObjects(queue, (cl_uint)mems.size(),
+                                          mems.data(), 0, 0, nullptr, nullptr));
+    checkError(clFinish(queue));
+  }
+
+  // Record each gated command. command_queue=NULL uses the cb's queue; NULL
+  // sync-point lists leave commands unordered except across an explicit
+  // barrier, matching Ghost's concurrent cb semantics.
+  for (auto& command : _commands) {
+    std::visit(
+        [&](auto& cmd) {
+          using T = std::decay_t<decltype(cmd)>;
+          if constexpr (std::is_same_v<T, DispatchCmd>) {
+            auto* fn = static_cast<FunctionOpenCL*>(cmd.function.get());
+            fn->bindArgs(cmd.args);
+            size_t global[3], local[3];
+            for (int i = 0; i < 3; i++) {
+              global[i] = cmd.launchArgs.global_size()[i];
+              local[i] = cmd.launchArgs.local_size()[i];
+            }
+            bool localDefined = cmd.launchArgs.is_local_defined();
+            cl_uint dims = (cl_uint)cmd.launchArgs.dims();
+            cl_mutable_command_khr handle = nullptr;
+            cl_properties ndProps[] = {CL_MUTABLE_DISPATCH_UPDATABLE_FIELDS_KHR,
+                                       CL_MUTABLE_DISPATCH_ARGUMENTS_KHR, 0};
+            checkError(_ext->ndrange(_cb, queue, _mutable ? ndProps : nullptr,
+                                     fn->kernel.get(), dims, nullptr, global,
+                                     localDefined ? local : nullptr, 0, nullptr,
+                                     nullptr, _mutable ? &handle : nullptr));
+            if (_mutable) {
+              MutableDispatch md{};
+              md.handle = handle;
+              md.kernel = fn->kernel.get();
+              md.dims = dims;
+              for (int i = 0; i < 3; i++) {
+                md.global[i] = global[i];
+                md.local[i] = local[i];
+              }
+              md.localDefined = localDefined;
+              _mutableDispatches.push_back(md);
+            }
+          } else if constexpr (std::is_same_v<T, CopyBufferCmd>) {
+            auto* dst = static_cast<BufferOpenCL*>(cmd.dst.get());
+            auto* src = static_cast<BufferOpenCL*>(
+                const_cast<implementation::Buffer*>(cmd.src.get()));
+            checkError(_ext->copyBuffer(_cb, queue, nullptr, src->mem.get(),
+                                        dst->mem.get(), cmd.srcOffset,
+                                        cmd.dstOffset, cmd.bytes, 0, nullptr,
+                                        nullptr, nullptr));
+          } else if constexpr (std::is_same_v<T, FillBufferCmd>) {
+            auto* dst = static_cast<BufferOpenCL*>(cmd.dst.get());
+            checkError(_ext->fillBuffer(_cb, queue, nullptr, dst->mem.get(),
+                                        &cmd.value, sizeof(cmd.value),
+                                        cmd.offset, cmd.size, 0, nullptr,
+                                        nullptr, nullptr));
+          } else if constexpr (std::is_same_v<T, FillBufferPatternCmd>) {
+            auto* dst = static_cast<BufferOpenCL*>(cmd.dst.get());
+            checkError(_ext->fillBuffer(_cb, queue, nullptr, dst->mem.get(),
+                                        cmd.pattern.data(), cmd.pattern.size(),
+                                        cmd.offset, cmd.size, 0, nullptr,
+                                        nullptr, nullptr));
+          } else if constexpr (std::is_same_v<T, CopyImageCmd>) {
+            auto* dst = static_cast<ImageOpenCL*>(cmd.dst.get());
+            auto* src = static_cast<ImageOpenCL*>(
+                const_cast<implementation::Image*>(cmd.src.get()));
+            size_t srcO[3] = {0, 0, 0}, dstO[3] = {0, 0, 0};
+            const auto& sz = dst->description().size;
+            size_t region[3] = {sz.x, sz.y, sz.z};
+            checkError(_ext->copyImage(_cb, queue, nullptr, src->mem.get(),
+                                       dst->mem.get(), srcO, dstO, region, 0,
+                                       nullptr, nullptr, nullptr));
+          } else if constexpr (std::is_same_v<T, CopyImageFromBufferCmd>) {
+            auto* dst = static_cast<ImageOpenCL*>(cmd.dst.get());
+            auto* src = static_cast<BufferOpenCL*>(cmd.src.get());
+            size_t dstO[3] = {0, 0, 0};
+            size_t region[3] = {cmd.layout.size.x, cmd.layout.size.y,
+                                cmd.layout.size.z};
+            checkError(_ext->copyBufferToImage(
+                _cb, queue, nullptr, src->mem.get(), dst->mem.get(), 0, dstO,
+                region, 0, nullptr, nullptr, nullptr));
+          } else if constexpr (std::is_same_v<T, CopyImageToBufferCmd>) {
+            auto* src = static_cast<ImageOpenCL*>(
+                const_cast<implementation::Image*>(cmd.src.get()));
+            auto* dst = static_cast<BufferOpenCL*>(cmd.dst.get());
+            size_t srcO[3] = {0, 0, 0};
+            size_t region[3] = {cmd.layout.size.x, cmd.layout.size.y,
+                                cmd.layout.size.z};
+            checkError(_ext->copyImageToBuffer(
+                _cb, queue, nullptr, src->mem.get(), dst->mem.get(), srcO,
+                region, 0, 0, nullptr, nullptr, nullptr));
+          } else if constexpr (std::is_same_v<T, BarrierCmd>) {
+            checkError(_ext->barrier(_cb, queue, nullptr, 0, nullptr, nullptr,
+                                     nullptr));
+          }
+        },
+        command);
+  }
+
+  checkError(_ext->finalize(_cb));
+  _builtForQueue = queue;
+}
+
+void ExecutableOpenCL::submit(const ghost::Stream& stream) {
+  auto* s = static_cast<StreamOpenCL*>(stream.impl().get());
+  cl_command_queue queue = s->queue.get();
+  // The native command buffer is tied to the queue it was created against;
+  // (re)build if this is the first submit or the target queue changed.
+  if (!_cb || queue != _builtForQueue) build(queue);
+  checkError(
+      _ext->enqueue(0, nullptr, _cb, s->events.size(), s->events, s->event()));
+  s->addEvent();
+}
+
+bool ExecutableOpenCL::tryMutableUpdate(
+    const std::vector<Command>& newCommands) {
+  if (!_mutable || !_cb) return false;
+  if (newCommands.size() != _commands.size()) return false;
+
+  // Reserve so emplace_back never reallocates: configs hold pointers into
+  // each storage's arg list (and each storage's mems), which must stay stable
+  // through the clUpdateMutableCommandsKHR call below.
+  std::vector<DispatchArgStorage> storages;
+  std::vector<cl_mutable_dispatch_config_khr> configs;
+  storages.reserve(_mutableDispatches.size());
+  configs.reserve(_mutableDispatches.size());
+
+  size_t di = 0;
+  for (size_t i = 0; i < newCommands.size(); i++) {
+    if (newCommands[i].index() != _commands[i].index()) return false;
+    if (const auto* d = std::get_if<DispatchCmd>(&newCommands[i])) {
+      if (di >= _mutableDispatches.size()) return false;
+      const MutableDispatch& md = _mutableDispatches[di];
+      auto* fn = static_cast<FunctionOpenCL*>(d->function.get());
+      // Only ARGUMENTS are updatable, so kernel and work geometry must match.
+      if (fn->kernel.get() != md.kernel) return false;
+      if ((cl_uint)d->launchArgs.dims() != md.dims) return false;
+      if (d->launchArgs.is_local_defined() != md.localDefined) return false;
+      for (int k = 0; k < 3; k++) {
+        if (d->launchArgs.global_size()[k] != md.global[k]) return false;
+        if (d->launchArgs.local_size()[k] != md.local[k]) return false;
+      }
+      storages.emplace_back();
+      fillMutableArgs(d->args, storages.back());
+      cl_mutable_dispatch_config_khr cfg = {};
+      cfg.command = md.handle;
+      cfg.num_args = (cl_uint)storages.back().args.size();
+      cfg.arg_list = storages.back().args.data();
+      configs.push_back(cfg);
+      di++;
+    }
+    // BarrierCmd carries nothing to patch; its position already matched.
+  }
+  if (di != _mutableDispatches.size()) return false;
+
+  // Finalized clUpdateMutableCommandsKHR takes parallel type + pointer arrays.
+  // configs is fully populated and reserved, so &cfg stays stable here.
+  std::vector<cl_command_buffer_update_type_khr> types;
+  std::vector<const void*> configPtrs;
+  types.reserve(configs.size());
+  configPtrs.reserve(configs.size());
+  for (auto& cfg : configs) {
+    types.push_back(CL_STRUCTURE_TYPE_MUTABLE_DISPATCH_CONFIG_KHR);
+    configPtrs.push_back(&cfg);
+  }
+  return _ext->updateMutable(_cb, (cl_uint)configs.size(), types.data(),
+                             configPtrs.data()) == CL_SUCCESS;
+}
+
+void ExecutableOpenCL::update(const std::vector<Command>& commands) {
+  // Fast path: patch recorded dispatch args in place (mutable_dispatch).
+  if (tryMutableUpdate(commands)) {
+    _commands = commands;
+    _lastPatched = true;
+    return;
+  }
+  // Otherwise rebuild against the queue on next submit.
+  _lastPatched = false;
+  _commands = commands;
+  releaseCommandBuffer();
 }
 
 size_t DeviceOpenCL::getMemoryPoolSize() const {

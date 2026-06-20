@@ -24,7 +24,11 @@
 
 namespace ghost {
 
+class Executable;
+
 namespace implementation {
+
+class Executable;
 
 /// @brief Abstract backend interface for a command buffer.
 ///
@@ -107,6 +111,30 @@ class CommandBuffer : public Encoder {
 
   virtual void submit(const ghost::Stream& stream) = 0;
 
+  /// @brief Compile the recorded sequence into a reusable @ref Executable.
+  /// The default (replay) implementation lives on @ref RecordedCommandBuffer;
+  /// backends with native graph / command-buffer support override it.
+  virtual std::shared_ptr<Executable> compile(
+      const CompileOptions& options) = 0;
+
+  /// @brief Compile honoring a marked compiled region (see
+  /// @c CommandBuffer::beginCompiledRegion). Default ignores regions and
+  /// compiles the whole sequence; @ref RecordedCommandBuffer overrides it to
+  /// split into a @ref SegmentedExecutable. This is the entry point the public
+  /// @c CommandBuffer::compile calls.
+  virtual std::shared_ptr<Executable> compileRegioned(
+      const CompileOptions& options) {
+    return compile(options);
+  }
+
+  /// @brief Mark the start of a compiled region: ops recorded until
+  /// @ref endCompiledRegion form the natively-compiled span; ops outside it
+  /// replay on submit. Default no-op.
+  virtual void beginCompiledRegion() {}
+
+  /// @brief Mark the end of a compiled region. Default no-op.
+  virtual void endCompiledRegion() {}
+
   virtual void reset() = 0;
 
   virtual void addBarrier() = 0;
@@ -186,6 +214,44 @@ class CommandBuffer : public Encoder {
   /// @brief Submit all recorded commands for execution on a stream.
   /// @param stream The stream to execute on.
   void submit(const Stream& stream);
+
+  /// @brief Compile the recorded sequence into a reusable @ref Executable.
+  ///
+  /// Use this when the same sequence runs many times (e.g. once per frame):
+  /// the returned Executable is retained by the caller and submitted
+  /// repeatedly, amortizing instantiation. On backends with native support
+  /// (CUDA graphs) submitting it is far cheaper than re-recording; elsewhere
+  /// it transparently falls back to command replay (see
+  /// @ref Executable::accelerated). The recorded commands are snapshotted, so
+  /// this CommandBuffer may be reset and reused afterward.
+  /// @param options Compilation options (see @ref CompileOptions).
+  /// @return A reusable Executable.
+  Executable compile(const CompileOptions& options = {});
+
+  /// @brief Mark the start of a compiled region.
+  ///
+  /// Operations recorded between @c beginCompiledRegion and
+  /// @ref endCompiledRegion form the span that @ref compile turns into a native
+  /// graph / command buffer; operations recorded outside the region replay on
+  /// the stream at submit time, in order. Use this to accelerate a contiguous
+  /// compute span that is bracketed by non-capturable ops (host uploads /
+  /// downloads, events) without dropping the whole sequence to replay:
+  ///
+  /// @code
+  /// buf.copy(cb, hostInput, bytes);   // upload — replayed
+  /// cb.beginCompiledRegion();
+  /// fn(launch, cb)(out, buf);         // compute — compiled to a graph
+  /// cb.endCompiledRegion();
+  /// out.copyTo(cb, hostOutput, bytes);// download — replayed
+  /// ghost::Executable exec = cb.compile();
+  /// @endcode
+  ///
+  /// At most one region is honored (the last begin/end pair). Without a region,
+  /// @ref compile compiles the whole sequence as before.
+  void beginCompiledRegion();
+
+  /// @brief Mark the end of a compiled region. See @ref beginCompiledRegion.
+  void endCompiledRegion();
 
   /// @brief Clear all recorded commands for reuse.
   void reset();

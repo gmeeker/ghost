@@ -31,6 +31,12 @@ class FunctionOpenCL : public Function {
   virtual void execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
 
+  /// @brief Bind @p args to this kernel via @c clSetKernelArg. Shared by the
+  /// immediate enqueue path and the @c cl_khr_command_buffer recording path in
+  /// @ref ExecutableOpenCL; the bound values are captured by the subsequent
+  /// enqueue / record call.
+  void bindArgs(const std::vector<Attribute>& args);
+
   virtual Attribute getAttribute(FunctionAttributeId what) const override;
 
   virtual uint32_t preferredSubgroupSize() const override;

@@ -39,12 +39,16 @@ extern "C" HRESULT __stdcall __HrLoadAllImportsForDll(const char* szDll);
 #include <ghost/cuda/exception.h>
 #include <ghost/cuda/impl_device.h>
 #include <ghost/cuda/impl_function.h>
+#include <ghost/exception.h>
 
 #include <atomic>
 #include <cstring>
 #include <new>
 #include <sstream>
+#include <type_traits>
+#include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace ghost {
@@ -321,6 +325,306 @@ void CommandBufferCUDA::replayEncodeNative(const EncodeNativeCmd& cmd,
                                            const ghost::Stream& stream) {
   auto* sCu = static_cast<StreamCUDA*>(stream.impl().get());
   cmd.body(sCu->queue.get());
+}
+
+namespace {
+
+// Whether a single recorded command can be issued during CUDA stream capture.
+// Device-side dispatch / copy / fill / image-blit and the (capture-time no-op)
+// barrier are fine. Host transfers (they may stage synchronously), indirect
+// dispatch, cross-stream events and native interop are not reliably
+// capturable, so their presence forces the replay fallback.
+bool isCapturable(const Command& command) {
+  return std::visit(
+      [](const auto& cmd) -> bool {
+        using T = std::decay_t<decltype(cmd)>;
+        if constexpr (std::is_same_v<T, DispatchCmd>) {
+          // cuLaunchCooperativeKernel cannot be captured.
+          return !cmd.launchArgs.is_cooperative();
+        } else if constexpr (std::is_same_v<T, CopyBufferCmd> ||
+                             std::is_same_v<T, FillBufferCmd> ||
+                             std::is_same_v<T, FillBufferPatternCmd> ||
+                             std::is_same_v<T, CopyImageCmd> ||
+                             std::is_same_v<T, CopyImageFromBufferCmd> ||
+                             std::is_same_v<T, CopyImageToBufferCmd> ||
+                             std::is_same_v<T, BarrierCmd>) {
+          return true;
+        } else {
+          return false;
+        }
+      },
+      command);
+}
+
+// Dispatch/barrier-only sequences are eligible for the in-place node-param
+// fast update: every captured node is a kernel node, so we can map them 1:1 to
+// the recorded dispatches and patch each via cuGraphExecKernelNodeSetParams.
+bool isDispatchOnly(const std::vector<Command>& commands) {
+  for (const auto& command : commands) {
+    bool ok = std::visit(
+        [](const auto& cmd) -> bool {
+          using T = std::decay_t<decltype(cmd)>;
+          return std::is_same_v<T, DispatchCmd> ||
+                 std::is_same_v<T, BarrierCmd>;
+        },
+        command);
+    if (!ok) return false;
+  }
+  return true;
+}
+
+// Reconstruct the record order of a single-stream-captured graph's nodes.
+// Capture on one stream yields a linear chain (each node depends only on its
+// predecessor); we walk dep→node from the root. Returns {} if the graph isn't
+// a single linear chain (branching/disconnected) — the caller then forgoes the
+// patch path and uses re-capture.
+std::vector<CUgraphNode> orderedNodes(CUgraph graph) {
+  size_t num = 0;
+  if (cuGraphGetNodes(graph, nullptr, &num) != CUDA_SUCCESS || num == 0)
+    return {};
+  std::vector<CUgraphNode> nodes(num);
+  if (cuGraphGetNodes(graph, nodes.data(), &num) != CUDA_SUCCESS) return {};
+
+  std::unordered_map<CUgraphNode, CUgraphNode> succ;  // predecessor -> node
+  CUgraphNode root = nullptr;
+  for (CUgraphNode n : nodes) {
+    size_t nd = 0;
+    if (cuGraphNodeGetDependencies(n, nullptr, &nd) != CUDA_SUCCESS) return {};
+    if (nd == 0) {
+      if (root) return {};  // more than one root -> not a linear chain
+      root = n;
+      continue;
+    }
+    if (nd != 1) return {};  // a node with multiple deps -> branch
+    CUgraphNode dep = nullptr;
+    if (cuGraphNodeGetDependencies(n, &dep, &nd) != CUDA_SUCCESS) return {};
+    if (!succ.emplace(dep, n).second) return {};  // 2 successors -> branch
+  }
+  if (!root) return {};
+
+  std::vector<CUgraphNode> ordered;
+  ordered.reserve(nodes.size());
+  for (CUgraphNode cur = root; cur;) {
+    ordered.push_back(cur);
+    auto it = succ.find(cur);
+    cur = (it == succ.end()) ? nullptr : it->second;
+  }
+  if (ordered.size() != nodes.size()) return {};  // disconnected
+  return ordered;
+}
+
+// CUDA graph instantiate flags from CompileOptions (no-ops on older drivers
+// that lack the flag macros).
+unsigned long long graphInstantiateFlags(const CompileOptions& options) {
+  unsigned long long flags = 0;
+#ifdef CUDA_GRAPH_INSTANTIATE_FLAG_UPLOAD
+  if (options.uploadOnCompile) flags |= CUDA_GRAPH_INSTANTIATE_FLAG_UPLOAD;
+#endif
+#ifdef CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH
+  if (options.autoFreeOnLaunch)
+    flags |= CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH;
+#endif
+  return flags;
+}
+
+bool isSequenceCapturable(const std::vector<Command>& commands) {
+  for (const auto& c : commands)
+    if (!isCapturable(c)) return false;
+  return true;
+}
+
+}  // namespace
+
+std::shared_ptr<RecordedCommandBuffer> CommandBufferCUDA::cloneEmpty() const {
+  return std::make_shared<CommandBufferCUDA>();
+}
+
+CUgraph CommandBufferCUDA::captureGraph() {
+  cu::ptr<CUstream> capStream;
+  checkError(cuStreamCreate(&capStream, CU_STREAM_NON_BLOCKING));
+  auto streamImpl = std::make_shared<StreamCUDA>(capStream);
+  ghost::Stream capStreamWrap(streamImpl);
+
+  checkError(cuStreamBeginCapture(capStream, CU_STREAM_CAPTURE_MODE_RELAXED));
+
+  CUgraph graph = nullptr;
+  try {
+    // Reuse the per-op replay machinery: each recorded command issues its
+    // native CUDA work onto the capturing stream, building graph nodes.
+    replayInto(capStreamWrap, capStreamWrap);
+  } catch (...) {
+    // Leave the stream out of capture mode before propagating.
+    cuStreamEndCapture(capStream, &graph);
+    if (graph) cuGraphDestroy(graph);
+    throw;
+  }
+
+  checkError(cuStreamEndCapture(capStream, &graph));
+  return graph;
+}
+
+CUgraphExec CommandBufferCUDA::captureGraphExec() {
+  CUgraph graph = captureGraph();
+  CUgraphExec exec = nullptr;
+  CUresult err = cuGraphInstantiateWithFlags(&exec, graph, 0);
+  cuGraphDestroy(graph);
+  checkError(err);
+  return exec;
+}
+
+std::shared_ptr<Executable> CommandBufferCUDA::compile(
+    const CompileOptions& options) {
+  if (!isSequenceCapturable(commands)) {
+    if (options.requireAccelerated) throw ghost::unsupported_error();
+    // Degrade to the replay-backed Executable (correct, not accelerated).
+    return RecordedCommandBuffer::compile(options);
+  }
+  CUgraph graph = captureGraph();
+  CUgraphExec exec = nullptr;
+  CUresult err =
+      cuGraphInstantiateWithFlags(&exec, graph, graphInstantiateFlags(options));
+  if (err != CUDA_SUCCESS) {
+    cuGraphDestroy(graph);
+    checkError(err);
+  }
+
+  // For a dispatch-only graph, map the captured kernel nodes 1:1 to the
+  // recorded dispatches and retain the graph so update() can patch node params
+  // in place (cuGraphExecKernelNodeSetParams) without re-capturing.
+  std::vector<CUgraphNode> dispatchNodes;
+  CUgraph retained = nullptr;
+  if (isDispatchOnly(commands)) {
+    std::vector<CUgraphNode> nodes = orderedNodes(graph);
+    size_t numDispatch = 0;
+    for (auto& c : commands)
+      if (std::get_if<DispatchCmd>(&c)) numDispatch++;
+    if (!nodes.empty() && nodes.size() == numDispatch) {
+      dispatchNodes = std::move(nodes);
+      retained = graph;
+    }
+  }
+  if (!retained) cuGraphDestroy(graph);
+  return std::make_shared<ExecutableCUDA>(exec, retained,
+                                          std::move(dispatchNodes), commands);
+}
+
+ExecutableCUDA::ExecutableCUDA(CUgraphExec exec, CUgraph graph,
+                               std::vector<CUgraphNode> dispatchNodes,
+                               std::vector<Command> commands)
+    : _exec(exec),
+      _graph(graph),
+      _dispatchNodes(std::move(dispatchNodes)),
+      _commands(std::move(commands)) {}
+
+ExecutableCUDA::~ExecutableCUDA() {
+  if (_exec) {
+    // Draining the context guarantees no in-flight graph launch still
+    // references _exec (or the buffers baked into it) before teardown.
+    if (_launched) cuCtxSynchronize();
+    cuGraphExecDestroy(_exec);
+  }
+  if (_graph) cuGraphDestroy(_graph);
+}
+
+void ExecutableCUDA::submit(const ghost::Stream& stream) {
+  auto* s = static_cast<StreamCUDA*>(stream.impl().get());
+  checkError(cuGraphLaunch(_exec, s->queue));
+  _launched = true;
+}
+
+bool ExecutableCUDA::tryPatchUpdate(const std::vector<Command>& newCommands) {
+  if (_dispatchNodes.empty()) return false;  // not a patchable graph
+  if (newCommands.size() != _commands.size()) return false;
+
+  // Topology must be unchanged and each dispatch must keep its kernel (the
+  // captured node is bound to that CUfunction); only args/dims may differ.
+  size_t di = 0;
+  for (size_t i = 0; i < newCommands.size(); i++) {
+    if (newCommands[i].index() != _commands[i].index()) return false;
+    if (const auto* d = std::get_if<DispatchCmd>(&newCommands[i])) {
+      if (di >= _dispatchNodes.size()) return false;
+      const auto* oldD = std::get_if<DispatchCmd>(&_commands[i]);
+      auto* fnNew = static_cast<FunctionCUDA*>(d->function.get());
+      auto* fnOld = static_cast<FunctionCUDA*>(oldD->function.get());
+      if (fnNew->kernel != fnOld->kernel) return false;
+      di++;
+    }
+  }
+  if (di != _dispatchNodes.size()) return false;
+
+  // Patch each kernel node. The param-pointer arrays (storages) and the new
+  // commands' Attributes/buffers must stay alive across the SetParams calls,
+  // which copy the dereferenced values; both do (storages here, newCommands
+  // is the caller's argument).
+  std::vector<std::vector<void*>> storages(_dispatchNodes.size());
+  di = 0;
+  for (size_t i = 0; i < newCommands.size(); i++) {
+    if (const auto* d = std::get_if<DispatchCmd>(&newCommands[i])) {
+      auto* fn = static_cast<FunctionCUDA*>(d->function.get());
+      CUDA_KERNEL_NODE_PARAMS np;
+      fn->buildKernelNodeParams(d->launchArgs, d->args, storages[di], np);
+      if (cuGraphExecKernelNodeSetParams(_exec, _dispatchNodes[di], &np) !=
+          CUDA_SUCCESS)
+        return false;  // partial patch is fine: caller rebuilds the exec
+      di++;
+    }
+  }
+  return true;
+}
+
+void ExecutableCUDA::update(const std::vector<Command>& commands) {
+  // Fast path: patch the dispatch kernel-node params in place — no re-capture,
+  // no re-instantiate. This is the per-frame inference case (same topology,
+  // new buffer pointers / scalars). The caller must not call update() while a
+  // prior submit() is still executing; sync the stream first (the typical
+  // per-frame loop already does before reusing the results).
+  if (tryPatchUpdate(commands)) {
+    _commands = commands;
+    _lastPatched = true;
+    return;
+  }
+  _lastPatched = false;
+
+  // Patch path unavailable/failed → the retained graph's node mapping no longer
+  // describes the exec we're about to rebuild; drop it.
+  if (_graph) {
+    cuGraphDestroy(_graph);
+    _graph = nullptr;
+  }
+  _dispatchNodes.clear();
+
+  // Re-capture and either topology-preserving-update or re-instantiate.
+  CommandBufferCUDA tmp;
+  tmp.commands = commands;
+  CUgraph graph = tmp.captureGraph();
+
+  bool updated = false;
+  if (_exec) {
+#if CUDA_VERSION >= 12000
+    CUgraphExecUpdateResultInfo info{};
+    updated = (cuGraphExecUpdate(_exec, graph, &info) == CUDA_SUCCESS);
+#else
+    CUgraphNode errNode = nullptr;
+    CUgraphExecUpdateResult res;
+    updated = (cuGraphExecUpdate(_exec, graph, &errNode, &res) == CUDA_SUCCESS);
+#endif
+  }
+
+  if (updated) {
+    cuGraphDestroy(graph);
+  } else {
+    CUgraphExec next = nullptr;
+    CUresult err = cuGraphInstantiateWithFlags(&next, graph, 0);
+    cuGraphDestroy(graph);
+    checkError(err);
+    if (_exec) {
+      if (_launched) cuCtxSynchronize();
+      cuGraphExecDestroy(_exec);
+    }
+    _exec = next;
+    _launched = false;
+  }
+  _commands = commands;
 }
 
 BufferCUDA::BufferCUDA(cu::ptr<CUdeviceptr> mem_, size_t bytes)

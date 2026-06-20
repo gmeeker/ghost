@@ -35,9 +35,7 @@ FunctionOpenCL::FunctionOpenCL(const DeviceOpenCL& dev,
                                opencl::ptr<cl_kernel> k)
     : kernel(k), _dev(dev) {}
 
-void FunctionOpenCL::execute(const ghost::Encoder& s,
-                             const LaunchArgs& launchArgs,
-                             const std::vector<Attribute>& args) {
+void FunctionOpenCL::bindArgs(const std::vector<Attribute>& args) {
   cl_int err;
   cl_uint idx = 0;
   for (auto i = args.begin(); i != args.end(); ++i) {
@@ -115,6 +113,13 @@ void FunctionOpenCL::execute(const ghost::Encoder& s,
         break;
     }
   }
+}
+
+void FunctionOpenCL::execute(const ghost::Encoder& s,
+                             const LaunchArgs& launchArgs,
+                             const std::vector<Attribute>& args) {
+  cl_int err;
+  bindArgs(args);
   auto stream_impl = static_cast<implementation::StreamOpenCL*>(s.impl().get());
   if (launchArgs.requiredSubgroupSize() != 0) {
     uint32_t actual = preferredSubgroupSize();

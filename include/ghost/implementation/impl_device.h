@@ -230,6 +230,30 @@ struct CommandBufferOptions {
   /// true uses @c MTLDispatchTypeConcurrent.
   bool concurrent = true;
 };
+
+/// @brief Options for compiling a @ref CommandBuffer into an @ref Executable.
+struct CompileOptions {
+  /// @brief Require a native accelerated backing (e.g. a CUDA graph).
+  ///
+  /// Default false: @c compile() always succeeds, degrading to command replay
+  /// on backends (or command sequences) that can't be accelerated, and reports
+  /// this via @c Executable::accelerated(). Set true to instead throw
+  /// @c ghost::unsupported_error when no acceleration is available, for callers
+  /// that gain nothing from the replay fallback.
+  bool requireAccelerated = false;
+
+  /// @brief CUDA graph only: upload the instantiated graph to the device at
+  /// compile time (@c CUDA_GRAPH_INSTANTIATE_FLAG_UPLOAD) so the first
+  /// @c submit doesn't pay the upload. Ignored by other backends.
+  bool uploadOnCompile = false;
+
+  /// @brief CUDA graph only: free the graph's owned allocation nodes back to
+  /// the pool when the launch completes
+  /// (@c CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH). Only meaningful for
+  /// graphs containing memory-alloc nodes (which Ghost's capture gate excludes
+  /// today). Ignored by other backends.
+  bool autoFreeOnLaunch = false;
+};
 class MappedBuffer;
 class Image;
 

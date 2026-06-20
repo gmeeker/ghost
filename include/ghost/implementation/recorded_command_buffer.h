@@ -296,9 +296,32 @@ class RecordedCommandBuffer : public CommandBuffer {
 
   void submit(const ghost::Stream& stream) override;
 
+  std::shared_ptr<Executable> compile(const CompileOptions& options) override;
+
+  std::shared_ptr<Executable> compileRegioned(
+      const CompileOptions& options) override;
+
+  void beginCompiledRegion() override { _regionBegin = commands.size(); }
+
+  void endCompiledRegion() override {
+    _regionEnd = commands.size();
+    _hasRegion = true;
+  }
+
+  /// @brief Create an empty command buffer of this backend's concrete type.
+  ///
+  /// Used by @ref compile to snapshot the recorded commands into an
+  /// independent buffer that still routes backend-specific replay (e.g.
+  /// CUDA's @c encodeNative) correctly. Backends that add such hooks override
+  /// this to return their own subclass.
+  virtual std::shared_ptr<RecordedCommandBuffer> cloneEmpty() const;
+
   void reset() override {
     commands.clear();
     pendingCompletionHandlers.clear();
+    _regionBegin = 0;
+    _regionEnd = 0;
+    _hasRegion = false;
   }
 
   void onCompletion(std::function<void()> handler) override {
@@ -306,6 +329,14 @@ class RecordedCommandBuffer : public CommandBuffer {
   }
 
  protected:
+  /// @brief Marked compiled region [_regionBegin, _regionEnd) within @c
+  /// commands (see @c CommandBuffer::beginCompiledRegion). When @c _hasRegion
+  /// is set and the region is a proper sub-range, @ref compileRegioned splits
+  /// into a @c SegmentedExecutable. 0/0 / false means "whole sequence".
+  size_t _regionBegin = 0;
+  size_t _regionEnd = 0;
+  bool _hasRegion = false;
+
   /// @brief Handlers registered via onCompletion() that have not yet been
   /// associated with a submission. Moved into @c inFlightCompletionHandlers
   /// at submit() time so subsequent onCompletion() calls accumulate into a

@@ -16,6 +16,7 @@
 #define GHOST_VULKAN_IMPL_DEVICE_H
 
 #include <ghost/device.h>
+#include <ghost/implementation/executable.h>
 #include <ghost/implementation/recorded_command_buffer.h>
 #include <ghost/vulkan/ptr.h>
 
@@ -197,6 +198,20 @@ class CommandBufferVulkan : public RecordedCommandBuffer, public VulkanEncoder {
   ///      resource.
   void encodeNative(std::function<void(VulkanEncoder&)> body);
 
+  std::shared_ptr<Executable> compile(const CompileOptions& options) override;
+
+  std::shared_ptr<RecordedCommandBuffer> cloneEmpty() const override;
+
+  /// @brief Record the current @c commands into @c commandBuffer once, in a
+  /// resubmittable state (no @c ONE_TIME_SUBMIT), leaving it ended and ready
+  /// for repeated @ref submitRecorded. Used by @ref ExecutableVulkan.
+  void recordResubmittable();
+
+  /// @brief Submit the already-recorded @c commandBuffer to @p stream's queue
+  /// without re-recording. Serializes against the prior submission via
+  /// @c _fence. Used by @ref ExecutableVulkan.
+  void submitRecorded(const ghost::Stream& stream);
+
  private:
   vk::ptr<VkCommandPool> _commandPool;
   vk::ptr<VkFence> _fence;
@@ -205,6 +220,38 @@ class CommandBufferVulkan : public RecordedCommandBuffer, public VulkanEncoder {
 
   /// @brief Wait on @c _fence if a submission is in flight. Idempotent.
   void waitForCompletion();
+
+  /// @brief Replay the recorded @c commands into @c commandBuffer (assumes it
+  /// is already in the recording state; does not begin/end it).
+  void replayCommandsIntoCb();
+
+  /// @brief Submit @c commandBuffer on @p streamVk's queue with @c _fence and
+  /// queue the trailing attachment-fence so @c Stream::sync drains it.
+  void queueSubmitAndAttach(StreamVulkan* streamVk);
+};
+
+/// @brief Vulkan-native @ref Executable: a @ref CommandBufferVulkan whose
+/// @c VkCommandBuffer is recorded once (resubmittable) at compile time and
+/// re-submitted on each @ref submit without re-recording.
+class ExecutableVulkan : public Executable {
+ public:
+  explicit ExecutableVulkan(std::shared_ptr<CommandBufferVulkan> cb)
+      : _cb(std::move(cb)) {}
+
+  void submit(const ghost::Stream& stream) override {
+    _cb->submitRecorded(stream);
+  }
+
+  void update(const std::vector<Command>& commands) override {
+    _cb->reset();  // waits for any in-flight submission, clears prior state
+    _cb->commands = commands;
+    _cb->recordResubmittable();
+  }
+
+  bool accelerated() const override { return true; }
+
+ private:
+  std::shared_ptr<CommandBufferVulkan> _cb;
 };
 
 class BufferVulkan : public Buffer {

@@ -13,6 +13,8 @@
 // the License.
 
 #include <ghost/command_buffer.h>
+#include <ghost/executable.h>
+#include <ghost/implementation/executable.h>
 #include <ghost/implementation/recorded_command_buffer.h>
 
 namespace ghost {
@@ -115,6 +117,48 @@ void RecordedCommandBuffer::replayEncodeNative(const EncodeNativeCmd&,
   throw ghost::unsupported_error();
 }
 
+std::shared_ptr<RecordedCommandBuffer> RecordedCommandBuffer::cloneEmpty()
+    const {
+  return std::make_shared<RecordedCommandBuffer>();
+}
+
+std::shared_ptr<Executable> RecordedCommandBuffer::compile(
+    const CompileOptions& options) {
+  if (options.requireAccelerated) {
+    // The replay fallback provides no native acceleration; callers that
+    // opted in to requireAccelerated want to know.
+    throw ghost::unsupported_error();
+  }
+  auto clone = cloneEmpty();
+  clone->commands = commands;
+  return std::make_shared<RecordedExecutable>(std::move(clone));
+}
+
+std::shared_ptr<Executable> RecordedCommandBuffer::compileRegioned(
+    const CompileOptions& options) {
+  // No region, an invalid one, or a region spanning the whole sequence → just
+  // compile everything (existing behavior).
+  if (!_hasRegion || _regionEnd > commands.size() ||
+      _regionBegin > _regionEnd ||
+      (_regionBegin == 0 && _regionEnd == commands.size())) {
+    return compile(options);
+  }
+
+  // Split [pre | region | post]. The region compiles natively (its own
+  // capturability gate applies); the pre/post spans replay on the stream.
+  auto pre = cloneEmpty();
+  pre->commands.assign(commands.begin(), commands.begin() + _regionBegin);
+  auto region = cloneEmpty();
+  region->commands.assign(commands.begin() + _regionBegin,
+                          commands.begin() + _regionEnd);
+  auto post = cloneEmpty();
+  post->commands.assign(commands.begin() + _regionEnd, commands.end());
+
+  return std::make_shared<SegmentedExecutable>(
+      std::make_shared<RecordedExecutable>(pre), region->compile(options),
+      std::make_shared<RecordedExecutable>(post), _regionBegin, _regionEnd);
+}
+
 std::shared_ptr<CommandBuffer> CommandBuffer::createDefault() {
   return std::make_shared<RecordedCommandBuffer>();
 }
@@ -144,6 +188,20 @@ Event CommandBuffer::recordEvent() { throw unsupported_error(); }
 
 void CommandBuffer::submit(const Stream& stream) {
   static_cast<implementation::CommandBuffer*>(_impl.get())->submit(stream);
+}
+
+Executable CommandBuffer::compile(const CompileOptions& options) {
+  return Executable(static_cast<implementation::CommandBuffer*>(_impl.get())
+                        ->compileRegioned(options));
+}
+
+void CommandBuffer::beginCompiledRegion() {
+  static_cast<implementation::CommandBuffer*>(_impl.get())
+      ->beginCompiledRegion();
+}
+
+void CommandBuffer::endCompiledRegion() {
+  static_cast<implementation::CommandBuffer*>(_impl.get())->endCompiledRegion();
 }
 
 void CommandBuffer::reset() {

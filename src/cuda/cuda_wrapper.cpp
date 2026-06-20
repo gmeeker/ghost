@@ -344,6 +344,43 @@ using f_cuLaunchCooperativeKernel = CUresult(CUDAAPI*)(
     void** kernelParams);
 using f_cuLaunchHostFunc = CUresult(CUDAAPI*)(CUstream hStream, CUhostFn fn,
                                               void* userData);
+// CUDA graph capture / instantiation (used by ExecutableCUDA). Resolved by
+// name like every other entry point, so a driver too old to export them
+// leaves the pointers null and compile() falls back to command replay.
+using f_cuStreamBeginCapture = CUresult(CUDAAPI*)(CUstream hStream,
+                                                  CUstreamCaptureMode mode);
+using f_cuStreamEndCapture = CUresult(CUDAAPI*)(CUstream hStream,
+                                                CUgraph* phGraph);
+using f_cuGraphInstantiateWithFlags = CUresult(CUDAAPI*)(
+    CUgraphExec* phGraphExec, CUgraph hGraph, unsigned long long flags);
+using f_cuGraphLaunch = CUresult(CUDAAPI*)(CUgraphExec hGraphExec,
+                                           CUstream hStream);
+using f_cuGraphExecDestroy = CUresult(CUDAAPI*)(CUgraphExec hGraphExec);
+using f_cuGraphDestroy = CUresult(CUDAAPI*)(CUgraph hGraph);
+// cuGraphExecUpdate's signature changed in CUDA 12 (the headers redirect the
+// name to cuGraphExecUpdate_v2, which takes a single result-info struct
+// instead of two out-params). Match whichever the headers expose; the wrapper
+// resolves the redirected symbol name automatically.
+#if CUDA_VERSION >= 12000
+using f_cuGraphExecUpdate =
+    CUresult(CUDAAPI*)(CUgraphExec hGraphExec, CUgraph hGraph,
+                       CUgraphExecUpdateResultInfo* resultInfo);
+#else
+using f_cuGraphExecUpdate = CUresult(CUDAAPI*)(
+    CUgraphExec hGraphExec, CUgraph hGraph, CUgraphNode* hErrorNode_out,
+    CUgraphExecUpdateResult* updateResult_out);
+#endif
+// Node introspection + in-place kernel-node param patching (ExecutableCUDA's
+// per-frame fast update). cuGraphExecKernelNodeSetParams is redirected to _v2
+// in CUDA 12; the wrapper resolves the redirected name automatically and the
+// typedef tracks CUDA_KERNEL_NODE_PARAMS (= _v2 there).
+using f_cuGraphGetNodes = CUresult(CUDAAPI*)(CUgraph hGraph, CUgraphNode* nodes,
+                                             size_t* numNodes);
+using f_cuGraphNodeGetDependencies = CUresult(CUDAAPI*)(
+    CUgraphNode hNode, CUgraphNode* dependencies, size_t* numDependencies);
+using f_cuGraphExecKernelNodeSetParams =
+    CUresult(CUDAAPI*)(CUgraphExec hGraphExec, CUgraphNode hNode,
+                       const CUDA_KERNEL_NODE_PARAMS* nodeParams);
 using f_cuFuncSetBlockShape = CUresult(CUDAAPI*)(CUfunction hfunc, int x, int y,
                                                  int z);
 using f_cuFuncSetSharedSize = CUresult(CUDAAPI*)(CUfunction hfunc,
@@ -671,6 +708,16 @@ class LibCUDAWrapper {
   f_cuLaunchKernel m_cuLaunchKernel = nullptr;
   f_cuLaunchCooperativeKernel m_cuLaunchCooperativeKernel = nullptr;
   f_cuLaunchHostFunc m_cuLaunchHostFunc = nullptr;
+  f_cuStreamBeginCapture m_cuStreamBeginCapture = nullptr;
+  f_cuStreamEndCapture m_cuStreamEndCapture = nullptr;
+  f_cuGraphInstantiateWithFlags m_cuGraphInstantiateWithFlags = nullptr;
+  f_cuGraphLaunch m_cuGraphLaunch = nullptr;
+  f_cuGraphExecDestroy m_cuGraphExecDestroy = nullptr;
+  f_cuGraphDestroy m_cuGraphDestroy = nullptr;
+  f_cuGraphExecUpdate m_cuGraphExecUpdate = nullptr;
+  f_cuGraphGetNodes m_cuGraphGetNodes = nullptr;
+  f_cuGraphNodeGetDependencies m_cuGraphNodeGetDependencies = nullptr;
+  f_cuGraphExecKernelNodeSetParams m_cuGraphExecKernelNodeSetParams = nullptr;
   f_cuFuncSetBlockShape m_cuFuncSetBlockShape = nullptr;
   f_cuFuncSetSharedSize m_cuFuncSetSharedSize = nullptr;
   f_cuParamSetSize m_cuParamSetSize = nullptr;
@@ -925,6 +972,16 @@ class LibCUDAWrapper {
     INIT_FUNCTION(cuLaunchKernel);
     INIT_FUNCTION(cuLaunchCooperativeKernel);
     INIT_FUNCTION(cuLaunchHostFunc);
+    INIT_FUNCTION(cuStreamBeginCapture);
+    INIT_FUNCTION(cuStreamEndCapture);
+    INIT_FUNCTION(cuGraphInstantiateWithFlags);
+    INIT_FUNCTION(cuGraphLaunch);
+    INIT_FUNCTION(cuGraphExecDestroy);
+    INIT_FUNCTION(cuGraphDestroy);
+    INIT_FUNCTION(cuGraphExecUpdate);
+    INIT_FUNCTION(cuGraphGetNodes);
+    INIT_FUNCTION(cuGraphNodeGetDependencies);
+    INIT_FUNCTION(cuGraphExecKernelNodeSetParams);
     INIT_FUNCTION(cuFuncSetBlockShape);
     INIT_FUNCTION(cuFuncSetSharedSize);
     INIT_FUNCTION(cuParamSetSize);
@@ -2438,6 +2495,129 @@ CUresult CUDAAPI cuLaunchCooperativeKernel(
   if (func) {
     return func(f, gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY,
                 blockDimZ, sharedMemBytes, hStream, kernelParams);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+CUresult CUDAAPI cuStreamBeginCapture(CUstream hStream,
+                                      CUstreamCaptureMode mode) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuStreamBeginCapture;
+  if (func) {
+    return func(hStream, mode);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+CUresult CUDAAPI cuStreamEndCapture(CUstream hStream, CUgraph* phGraph) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuStreamEndCapture;
+  if (func) {
+    return func(hStream, phGraph);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+CUresult CUDAAPI cuGraphInstantiateWithFlags(CUgraphExec* phGraphExec,
+                                             CUgraph hGraph,
+                                             unsigned long long flags) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuGraphInstantiateWithFlags;
+  if (func) {
+    return func(phGraphExec, hGraph, flags);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+CUresult CUDAAPI cuGraphLaunch(CUgraphExec hGraphExec, CUstream hStream) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuGraphLaunch;
+  if (func) {
+    return func(hGraphExec, hStream);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+CUresult CUDAAPI cuGraphExecDestroy(CUgraphExec hGraphExec) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuGraphExecDestroy;
+  if (func) {
+    return func(hGraphExec);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+CUresult CUDAAPI cuGraphDestroy(CUgraph hGraph) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuGraphDestroy;
+  if (func) {
+    return func(hGraph);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+#if CUDA_VERSION >= 12000
+CUresult CUDAAPI cuGraphExecUpdate(CUgraphExec hGraphExec, CUgraph hGraph,
+                                   CUgraphExecUpdateResultInfo* resultInfo) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuGraphExecUpdate;
+  if (func) {
+    return func(hGraphExec, hGraph, resultInfo);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+#else
+CUresult CUDAAPI cuGraphExecUpdate(CUgraphExec hGraphExec, CUgraph hGraph,
+                                   CUgraphNode* hErrorNode_out,
+                                   CUgraphExecUpdateResult* updateResult_out) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuGraphExecUpdate;
+  if (func) {
+    return func(hGraphExec, hGraph, hErrorNode_out, updateResult_out);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+#endif
+
+CUresult CUDAAPI cuGraphGetNodes(CUgraph hGraph, CUgraphNode* nodes,
+                                 size_t* numNodes) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuGraphGetNodes;
+  if (func) {
+    return func(hGraph, nodes, numNodes);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+CUresult CUDAAPI cuGraphNodeGetDependencies(CUgraphNode hNode,
+                                            CUgraphNode* dependencies,
+                                            size_t* numDependencies) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuGraphNodeGetDependencies;
+  if (func) {
+    return func(hNode, dependencies, numDependencies);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+
+CUresult CUDAAPI
+cuGraphExecKernelNodeSetParams(CUgraphExec hGraphExec, CUgraphNode hNode,
+                               const CUDA_KERNEL_NODE_PARAMS* nodeParams) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuGraphExecKernelNodeSetParams;
+  if (func) {
+    return func(hGraphExec, hNode, nodeParams);
   } else {
     return CUDA_ERROR_NOT_INITIALIZED;
   }

@@ -57,16 +57,8 @@ using namespace cu;
 FunctionCUDA::FunctionCUDA(const DeviceCUDA& dev, CUfunction k)
     : kernel(k), _dev(dev) {}
 
-void FunctionCUDA::execute(const ghost::Encoder& s,
-                           const LaunchArgs& launchArgs,
-                           const std::vector<Attribute>& args) {
-  CUresult err;
-  size_t local_mem = 0;
-  std::vector<void*> params;
-  // Opportunistic destroy of texture objects parked by dead images whose
-  // guarding work has since completed.
-  _dev.reapDeferredTextures();
-
+void FunctionCUDA::collectParams(const std::vector<Attribute>& args,
+                                 std::vector<void*>& params, size_t& localMem) {
   for (auto i = args.begin(); i != args.end(); ++i) {
     switch (i->type()) {
       case Attribute::Type_Float: {
@@ -143,12 +135,47 @@ void FunctionCUDA::execute(const ghost::Encoder& s,
         break;
       }
       case Attribute::Type_LocalMem:
-        local_mem += (size_t)i->asUInt();
+        localMem += (size_t)i->asUInt();
         break;
       default:
         break;
     }
   }
+}
+
+void FunctionCUDA::buildKernelNodeParams(const LaunchArgs& launchArgs,
+                                         const std::vector<Attribute>& args,
+                                         std::vector<void*>& paramStorage,
+                                         CUDA_KERNEL_NODE_PARAMS& out) {
+  size_t local_mem = 0;
+  paramStorage.clear();
+  collectParams(args, paramStorage, local_mem);
+
+  out = {};
+  out.func = kernel;
+  out.gridDimX = (unsigned int)launchArgs.count(0);
+  out.gridDimY = (unsigned int)launchArgs.count(1);
+  out.gridDimZ = (unsigned int)launchArgs.count(2);
+  out.blockDimX = (unsigned int)launchArgs.local_size()[0];
+  out.blockDimY = (unsigned int)launchArgs.local_size()[1];
+  out.blockDimZ = (unsigned int)launchArgs.local_size()[2];
+  out.sharedMemBytes = (unsigned int)local_mem;
+  out.kernelParams = paramStorage.empty() ? nullptr : paramStorage.data();
+  out.extra = nullptr;
+  // v2 fields (kern / ctx) left zero: this is a driver-CUfunction kernel node.
+}
+
+void FunctionCUDA::execute(const ghost::Encoder& s,
+                           const LaunchArgs& launchArgs,
+                           const std::vector<Attribute>& args) {
+  CUresult err;
+  size_t local_mem = 0;
+  std::vector<void*> params;
+  // Opportunistic destroy of texture objects parked by dead images whose
+  // guarding work has since completed.
+  _dev.reapDeferredTextures();
+
+  collectParams(args, params, local_mem);
   auto stream_impl = static_cast<implementation::StreamCUDA*>(s.impl().get());
   // Retain buffer/image impls past kernel completion: if the caller drops
   // their wrapper between dispatch and stream sync, the device pointer must

@@ -1267,14 +1267,13 @@ void CommandBufferVulkan::begin() {
   _recording = true;
 }
 
-void CommandBufferVulkan::submit(const ghost::Stream& stream) {
-  begin();
-
+void CommandBufferVulkan::replayCommandsIntoCb() {
   // Replay recorded variants onto our own cb. Same shape as
   // RecordedCommandBuffer::replayInto except: BarrierCmd inserts a native
   // pipeline barrier within the cb instead of draining the stream, and
   // WaitEventCmd / RecordEventCmd are not currently supported on a Vulkan
-  // CommandBuffer (semaphore wiring would be needed).
+  // CommandBuffer (semaphore wiring would be needed). Assumes commandBuffer
+  // is already in the recording state.
   ghost::Encoder enc(std::shared_ptr<implementation::Encoder>(
       static_cast<implementation::Encoder*>(this), [](auto*) {}));
 
@@ -1345,12 +1344,14 @@ void CommandBufferVulkan::submit(const ghost::Stream& stream) {
         },
         command);
   }
+}
 
-  checkError(vkEndCommandBuffer(commandBuffer));
-  _recording = false;
-
-  auto* streamVk = dynamic_cast<StreamVulkan*>(stream.impl().get());
-  if (!streamVk) throw ghost::unsupported_error();
+void CommandBufferVulkan::queueSubmitAndAttach(StreamVulkan* streamVk) {
+  // Serialize against the prior submission so reusing _fence (and, for an
+  // Executable, the already-recorded cb) is safe.
+  waitForCompletion();
+  VkFence f = _fence;
+  vkResetFences(dev.device, 1, &f);
 
   VkSubmitInfo submitInfo = {};
   submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1358,21 +1359,13 @@ void CommandBufferVulkan::submit(const ghost::Stream& stream) {
   submitInfo.pCommandBuffers = &commandBuffer;
   checkError(vkQueueSubmit(streamVk->dev.computeQueue, 1, &submitInfo, _fence));
   _submitted = true;
-  // Hand off pending handlers; they fire when waitForCompletion observes
-  // the fence signaled.
-  inFlightCompletionHandlers.insert(
-      inFlightCompletionHandlers.end(),
-      std::make_move_iterator(pendingCompletionHandlers.begin()),
-      std::make_move_iterator(pendingCompletionHandlers.end()));
-  pendingCompletionHandlers.clear();
 
-  // Vulkan binary fences can only be signaled by one submission at a
-  // time, so we cannot signal both our own _fence (for reset() to wait
-  // on) and the stream's fence with the same submit. Instead, queue a
-  // tiny empty submission whose only purpose is to signal a fresh
-  // attachment fence. Queue FIFO guarantees it fires after the cb's
-  // work above. Ownership of the fence transfers to the stream; it
-  // drains the list in sync().
+  // Vulkan binary fences can only be signaled by one submission at a time, so
+  // we cannot signal both our own _fence (for reset()/resubmit to wait on) and
+  // the stream's fence with the same submit. Instead, queue a tiny empty
+  // submission whose only purpose is to signal a fresh attachment fence. Queue
+  // FIFO guarantees it fires after the cb's work above. Ownership of the fence
+  // transfers to the stream; it drains the list in sync().
   vk::ptr<VkFence> attachFence(dev.device);
   VkFenceCreateInfo fci = {};
   fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -1382,6 +1375,51 @@ void CommandBufferVulkan::submit(const ghost::Stream& stream) {
   checkError(
       vkQueueSubmit(streamVk->dev.computeQueue, 1, &emptySubmit, attachFence));
   streamVk->attachFence(std::move(attachFence));
+}
+
+void CommandBufferVulkan::submit(const ghost::Stream& stream) {
+  auto* streamVk = dynamic_cast<StreamVulkan*>(stream.impl().get());
+  if (!streamVk) throw ghost::unsupported_error();
+
+  begin();
+  replayCommandsIntoCb();
+  checkError(vkEndCommandBuffer(commandBuffer));
+  _recording = false;
+
+  // Hand off pending handlers; they fire when waitForCompletion observes the
+  // fence signaled.
+  inFlightCompletionHandlers.insert(
+      inFlightCompletionHandlers.end(),
+      std::make_move_iterator(pendingCompletionHandlers.begin()),
+      std::make_move_iterator(pendingCompletionHandlers.end()));
+  pendingCompletionHandlers.clear();
+
+  queueSubmitAndAttach(streamVk);
+}
+
+void CommandBufferVulkan::recordResubmittable() {
+  // Drain any in-flight submission before recycling the cb.
+  waitForCompletion();
+  vkResetCommandBuffer(commandBuffer, 0);
+
+  VkCommandBufferBeginInfo beginInfo = {};
+  beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  // No ONE_TIME_SUBMIT: this buffer is recorded once and resubmitted many
+  // times (serialized per submit via _fence in queueSubmitAndAttach).
+  beginInfo.flags = 0;
+  checkError(vkBeginCommandBuffer(commandBuffer, &beginInfo));
+  _recording = true;
+
+  replayCommandsIntoCb();
+
+  checkError(vkEndCommandBuffer(commandBuffer));
+  _recording = false;
+}
+
+void CommandBufferVulkan::submitRecorded(const ghost::Stream& stream) {
+  auto* streamVk = dynamic_cast<StreamVulkan*>(stream.impl().get());
+  if (!streamVk) throw ghost::unsupported_error();
+  queueSubmitAndAttach(streamVk);
 }
 
 void CommandBufferVulkan::reset() {
@@ -1397,6 +1435,66 @@ void CommandBufferVulkan::encodeNative(
   addEncodeNative([body = std::move(body)](void* ctx) {
     body(*static_cast<VulkanEncoder*>(ctx));
   });
+}
+
+namespace {
+
+// Whether a recorded sequence can be pre-recorded once into a resubmittable
+// VkCommandBuffer. Restricted to device-side ops (dispatch / device-to-device
+// copy / fill / barrier): host transfers stage through per-submit deferred
+// readbacks, and events / native interop aren't safe to bake into a buffer
+// resubmitted without re-recording. Those fall back to command replay.
+bool isVkExecutable(const std::vector<Command>& commands) {
+  for (const auto& command : commands) {
+    bool ok = std::visit(
+        [](const auto& cmd) -> bool {
+          using T = std::decay_t<decltype(cmd)>;
+          if constexpr (std::is_same_v<T, DispatchCmd> ||
+                        std::is_same_v<T, DispatchIndirectCmd> ||
+                        std::is_same_v<T, CopyBufferCmd> ||
+                        std::is_same_v<T, FillBufferCmd> ||
+                        std::is_same_v<T, FillBufferPatternCmd> ||
+                        std::is_same_v<T, CopyImageCmd> ||
+                        std::is_same_v<T, CopyImageFromBufferCmd> ||
+                        std::is_same_v<T, CopyImageToBufferCmd> ||
+                        std::is_same_v<T, BarrierCmd> ||
+                        std::is_same_v<T, EncodeNativeCmd>) {
+            // All device-side: recorded once, they re-execute correctly on
+            // every resubmit (indirect dispatch re-reads its count buffer; a
+            // native body re-records its vkCmd* each... no — it is recorded
+            // once and the resulting commands replay each submit).
+            return true;
+          } else {
+            // Host transfers stage through per-submit deferred readbacks, and
+            // events need semaphore wiring — both unsafe to bake into a
+            // resubmitted buffer. Fall back to command replay.
+            return false;
+          }
+        },
+        command);
+    if (!ok) return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+std::shared_ptr<RecordedCommandBuffer> CommandBufferVulkan::cloneEmpty() const {
+  return std::make_shared<CommandBufferVulkan>(
+      dev, CommandBufferOptions{concurrent});
+}
+
+std::shared_ptr<Executable> CommandBufferVulkan::compile(
+    const CompileOptions& options) {
+  if (!isVkExecutable(commands)) {
+    if (options.requireAccelerated) throw ghost::unsupported_error();
+    return RecordedCommandBuffer::compile(options);
+  }
+  auto cb = std::make_shared<CommandBufferVulkan>(
+      dev, CommandBufferOptions{concurrent});
+  cb->commands = commands;
+  cb->recordResubmittable();
+  return std::make_shared<ExecutableVulkan>(cb);
 }
 
 // ---------------------------------------------------------------------------

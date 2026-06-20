@@ -33,6 +33,17 @@ class FunctionCUDA : public Function {
   virtual void execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
 
+  /// @brief Build the @c CUDA_KERNEL_NODE_PARAMS for @p launchArgs / @p args
+  /// (kernel func + grid/block dims + shared mem + the kernel-param pointer
+  /// array), reusing the same arg binding as @ref execute. @p paramStorage
+  /// receives the @c void* array @c out.kernelParams points at — keep it alive
+  /// across the @c cuGraphExecKernelNodeSetParams call. Used by
+  /// @c ExecutableCUDA's in-place per-frame node-param patching.
+  void buildKernelNodeParams(const LaunchArgs& launchArgs,
+                             const std::vector<Attribute>& args,
+                             std::vector<void*>& paramStorage,
+                             CUDA_KERNEL_NODE_PARAMS& out);
+
   virtual Attribute getAttribute(FunctionAttributeId what) const override;
 
   virtual void setAttribute(FunctionAttributeId what,
@@ -41,6 +52,12 @@ class FunctionCUDA : public Function {
   virtual uint32_t preferredSubgroupSize() const override;
 
  private:
+  /// @brief Append the kernel-param pointers for @p args to @p params and
+  /// accumulate dynamic shared memory into @p localMem (shared by @ref execute
+  /// and @ref buildKernelNodeParams).
+  void collectParams(const std::vector<Attribute>& args,
+                     std::vector<void*>& params, size_t& localMem);
+
   const DeviceCUDA& _dev;
   // High-water mark of the dynamic shared-memory size (bytes) we've already
   // opted this CUfunction into via cuFuncSetAttribute. Lets execute() skip

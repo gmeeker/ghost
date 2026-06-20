@@ -21,6 +21,7 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <ghost/device.h>
+#include <ghost/implementation/executable.h>
 #include <ghost/implementation/recorded_command_buffer.h>
 #include <wrl/client.h>
 
@@ -180,6 +181,22 @@ class CommandBufferDirectX : public RecordedCommandBuffer,
   void submit(const ghost::Stream& stream) override;
   void reset() override;
 
+  std::shared_ptr<Executable> compile(const CompileOptions& options) override;
+
+  std::shared_ptr<RecordedCommandBuffer> cloneEmpty() const override;
+
+  /// @brief Record the current @c commands into @c commandList once, leaving it
+  /// closed and ready for repeated @ref submitRecorded. A closed D3D12 command
+  /// list may be executed many times; the descriptor-heap slots it references
+  /// are bump-allocated once here and not reset between resubmits, so they
+  /// stay valid. Used by @ref ExecutableDirectX.
+  void recordResubmittable();
+
+  /// @brief Execute the already-recorded @c commandList on @p stream's queue
+  /// without re-recording. Serializes against the prior submission via the
+  /// cb's fence. Used by @ref ExecutableDirectX.
+  void submitRecorded(const ghost::Stream& stream);
+
   /// @brief Defer a native DirectX 12 encoding step to submit-time replay.
   ///
   /// At replay, Ghost ensures @c commandList is in the recording state,
@@ -208,6 +225,37 @@ class CommandBufferDirectX : public RecordedCommandBuffer,
 
   /// @brief Wait on @c _fence if a submission is in flight. Idempotent.
   void waitForCompletion();
+
+  /// @brief Replay the recorded @c commands into @c commandList (assumes it is
+  /// already in the recording state; does not begin/close it).
+  void replayCommandsIntoList();
+
+  /// @brief Execute @c commandList on @p streamDx's queue with the cb's fence.
+  void executeRecorded(StreamDirectX* streamDx);
+};
+
+/// @brief DirectX-native @ref Executable: a @ref CommandBufferDirectX whose
+/// @c ID3D12GraphicsCommandList is recorded once at compile time and
+/// re-executed on each @ref submit without re-recording.
+class ExecutableDirectX : public Executable {
+ public:
+  explicit ExecutableDirectX(std::shared_ptr<CommandBufferDirectX> cb)
+      : _cb(std::move(cb)) {}
+
+  void submit(const ghost::Stream& stream) override {
+    _cb->submitRecorded(stream);
+  }
+
+  void update(const std::vector<Command>& commands) override {
+    _cb->reset();  // waits for any in-flight submission, clears prior state
+    _cb->commands = commands;
+    _cb->recordResubmittable();
+  }
+
+  bool accelerated() const override { return true; }
+
+ private:
+  std::shared_ptr<CommandBufferDirectX> _cb;
 };
 
 class BufferDirectX : public Buffer {

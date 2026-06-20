@@ -17,6 +17,7 @@
 
 #include <ghost/cuda/cu_ptr.h>
 #include <ghost/device.h>
+#include <ghost/implementation/executable.h>
 #include <ghost/implementation/recorded_command_buffer.h>
 
 #include <functional>
@@ -108,9 +109,78 @@ class CommandBufferCUDA : public RecordedCommandBuffer {
   /// @endcode
   void encodeNative(std::function<void(CUstream stream)> body);
 
+  /// @brief Compile the recorded sequence into a native CUDA-graph-backed
+  /// @ref ExecutableCUDA. Falls back to command replay (a
+  /// @ref RecordedExecutable) when the sequence contains commands that cannot
+  /// be stream-captured (host transfers, cooperative dispatch, events, native
+  /// interop); with @c CompileOptions::requireAccelerated set, throws instead.
+  std::shared_ptr<Executable> compile(const CompileOptions& options) override;
+
+  std::shared_ptr<RecordedCommandBuffer> cloneEmpty() const override;
+
+  /// @brief Capture this cb's recorded commands into a CUDA graph (not yet
+  /// instantiated). The caller owns the returned handle and must release it
+  /// with @c cuGraphDestroy. Assumes every recorded command is capturable
+  /// (see @ref compile's gate).
+  CUgraph captureGraph();
+
+  /// @brief Capture this cb's recorded commands into an instantiated CUDA
+  /// graph executable. The caller owns the returned handle and must release
+  /// it with @c cuGraphExecDestroy. Assumes every recorded command is
+  /// capturable (see @ref compile's gate).
+  CUgraphExec captureGraphExec();
+
  protected:
   void replayEncodeNative(const EncodeNativeCmd& cmd,
                           const ghost::Stream& stream) override;
+};
+
+/// @brief CUDA-graph-backed @ref Executable.
+///
+/// Owns an instantiated @c CUgraphExec built by capturing a
+/// @ref CommandBufferCUDA's recorded commands. @ref submit relaunches the
+/// graph (one @c cuGraphLaunch instead of N per-op enqueues); @ref update
+/// re-captures and re-instantiates for a new set of arguments / buffers. The
+/// retained command snapshot keeps the referenced functions/buffers/images
+/// (and so the device pointers baked into the graph) alive for this object's
+/// lifetime.
+class ExecutableCUDA : public Executable {
+ public:
+  /// @param graph Retained only for the in-place patch path (its kernel nodes
+  /// are the patch targets); null when not patchable. @param dispatchNodes One
+  /// kernel node per @c DispatchCmd in record order (empty when not patchable).
+  ExecutableCUDA(CUgraphExec exec, CUgraph graph,
+                 std::vector<CUgraphNode> dispatchNodes,
+                 std::vector<Command> commands);
+  ~ExecutableCUDA() override;
+
+  void submit(const ghost::Stream& stream) override;
+  void update(const std::vector<Command>& commands) override;
+
+  bool accelerated() const override { return true; }
+
+  bool lastUpdatePatched() const override { return _lastPatched; }
+
+ private:
+  /// @brief Patch each dispatch's kernel-node params in place
+  /// (cuGraphExecKernelNodeSetParams) when @p newCommands has the same topology
+  /// and per-dispatch kernels. Avoids a full re-capture. Returns false (→ the
+  /// caller rebuilds) when not patchable or a patch call fails.
+  bool tryPatchUpdate(const std::vector<Command>& newCommands);
+
+  CUgraphExec _exec = nullptr;
+  // Retained only when patchable: owns the kernel nodes patched by update().
+  CUgraph _graph = nullptr;
+  // One kernel node per DispatchCmd, in record order. Empty when not patchable.
+  std::vector<CUgraphNode> _dispatchNodes;
+  // Keepalive for the resources the graph references, and the source for
+  // re-capture on a non-patchable update().
+  std::vector<Command> _commands;
+  // Whether the current _exec has been launched (so the destructor / update
+  // knows to drain in-flight graph work before destroying it).
+  bool _launched = false;
+  // Whether the most recent update() patched in place vs rebuilt.
+  bool _lastPatched = false;
 };
 
 /// @brief A stream a buffer/image has been used on, with a liveness witness
