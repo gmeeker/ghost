@@ -278,8 +278,49 @@ Attribute FunctionCUDA::getAttribute(FunctionAttributeId what) const {
           cuFuncGetAttribute(&v, CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, kernel));
       return v;
     }
+    case kFunctionPreferredSharedMemoryCarveout: {
+      int v;
+      checkError(cuFuncGetAttribute(
+          &v, CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT, kernel));
+      return v;
+    }
     default:
       return Attribute();
+  }
+}
+
+void FunctionCUDA::setAttribute(FunctionAttributeId what,
+                                const Attribute& value) {
+  switch (what) {
+    case kFunctionPreferredSharedMemoryCarveout:
+      // 0..100 (% of unified L1/shared given to shared), or -1 for the driver
+      // default. A hint: the driver may pick a nearby supported split. Unlike
+      // the >48 KB opt-in below this does not change what a launch is allowed
+      // to request, only the occupancy/L1 trade-off, so there is nothing to
+      // track.
+      checkError(cuFuncSetAttribute(
+          kernel, CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT,
+          value.asInt()));
+      break;
+    case kFunctionMaxLocalMemory: {
+      // Explicit form of the lazy opt-in in execute(): grant a dynamic
+      // shared-memory budget above the 48 KB static cap. Bump the high-water
+      // mark so a later same-or-smaller launch skips the redundant driver call.
+      int bytes = value.asInt();
+      checkError(cuFuncSetAttribute(
+          kernel, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, bytes));
+      if (bytes > 0) {
+        size_t granted = (size_t)bytes;
+        size_t prev = _maxDynamicSharedBytes.load(std::memory_order_relaxed);
+        while (granted > prev &&
+               !_maxDynamicSharedBytes.compare_exchange_weak(
+                   prev, granted, std::memory_order_relaxed)) {
+        }
+      }
+      break;
+    }
+    default:
+      throw ghost::unsupported_error();
   }
 }
 

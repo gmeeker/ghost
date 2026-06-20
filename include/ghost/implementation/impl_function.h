@@ -63,6 +63,12 @@ enum FunctionAttributeId {
   kFunctionNumRegisters,
   /// @brief Private memory per work-item in bytes.
   kFunctionPrivateMemory,
+  /// @brief Preferred shared-memory carveout as a percentage of the unified
+  /// L1/shared budget the kernel would like devoted to shared memory (CUDA's
+  /// @c CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT). 0..100, or -1 for
+  /// the driver default. A performance hint, not a hard request. Settable via
+  /// Function::setAttribute(); also queryable via getAttribute().
+  kFunctionPreferredSharedMemoryCarveout,
 };
 
 class Digest;
@@ -147,6 +153,12 @@ class Function {
                                const std::vector<Attribute>& args);
 
   virtual Attribute getAttribute(FunctionAttributeId what) const = 0;
+
+  /// @brief Set a writable function attribute (e.g. the preferred L1/shared
+  /// carveout). Most attributes are query-only; the default implementation
+  /// throws @c ghost::unsupported_error. Backends override for the ids they can
+  /// set.
+  virtual void setAttribute(FunctionAttributeId what, const Attribute& value);
 
   /// @brief Write-intent policy inherited from the owning Library, stamped at
   /// lookup time. Consulted by @ref writtenArgs for barrier narrowing.

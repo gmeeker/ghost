@@ -58,6 +58,10 @@ void Function::executeIndirect(const ghost::Encoder& s,
 uint32_t Function::preferredSubgroupSize() const {
   return (uint32_t)getAttribute(kFunctionThreadWidth).asInt();
 }
+
+void Function::setAttribute(FunctionAttributeId what, const Attribute& value) {
+  throw ghost::unsupported_error();
+}
 }  // namespace implementation
 
 Function::Function(std::shared_ptr<implementation::Function> impl)
@@ -87,6 +91,10 @@ void Function::execute(const Encoder& s, const LaunchArgs& launchArgs,
 
 Attribute Function::getAttribute(FunctionAttributeId what) const {
   return _impl->getAttribute(what);
+}
+
+void Function::setAttribute(FunctionAttributeId what, const Attribute& value) {
+  _impl->setAttribute(what, value);
 }
 
 uint32_t Function::preferredSubgroupSize() const {

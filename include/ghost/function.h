@@ -287,6 +287,24 @@ class Function {
   /// @return The attribute value.
   Attribute getAttribute(FunctionAttributeId what) const;
 
+  /// @brief Set a writable function attribute.
+  ///
+  /// Only a few attributes are settable; most are query-only. Currently:
+  /// - @c kFunctionPreferredSharedMemoryCarveout (CUDA): hint the L1/shared
+  ///   split as a 0..100 percentage devoted to shared memory, or -1 for the
+  ///   driver default.
+  /// - @c kFunctionMaxLocalMemory (CUDA): explicitly opt the kernel into a
+  ///   dynamic shared-memory budget larger than the 48 KB static cap. This is
+  ///   also done automatically at dispatch when @c Attribute::localMem() asks
+  ///   for more than 48 KB, so calling it by hand is only needed to pre-arm the
+  ///   kernel before the first launch.
+  ///
+  /// @param what The attribute to set.
+  /// @param value The new value.
+  /// @throws ghost::unsupported_error if the backend or attribute is not
+  ///   settable.
+  void setAttribute(FunctionAttributeId what, const Attribute& value);
+
   /// @brief The subgroup (warp / SIMD-group / wavefront) width this kernel
   /// will use when dispatched.
   ///
