@@ -18,6 +18,13 @@ option(WITH_GCD "Use Apple Grand Central Dispatch for the default CPU thread poo
 option(WITH_METAL "Build support for Metal" OFF)
 option(WITH_ARC "Build with Objective-C ARC" ON)
 option(WITH_OPENCL "Build support for OpenCL" ON)
+# cl_khr_command_buffer acceleration. OFF on Apple: its OpenCL is frozen at 1.2
+# and deprecated, so the extension's headers/types aren't available there.
+if(APPLE)
+  option(WITH_OPENCL_COMMAND_BUFFERS "Build OpenCL cl_khr_command_buffer acceleration" OFF)
+else()
+  option(WITH_OPENCL_COMMAND_BUFFERS "Build OpenCL cl_khr_command_buffer acceleration" ON)
+endif()
 option(WITH_VULKAN "Build support for Vulkan" OFF)
 
 if(WITH_OPENCL)
@@ -64,11 +71,14 @@ if(WITH_METAL AND APPLE)
 endif()
 if(WITH_OPENCL AND OpenCL_FOUND)
   add_compile_definitions(WITH_OPENCL)
-  # cl_khr_command_buffer (and its mutable_dispatch layer) are still tagged
-  # "beta" in the OpenCL-Headers, so the finalized declarations live behind
-  # CL_ENABLE_BETA_EXTENSIONS. ExecutableOpenCL needs them.
-  add_compile_definitions(CL_ENABLE_BETA_EXTENSIONS)
   include_directories(${OPENCL_INCLUDE_DIRS})
+  if(WITH_OPENCL_COMMAND_BUFFERS)
+    add_compile_definitions(WITH_OPENCL_COMMAND_BUFFERS)
+    # cl_khr_command_buffer (and its mutable_dispatch layer) are still tagged
+    # "beta" in the OpenCL-Headers, so the finalized declarations live behind
+    # CL_ENABLE_BETA_EXTENSIONS. ExecutableOpenCL needs them.
+    add_compile_definitions(CL_ENABLE_BETA_EXTENSIONS)
+  endif()
 endif()
 if(WITH_VULKAN)
   if(APPLE AND moltenvk_FOUND)

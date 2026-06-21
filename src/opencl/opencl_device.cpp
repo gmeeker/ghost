@@ -26,7 +26,7 @@
 #include <type_traits>
 #include <variant>
 
-#ifndef __APPLE_CC__
+#if WITH_OPENCL_COMMAND_BUFFERS
 #include <CL/cl_ext.h>
 #endif
 
@@ -1158,6 +1158,7 @@ std::shared_ptr<CommandBuffer> DeviceOpenCL::createCommandBuffer(
   return std::make_shared<CommandBufferOpenCL>(this);
 }
 
+#if WITH_OPENCL_COMMAND_BUFFERS
 const CommandBufferExtCL* DeviceOpenCL::commandBufferExt() const {
   if (!_cmdBufExtLoaded) {
     _cmdBufExtLoaded = true;
@@ -1384,6 +1385,7 @@ void fillMutableArgs(const std::vector<Attribute>& args,
 }
 
 }  // namespace
+#endif  // WITH_OPENCL_COMMAND_BUFFERS
 
 std::shared_ptr<RecordedCommandBuffer> CommandBufferOpenCL::cloneEmpty() const {
   return std::make_shared<CommandBufferOpenCL>(_device);
@@ -1391,6 +1393,7 @@ std::shared_ptr<RecordedCommandBuffer> CommandBufferOpenCL::cloneEmpty() const {
 
 std::shared_ptr<Executable> CommandBufferOpenCL::compile(
     const CompileOptions& options) {
+#if WITH_OPENCL_COMMAND_BUFFERS
   const CommandBufferExtCL* ext =
       _device ? _device->commandBufferExt() : nullptr;
   if (!ext || !isClExecutable(commands, *ext)) {
@@ -1398,8 +1401,14 @@ std::shared_ptr<Executable> CommandBufferOpenCL::compile(
     return RecordedCommandBuffer::compile(options);
   }
   return std::make_shared<ExecutableOpenCL>(_device, ext, commands);
+#else
+  // No native cl_khr_command_buffer (Apple, or disabled): fall back to
+  // record-and-replay, which honors requireAccelerated via the base.
+  return RecordedCommandBuffer::compile(options);
+#endif
 }
 
+#if WITH_OPENCL_COMMAND_BUFFERS
 ExecutableOpenCL::ExecutableOpenCL(const DeviceOpenCL* device,
                                    const CommandBufferExtCL* ext,
                                    std::vector<Command> commands)
@@ -1616,6 +1625,7 @@ void ExecutableOpenCL::update(const std::vector<Command>& commands) {
   _commands = commands;
   releaseCommandBuffer();
 }
+#endif  // WITH_OPENCL_COMMAND_BUFFERS
 
 size_t DeviceOpenCL::getMemoryPoolSize() const {
   return Device::getMemoryPoolSize();

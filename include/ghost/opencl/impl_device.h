@@ -15,7 +15,9 @@
 #ifndef GHOST_OPENCL_IMPL_DEVICE_H
 #define GHOST_OPENCL_IMPL_DEVICE_H
 
+#if WITH_OPENCL_COMMAND_BUFFERS
 #include <CL/cl_ext.h>
+#endif
 #include <ghost/device.h>
 #include <ghost/implementation/executable.h>
 #include <ghost/implementation/recorded_command_buffer.h>
@@ -31,6 +33,7 @@ namespace implementation {
 class DeviceOpenCL;
 class FunctionOpenCL;
 
+#if WITH_OPENCL_COMMAND_BUFFERS
 // We define the per-command clCommand*KHR function-pointer signatures here
 // (using cl_properties, which cl_command_properties_khr aliases) rather than
 // rely on the header typedefs, so the recording calls are correct regardless
@@ -112,6 +115,7 @@ struct CommandBufferExtCL {
 
   bool mutableDispatch() const { return updateMutable && mutableArgs; }
 };
+#endif  // WITH_OPENCL_COMMAND_BUFFERS
 
 class EventOpenCL : public Event {
  public:
@@ -219,6 +223,7 @@ class CommandBufferOpenCL : public RecordedCommandBuffer {
   const DeviceOpenCL* _device;
 };
 
+#if WITH_OPENCL_COMMAND_BUFFERS
 /// @brief @c cl_khr_command_buffer-backed @ref Executable.
 ///
 /// Records the gated command sequence into a @c cl_command_buffer_khr via the
@@ -271,6 +276,7 @@ class ExecutableOpenCL : public Executable {
   // rebuilt the command buffer.
   bool _lastPatched = false;
 };
+#endif  // WITH_OPENCL_COMMAND_BUFFERS
 
 class BufferOpenCL : public Buffer {
  public:
@@ -482,9 +488,11 @@ class DeviceOpenCL : public Device {
   bool checkVersion(const std::string& version) const;
   bool checkExtension(const std::string& extension) const;
 
+#if WITH_OPENCL_COMMAND_BUFFERS
   /// @brief The loaded @c cl_khr_command_buffer entry points, or @c nullptr if
   /// the extension is unsupported or its functions failed to resolve.
   const CommandBufferExtCL* commandBufferExt() const;
+#endif
 
   std::vector<cl_device_id> getDevices() const;
   cl_platform_id getPlatform() const;
@@ -497,10 +505,12 @@ class DeviceOpenCL : public Device {
   std::set<std::string> _extensions;
   bool _fullProfile;
   mutable std::shared_ptr<BufferPool> _pool;
+#if WITH_OPENCL_COMMAND_BUFFERS
   // Resolved lazily on first commandBufferExt() query; _cmdBufExtLoaded guards
   // the one-time resolution.
   mutable CommandBufferExtCL _cmdBufExt;
   mutable bool _cmdBufExtLoaded = false;
+#endif
 
   void setVersion();
 };

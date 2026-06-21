@@ -29,6 +29,7 @@ class GhostConan(ConanFile):
                "with_gcd": [True, False],
                "with_metal": [True, False],
                "with_opencl": [True, False],
+               "with_opencl_command_buffers": [True, False],
                "with_vulkan": [True, False],
                "with_pocl_tests": [True, False]}
     default_options = {
@@ -42,6 +43,7 @@ class GhostConan(ConanFile):
                "with_gcd": False,
                "with_metal": True,
                "with_opencl": True,
+               "with_opencl_command_buffers": True,
                "with_vulkan": False,
                "with_pocl_tests": False}
     short_paths = True
@@ -113,9 +115,14 @@ class GhostConan(ConanFile):
         if not is_apple_os(self):
             self.options.rm_safe("with_gcd")
             self.options.rm_safe("with_metal")
+        else:
+            # Apple's OpenCL is frozen at 1.2 and deprecated; cl_khr_command_buffer
+            # is unavailable, so the acceleration can't be built there.
+            self.options.rm_safe("with_opencl_command_buffers")
         if not self._supports_opencl():
             self.options.rm_safe("with_opencl")
             self.options.rm_safe("with_pocl_tests")
+            self.options.rm_safe("with_opencl_command_buffers")
 
     def layout(self):
         cmake_layout(self)
@@ -166,6 +173,7 @@ class GhostConan(ConanFile):
         if self.options.get_safe("with_gcd", False):
             tc.variables['WITH_GCD'] = 'ON'
         tc.variables['WITH_OPENCL'] = 'ON' if self.options.get_safe("with_opencl", False) else 'OFF'
+        tc.variables['WITH_OPENCL_COMMAND_BUFFERS'] = 'ON' if self.options.get_safe("with_opencl_command_buffers", False) else 'OFF'
         if self.options.get_safe("with_pocl_tests", False):
             tc.variables['GHOST_POCL_TESTS'] = 'ON'
             tc.variables['GHOST_POCL_VERSION'] = self._pocl_version
