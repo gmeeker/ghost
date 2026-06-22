@@ -173,8 +173,9 @@ static bool IsPrivate(id<MTLResource> res) {
 }
 } // namespace
 
-EventMetal::EventMetal(objc::ptr<id<MTLSharedEvent>> event_, uint64_t value)
-    : sharedEvent(event_), targetValue(value) {}
+EventMetal::EventMetal(objc::ptr<id<MTLSharedEvent>> event_, uint64_t value,
+                       objc::ptr<id<MTLCommandBuffer>> commandBuffer_)
+    : sharedEvent(event_), targetValue(value), commandBuffer(commandBuffer_) {}
 
 void EventMetal::wait() {
   if (sharedEvent.get().signaledValue >= targetValue)
@@ -192,6 +193,26 @@ void EventMetal::wait() {
 
 bool EventMetal::isComplete() const {
   return sharedEvent.get().signaledValue >= targetValue;
+}
+
+double EventMetal::timestamp() const {
+  // Nil unless the recording stream had profiling enabled.
+  if (!commandBuffer.get())
+    return 0.0;
+  // GPUEndTime is only valid once the cb has fully completed; ensure it.
+  [commandBuffer.get() waitUntilCompleted];
+  return commandBuffer.get().GPUEndTime;
+}
+
+double EventMetal::elapsed(const Event &other) const {
+  const auto &o = static_cast<const EventMetal &>(other);
+  if (!commandBuffer.get() || !o.commandBuffer.get())
+    return 0.0;
+  [commandBuffer.get() waitUntilCompleted];
+  [o.commandBuffer.get() waitUntilCompleted];
+  // this == start, other == end (matches EventCUDA / the OpenCL COMMAND_END
+  // difference); both timestamps are absolute seconds.
+  return o.commandBuffer.get().GPUEndTime - commandBuffer.get().GPUEndTime;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +298,7 @@ StreamMetal::StreamMetal(objc::ptr<id<MTLCommandQueue>> queue_,
                          const StreamOptions &options)
     : queue(queue_) {
   concurrent = options.concurrent;
+  profiling = options.profiling;
   if (queue.get()) {
     syncEvent = [queue.get().device newEvent];
   }
@@ -284,6 +306,7 @@ StreamMetal::StreamMetal(objc::ptr<id<MTLCommandQueue>> queue_,
 
 StreamMetal::StreamMetal(id<MTLDevice> dev, const StreamOptions &options) {
   concurrent = options.concurrent;
+  profiling = options.profiling;
   queue = [dev newCommandQueue];
   checkExists(queue);
   syncEvent = [dev newEvent];
@@ -333,8 +356,13 @@ std::shared_ptr<Event> StreamMetal::record() {
       objc::ptr<id<MTLSharedEvent>>([device newSharedEvent]);
   uint64_t value = 1;
   [commandBuffer.get() encodeSignalEvent:sharedEvent.get() value:value];
+  // Retain the signalling cb for timing only when profiling; commit() clears
+  // commandBuffer, so capture it first. Off → nil, no retention or overhead.
+  objc::ptr<id<MTLCommandBuffer>> timedCb;
+  if (profiling)
+    timedCb = commandBuffer;
   commit();
-  return std::make_shared<EventMetal>(sharedEvent, value);
+  return std::make_shared<EventMetal>(sharedEvent, value, timedCb);
 }
 
 void StreamMetal::waitForEvent(const std::shared_ptr<Event> &e) {
@@ -1723,7 +1751,9 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
   case kDeviceTimestampPeriod:
     return 0.0f;
   case kDeviceSupportsProfilingTimer:
-    return false;
+    // Event timing via MTLCommandBuffer GPUStartTime/GPUEndTime; requires a
+    // stream created with StreamOptions::profiling.
+    return true;
   case kDeviceSupportsCooperativeMatrix:
     if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *)) {
       return (bool)[dev.get() supportsFamily:MTLGPUFamilyApple7];

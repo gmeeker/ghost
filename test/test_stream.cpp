@@ -252,6 +252,9 @@ TEST_P(TimedTest, TimedDispatch) {
 
   double elapsed = ghost::timed(s, fn, la, outBuf, inBuf, 2.0f);
   EXPECT_GE(elapsed, 0.0);
+  // On Metal, profiling-enabled timing must be real (GPUEndTime delta of two
+  // committed command buffers), not the silent 0.0 fallback.
+  if (GetParam() == Backend::Metal) EXPECT_GT(elapsed, 0.0);
 
   // Verify the kernel actually ran.
   std::vector<float> output(N, 0.0f);

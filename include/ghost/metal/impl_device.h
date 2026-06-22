@@ -31,11 +31,26 @@ class EventMetal : public Event {
  public:
   objc::ptr<id<MTLSharedEvent>> sharedEvent;
   uint64_t targetValue;
+  // The command buffer whose @c GPUEndTime marks this event, retained only
+  // when the recording stream had profiling enabled (@c StreamOptions::
+  // profiling). Nil otherwise, so @c timestamp / @c elapsed return 0 with no
+  // production overhead — mirroring OpenCL's no-profiling path.
+  objc::ptr<id<MTLCommandBuffer>> commandBuffer;
 
-  EventMetal(objc::ptr<id<MTLSharedEvent>> event_, uint64_t value);
+  EventMetal(objc::ptr<id<MTLSharedEvent>> event_, uint64_t value,
+             objc::ptr<id<MTLCommandBuffer>> commandBuffer_ =
+                 objc::ptr<id<MTLCommandBuffer>>());
 
   virtual void wait() override;
   virtual bool isComplete() const override;
+
+  /// @brief Absolute GPU completion time of the recorded point, in seconds
+  /// (the cb's @c GPUEndTime). Returns 0 when profiling was not enabled.
+  virtual double timestamp() const override;
+
+  /// @brief Seconds between this event (start) and @p other (end), from their
+  /// cbs' @c GPUEndTime. Returns 0 unless both were recorded with profiling.
+  virtual double elapsed(const Event& other) const override;
 };
 
 /// @brief State and lifecycle shared by every Metal encoder (Stream and
@@ -107,6 +122,9 @@ class StreamMetal : public Stream, public MetalEncoder {
   // by CommandBufferMetal::submit). Establishes happens-before across cbs.
   objc::ptr<id<MTLEvent>> syncEvent;
   uint64_t syncCounter = 0;
+  // When set (StreamOptions::profiling), record() retains the signalling cb on
+  // the returned EventMetal so its GPUEndTime can be read back for timing.
+  bool profiling = false;
 
   StreamMetal(
       objc::ptr<id<MTLCommandQueue>> queue_ = objc::ptr<id<MTLCommandQueue>>(),
