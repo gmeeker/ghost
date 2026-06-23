@@ -373,6 +373,17 @@ bool isDispatchOnly(const std::vector<Command>& commands) {
   return true;
 }
 
+// cuGraphNodeGetDependencies gained a CUgraphEdgeData* out-param in CUDA 13
+// (the edge-data graph APIs became the default). Ghost never inspects edge
+// data, so absorb the signature difference here and keep the callers uniform.
+inline CUresult graphNodeDeps(CUgraphNode n, CUgraphNode* deps, size_t* num) {
+#if CUDA_VERSION >= 13000
+  return cuGraphNodeGetDependencies(n, deps, nullptr, num);
+#else
+  return cuGraphNodeGetDependencies(n, deps, num);
+#endif
+}
+
 // Reconstruct the record order of a single-stream-captured graph's nodes.
 // Capture on one stream yields a linear chain (each node depends only on its
 // predecessor); we walk dep→node from the root. Returns {} if the graph isn't
@@ -389,7 +400,7 @@ std::vector<CUgraphNode> orderedNodes(CUgraph graph) {
   CUgraphNode root = nullptr;
   for (CUgraphNode n : nodes) {
     size_t nd = 0;
-    if (cuGraphNodeGetDependencies(n, nullptr, &nd) != CUDA_SUCCESS) return {};
+    if (graphNodeDeps(n, nullptr, &nd) != CUDA_SUCCESS) return {};
     if (nd == 0) {
       if (root) return {};  // more than one root -> not a linear chain
       root = n;
@@ -397,7 +408,7 @@ std::vector<CUgraphNode> orderedNodes(CUgraph graph) {
     }
     if (nd != 1) return {};  // a node with multiple deps -> branch
     CUgraphNode dep = nullptr;
-    if (cuGraphNodeGetDependencies(n, &dep, &nd) != CUDA_SUCCESS) return {};
+    if (graphNodeDeps(n, &dep, &nd) != CUDA_SUCCESS) return {};
     if (!succ.emplace(dep, n).second) return {};  // 2 successors -> branch
   }
   if (!root) return {};

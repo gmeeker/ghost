@@ -376,8 +376,19 @@ using f_cuGraphExecUpdate = CUresult(CUDAAPI*)(
 // typedef tracks CUDA_KERNEL_NODE_PARAMS (= _v2 there).
 using f_cuGraphGetNodes = CUresult(CUDAAPI*)(CUgraph hGraph, CUgraphNode* nodes,
                                              size_t* numNodes);
+// cuGraphNodeGetDependencies' name redirects to cuGraphNodeGetDependencies_v2
+// in CUDA 13 (the edge-data graph APIs became the default), adding a
+// CUgraphEdgeData* out-param. Match whichever the headers expose; the wrapper
+// resolves the redirected symbol name automatically and Ghost passes null edge
+// data since it only walks the dependency chain.
+#if CUDA_VERSION >= 13000
+using f_cuGraphNodeGetDependencies =
+    CUresult(CUDAAPI*)(CUgraphNode hNode, CUgraphNode* dependencies,
+                       CUgraphEdgeData* edgeData, size_t* numDependencies);
+#else
 using f_cuGraphNodeGetDependencies = CUresult(CUDAAPI*)(
     CUgraphNode hNode, CUgraphNode* dependencies, size_t* numDependencies);
+#endif
 using f_cuGraphExecKernelNodeSetParams =
     CUresult(CUDAAPI*)(CUgraphExec hGraphExec, CUgraphNode hNode,
                        const CUDA_KERNEL_NODE_PARAMS* nodeParams);
@@ -2599,6 +2610,20 @@ CUresult CUDAAPI cuGraphGetNodes(CUgraph hGraph, CUgraphNode* nodes,
   }
 }
 
+#if CUDA_VERSION >= 13000
+CUresult CUDAAPI cuGraphNodeGetDependencies(CUgraphNode hNode,
+                                            CUgraphNode* dependencies,
+                                            CUgraphEdgeData* edgeData,
+                                            size_t* numDependencies) {
+  auto& lib = LibCUDAWrapper::getInstance();
+  auto func = lib.m_cuGraphNodeGetDependencies;
+  if (func) {
+    return func(hNode, dependencies, edgeData, numDependencies);
+  } else {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+}
+#else
 CUresult CUDAAPI cuGraphNodeGetDependencies(CUgraphNode hNode,
                                             CUgraphNode* dependencies,
                                             size_t* numDependencies) {
@@ -2610,6 +2635,7 @@ CUresult CUDAAPI cuGraphNodeGetDependencies(CUgraphNode hNode,
     return CUDA_ERROR_NOT_INITIALIZED;
   }
 }
+#endif
 
 CUresult CUDAAPI
 cuGraphExecKernelNodeSetParams(CUgraphExec hGraphExec, CUgraphNode hNode,
