@@ -1671,7 +1671,7 @@ DeviceCUDA::DeviceCUDA(const SharedContext& share) {
   CUresult err = cuInit(0);
   checkError(err);
   context =
-      cu::ptr<CUcontext>(reinterpret_cast<CUcontext>(share.device), false);
+      cu::ptr<CUcontext>(reinterpret_cast<CUcontext>(share.context), false);
   queue = cu::ptr<CUstream>(reinterpret_cast<CUstream>(share.queue), false);
   if (!context) {
     CU_CurrentContext::pop();  // clear current stack
