@@ -256,7 +256,8 @@ class ThreadPoolDefault : public ghost::ThreadPool {
     // workers - 1. With workers=1, there are no helpers — every
     // parallel() call runs entirely on the caller.
     const size_t helpers = workers - 1;
-    _spinDuration = resolveSpinDuration(spinDuration);
+    _spinDurationUs.store(resolveSpinDuration(spinDuration).count(),
+                          std::memory_order_relaxed);
     _shouldStop.store(false, std::memory_order_relaxed);
     _perWorker = std::vector<PerWorker>(helpers);
     for (size_t i = 0; i < helpers; i++) {
@@ -388,6 +389,33 @@ class ThreadPoolDefault : public ghost::ThreadPool {
   // omp_get_max_threads() and TBB's task_arena's effective concurrency.
   size_t workerCount() const override { return _threads.size() + 1; }
 
+  void beginHotRegion() override {
+    std::lock_guard<std::mutex> lk(_hotMutex);
+    if (_hotDepth++ == 0) {
+      _savedSpinDurationUs = _spinDurationUs.load(std::memory_order_relaxed);
+      // "Active" recipe — an hour is effectively infinite relative to any
+      // inter-dispatch gap, so workers spin through the whole region.
+      // Matches createDefault(spinDuration = hours(24)).
+      _spinDurationUs.store(
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::hours(1))
+              .count(),
+          std::memory_order_relaxed);
+    }
+    // NOTE: takes effect from the *next* dispatch. Workers already parked at
+    // begin() time stay parked until a parallel() call wakes them — after
+    // which they read the raised window and remain hot for the region. For an
+    // inference run you enter the guard right before the burst, so the first
+    // dispatch does the waking; no explicit un-park needed.
+  }
+
+  void endHotRegion() override {
+    std::lock_guard<std::mutex> lk(_hotMutex);
+    if (_hotDepth > 0 && --_hotDepth == 0) {
+      _spinDurationUs.store(_savedSpinDurationUs, std::memory_order_relaxed);
+    }
+  }
+
  private:
   struct Job {
     // Owned by-value so the std::function's lifetime is tied to the Job's
@@ -444,13 +472,25 @@ class ThreadPoolDefault : public ghost::ThreadPool {
     return std::chrono::microseconds(10000);
   }
 
-  // Spin window before parking; set per pool at construction time.
-  std::chrono::microseconds _spinDuration;
+  // Spin window before parking, in microseconds. Stored as an atomic rep so
+  // a hot region can swap it while workers concurrently read it. Set per pool
+  // at construction; temporarily raised to "never park" by beginHotRegion().
+  std::atomic<std::chrono::microseconds::rep> _spinDurationUs;
+
+  // Serializes hot-region begin/end and guards the save/restore below.
+  std::mutex _hotMutex;
+  size_t _hotDepth = 0;
+  std::chrono::microseconds::rep _savedSpinDurationUs = 0;
+
+  std::chrono::microseconds spinDuration() const {
+    return std::chrono::microseconds(
+        _spinDurationUs.load(std::memory_order_relaxed));
+  }
 
   // Returns true if `done` reached `target` within the spin window.
   bool spinWaitDone(std::atomic<size_t>& done, size_t target) const {
     if (done.load(std::memory_order_acquire) >= target) return true;
-    const auto deadline = std::chrono::steady_clock::now() + _spinDuration;
+    const auto deadline = std::chrono::steady_clock::now() + spinDuration();
     int i = 0;
     for (;;) {
       cpuPause();
@@ -487,7 +527,7 @@ class ThreadPoolDefault : public ghost::ThreadPool {
         //     full CFS tick. libgomp solves this the same way.
         constexpr int kSpinTightIters = 1024;
         constexpr int kYieldEveryIters = 512;
-        const auto deadline = std::chrono::steady_clock::now() + _spinDuration;
+        const auto deadline = std::chrono::steady_clock::now() + spinDuration();
         for (int i = 0;; ++i) {
           cpuPause();
           epoch = slot.assignedEpoch.load(std::memory_order_acquire);

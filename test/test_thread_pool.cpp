@@ -10,6 +10,7 @@
 #include <ghost/thread_pool.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -188,6 +189,150 @@ TEST(ThreadPoolTest, DestructorWakesParkedWorkers) {
   ASSERT_TRUE(destroyed.load()) << "pool destructor hung — parked workers "
                                    "not woken";
   t.join();
+}
+
+// ---------------------------------------------------------------------------
+// Hot regions
+// ---------------------------------------------------------------------------
+
+namespace {
+// Spy pool: records begin/end calls and nesting depth so we can verify the
+// RAII guard's plumbing independent of any concrete pool's spin machinery.
+class HotSpyPool : public ThreadPool {
+ public:
+  std::atomic<int> begins{0};
+  std::atomic<int> ends{0};
+  int depth = 0;
+  int maxDepth = 0;
+
+  void parallel(size_t count, std::function<void(size_t, size_t)> fn) override {
+    for (size_t i = 0; i < count; i++) fn(i, count);
+  }
+
+  size_t workerCount() const override { return 1; }
+
+  void beginHotRegion() override {
+    begins.fetch_add(1);
+    if (++depth > maxDepth) maxDepth = depth;
+  }
+
+  void endHotRegion() override {
+    ends.fetch_add(1);
+    --depth;
+  }
+};
+
+// A pool that does NOT override the hot-region hooks, exercising the
+// base-class no-op defaults.
+class NoHotPool : public ThreadPool {
+ public:
+  std::atomic<size_t> calls{0};
+
+  void parallel(size_t count, std::function<void(size_t, size_t)> fn) override {
+    calls.fetch_add(1);
+    for (size_t i = 0; i < count; i++) fn(i, count);
+  }
+
+  size_t workerCount() const override { return 1; }
+};
+}  // namespace
+
+// The RAII guard must call begin/end in balanced, correctly-nested order.
+TEST(ThreadPoolTest, HotRegionGuardCallsHooksBalanced) {
+  HotSpyPool pool;
+  {
+    ThreadPool::HotRegion outer(pool);
+    EXPECT_EQ(pool.begins.load(), 1);
+    EXPECT_EQ(pool.ends.load(), 0);
+    {
+      ThreadPool::HotRegion inner(pool);
+      EXPECT_EQ(pool.begins.load(), 2);
+      EXPECT_EQ(pool.maxDepth, 2);
+    }
+    EXPECT_EQ(pool.ends.load(), 1);  // inner released on scope exit
+  }
+  EXPECT_EQ(pool.begins.load(), 2);
+  EXPECT_EQ(pool.ends.load(), 2);  // outer released — balanced
+  EXPECT_EQ(pool.depth, 0);
+}
+
+// Base-class hooks default to no-ops: a pool that ignores them stays usable
+// through the guard.
+TEST(ThreadPoolTest, HotRegionDefaultHooksAreNoOp) {
+  NoHotPool pool;
+  {
+    ThreadPool::HotRegion hot(pool);
+    pool.parallel(8, [](size_t, size_t) {});
+  }
+  EXPECT_GE(pool.calls.load(), 1u);
+}
+
+// The default pool overrides the hooks to widen its spin window. Running a
+// passive pool (spin=0, workers park immediately) inside a hot region must
+// still dispatch every index — covers the atomic spin-duration swap on the
+// worker read path.
+TEST(ThreadPoolTest, HotRegionDefaultPoolDispatchesCorrectly) {
+  auto pool = ThreadPool::createDefault(0, std::chrono::microseconds(0));
+  ThreadPool::HotRegion hot(*pool);
+  smokeTestPool(*pool);
+}
+
+// Nested guards on the default pool: an inner exit must not drop the pool out
+// of its hot window early (only the outermost end restores). Verified
+// indirectly via correct, hang-free dispatch across the nesting.
+TEST(ThreadPoolTest, HotRegionDefaultPoolNests) {
+  auto pool = ThreadPool::createDefault(0, std::chrono::microseconds(0));
+  ThreadPool::HotRegion outer(*pool);
+  pool->parallel(16, [](size_t, size_t) {});
+  {
+    ThreadPool::HotRegion inner(*pool);
+    smokeTestPool(*pool);
+  }
+  // inner released; outer still active — pool must remain functional
+  smokeTestPool(*pool);
+}
+
+// Value-prop test: on a passive pool, gap-separated dispatches normally pay a
+// park/unpark wake-up each time; inside a hot region the workers keep
+// spinning, so that latency should drop. Uses medians over many samples to
+// resist scheduler noise, and SKIPS (never fails) when the host is too noisy
+// to establish a parked baseline — timing asserts must not flake CI.
+TEST(ThreadPoolTest, HotRegionLowersGapDispatchLatency) {
+  auto pool = ThreadPool::createDefault(4, std::chrono::microseconds(0));
+  const int kSamples = 200;
+  const auto kGap = std::chrono::microseconds(300);
+
+  auto median = [&]() {
+    std::vector<long long> ns;
+    ns.reserve(kSamples);
+    for (int s = 0; s < kSamples; ++s) {
+      std::this_thread::sleep_for(kGap);
+      const auto t0 = std::chrono::steady_clock::now();
+      pool->parallel(4, [](size_t, size_t) {});
+      const auto t1 = std::chrono::steady_clock::now();
+      ns.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0)
+                       .count());
+    }
+    std::sort(ns.begin(), ns.end());
+    return ns[ns.size() / 2];
+  };
+
+  const long long cold = median();
+  long long hot;
+  {
+    ThreadPool::HotRegion region(*pool);
+    // Prime: first dispatch wakes the now-parked workers into the hot window.
+    pool->parallel(4, [](size_t, size_t) {});
+    hot = median();
+  }
+
+  // If the cold baseline never actually parked (median already tiny), the host
+  // kept threads hot for us — nothing to compare. Skip rather than flake.
+  if (cold < 3000) {
+    GTEST_SKIP() << "cold median " << cold << "ns too low to measure parking";
+  }
+  EXPECT_LT(hot, cold) << "hot median " << hot << "ns not below cold " << cold
+                       << "ns";
 }
 
 // ---------------------------------------------------------------------------

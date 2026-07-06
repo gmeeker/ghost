@@ -53,6 +53,35 @@ class ThreadPool {
   /// thread.
   virtual size_t workerCount() const = 0;
 
+  /// @brief Hint that a burst of back-to-back @ref parallel calls is coming
+  /// (e.g. one inference run) and that workers should stay hot — spinning
+  /// rather than parking — until the matching @ref endHotRegion.
+  ///
+  /// Nestable: only the outermost begin/end pair has effect. Prefer the
+  /// @ref HotRegion RAII guard over calling these directly. Default is a
+  /// no-op, so pools that delegate to an external executor (a host job
+  /// system, TBB) need not implement it.
+  virtual void beginHotRegion() {}
+
+  virtual void endHotRegion() {}
+
+  /// @brief RAII wrapper around @ref beginHotRegion / @ref endHotRegion.
+  /// Wrap one inference run: `ghost::ThreadPool::HotRegion hot(pool);`
+  class HotRegion {
+   public:
+    explicit HotRegion(ThreadPool& pool) : _pool(pool) {
+      _pool.beginHotRegion();
+    }
+
+    ~HotRegion() { _pool.endHotRegion(); }
+
+    HotRegion(const HotRegion&) = delete;
+    HotRegion& operator=(const HotRegion&) = delete;
+
+   private:
+    ThreadPool& _pool;
+  };
+
   /// @brief Construct Ghost's default thread pool — OpenMP-style fork-join
   /// with static slicing, long-spin then condvar park.
   ///
