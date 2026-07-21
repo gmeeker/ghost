@@ -239,6 +239,13 @@ TEST_P(BinaryCacheKernelTest, CompilePopulatesCacheAndReuses) {
   for (size_t i = 0; i < N; i++)
     EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 3.0f) << "index " << i;
 
+  // Metal publishes archives via a staging file + rename; nothing with a
+  // .tmp- suffix may survive a save.
+  for (const auto& e : fs::directory_iterator(dir.path())) {
+    EXPECT_EQ(e.path().filename().string().find(".tmp-"), std::string::npos)
+        << "staging file left behind: " << e.path();
+  }
+
   device().purgeBinaries(0);
 }
 

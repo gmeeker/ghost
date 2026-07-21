@@ -1600,16 +1600,16 @@ const char *getMetalVersion() {
   return "";
 }
 
-std::string getOSRelease() {
+std::string getOSBuild() {
   int mib[2];
   mib[0] = CTL_KERN;
-  mib[1] = KERN_OSRELEASE;
+  mib[1] = KERN_OSVERSION;
   size_t len;
   sysctl(mib, 2, nullptr, &len, nullptr, 0);
-  char *osrelease = (char *)malloc(len);
-  sysctl(mib, 2, osrelease, &len, nullptr, 0);
-  std::string s = osrelease;
-  free(osrelease);
+  char *osversion = (char *)malloc(len);
+  sysctl(mib, 2, osversion, &len, nullptr, 0);
+  std::string s = osversion;
+  free(osversion);
   return s;
 }
 } // namespace
@@ -1623,7 +1623,10 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
   case kDeviceVendor:
     return "Apple";
   case kDeviceDriverVersion:
-    return getMetalVersion();
+    // MTLBinaryArchive blobs are only valid for the exact OS build, and the
+    // binary cache digest keys on this attribute; include the build so stale
+    // archives rotate out (re-parsing one aborts uncatchably inside Metal).
+    return std::string(getMetalVersion()) + " " + getOSBuild();
   case kDeviceFamily:
     if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *)) {
       if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, *)) {

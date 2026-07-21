@@ -22,6 +22,8 @@
 #include <ghost/metal/impl_device.h>
 #include <ghost/metal/impl_function.h>
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <filesystem>
 #include <stdexcept>
@@ -612,11 +614,24 @@ void LibraryMetal::saveArchive() const {
     // generic on-disk cache which create_directories() before writing.
     std::error_code ec;
     std::filesystem::create_directories(_archivePath.parent_path(), ec);
+    // Serialize to a staging file and rename into place. serializeToURL
+    // merge-reads any existing file at the destination URL, and parsing a
+    // torn or stale archive throws on Metal's private dispatch queue where
+    // nothing can catch it. The rename also keeps concurrent writers
+    // (aerender + GUI sharing a cache dir) from exposing partial files.
+    std::filesystem::path tmpPath = _archivePath;
+    tmpPath += ".tmp-" + std::to_string(getpid());
     NSError *err = nil;
     NSURL *url = [NSURL
-        fileURLWithPath:[NSString stringWithUTF8String:_archivePath.string()
-                                                           .c_str()]];
-    [_archive.get() serializeToURL:url error:&err];
+        fileURLWithPath:[NSString
+                            stringWithUTF8String:tmpPath.string().c_str()]];
+    if ([_archive.get() serializeToURL:url error:&err]) {
+      std::filesystem::rename(tmpPath, _archivePath, ec);
+      if (ec)
+        std::filesystem::remove(tmpPath, ec);
+    } else {
+      std::filesystem::remove(tmpPath, ec);
+    }
     _archiveDirty = false;
   }
 }
