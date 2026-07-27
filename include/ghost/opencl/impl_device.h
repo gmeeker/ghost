@@ -15,9 +15,6 @@
 #ifndef GHOST_OPENCL_IMPL_DEVICE_H
 #define GHOST_OPENCL_IMPL_DEVICE_H
 
-#if WITH_OPENCL_COMMAND_BUFFERS
-#include <CL/cl_ext.h>
-#endif
 #include <ghost/device.h>
 #include <ghost/implementation/executable.h>
 #include <ghost/implementation/recorded_command_buffer.h>
@@ -43,8 +40,8 @@ class FunctionOpenCL;
 // headers lacked; these signatures match the finalized form that shipping
 // runtimes (pocl 7.x and any current driver) implement. create / finalize /
 // release / enqueue / updateMutable are unchanged across revisions, so those
-// keep the header typedefs (the headers gate them behind
-// CL_ENABLE_BETA_EXTENSIONS, which the build defines for the OpenCL sources).
+// keep the header typedefs (gated behind CL_ENABLE_BETA_EXTENSIONS, which
+// ghost/opencl/ptr.h defines before including <CL/cl_ext.h>).
 typedef cl_command_buffer_khr(CL_API_CALL* ghost_clCreateCommandBufferKHR_fn)(
     cl_uint, const cl_command_queue*, const cl_command_buffer_properties_khr*,
     cl_int*);

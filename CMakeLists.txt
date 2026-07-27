@@ -748,3 +748,13 @@ target_include_directories(${PROJECT_NAME}
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+if(WITH_OPENCL AND OpenCL_FOUND AND WITH_OPENCL_COMMAND_BUFFERS)
+  # Consumers including ghost/opencl/impl_device.h must see the same
+  # WITH_OPENCL_COMMAND_BUFFERS value Ghost was built with (it gates data
+  # members, so the class layout depends on it), and need
+  # CL_ENABLE_BETA_EXTENSIONS for OpenCL-Headers releases that still tag
+  # cl_khr_command_buffer as beta.
+  target_compile_definitions(${PROJECT_NAME} INTERFACE
+      WITH_OPENCL_COMMAND_BUFFERS=1
+      CL_ENABLE_BETA_EXTENSIONS)
+endif()

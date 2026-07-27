@@ -230,5 +230,12 @@ class GhostConan(ConanFile):
                 self.cpp_info.libdirs += [libpath]
         if self.options.get_safe("with_opencl", False):
             self.cpp_info.frameworks.append('OpenCL')
+        if self.options.get_safe("with_opencl_command_buffers", False):
+            # ghost/opencl/impl_device.h gates data members on
+            # WITH_OPENCL_COMMAND_BUFFERS (class layout must match the built
+            # library) and needs CL_ENABLE_BETA_EXTENSIONS for OpenCL-Headers
+            # releases that still tag cl_khr_command_buffer as beta.
+            self.cpp_info.defines += ["WITH_OPENCL_COMMAND_BUFFERS=1",
+                                      "CL_ENABLE_BETA_EXTENSIONS"]
         if self.options.get_safe("with_metal", False):
             self.cpp_info.frameworks += ['Metal', 'Foundation']

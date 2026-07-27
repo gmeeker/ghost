@@ -18,7 +18,22 @@
 #if __APPLE_CC__
 #include <OpenCL/opencl.h>
 #else
+#if WITH_OPENCL_COMMAND_BUFFERS
+// Current OpenCL-Headers releases (e.g. 2025.07.22) still tag
+// cl_khr_command_buffer and its mutable_dispatch layer as "beta", gating the
+// types impl_device.h uses behind CL_ENABLE_BETA_EXTENSIONS. Define it before
+// the first cl_ext.h include so ghost headers just work for consumers. This
+// cannot help if <CL/cl_ext.h> was already included without the macro; the
+// Ghost CMake target and conan package also propagate it to cover that case.
+#ifndef CL_ENABLE_BETA_EXTENSIONS
+#define CL_ENABLE_BETA_EXTENSIONS
+#endif
+#endif
 #include <CL/cl.h>
+// Unconditional: vendor extension tokens (CL_DEVICE_WARP_SIZE_NV etc.) are
+// needed regardless of WITH_OPENCL_COMMAND_BUFFERS. Apple's opencl.h above
+// already includes its cl_ext.h.
+#include <CL/cl_ext.h>
 #endif
 
 #include <ghost/exception.h>
