@@ -1623,9 +1623,9 @@ Attribute DeviceMetal::getAttribute(DeviceAttributeId what) const {
   case kDeviceVendor:
     return "Apple";
   case kDeviceDriverVersion:
-    // MTLBinaryArchive blobs are only valid for the exact OS build, and the
-    // binary cache digest keys on this attribute; include the build so stale
-    // archives rotate out (re-parsing one aborts uncatchably inside Metal).
+    // Metal ships no driver version of its own, so the OS build is the closest
+    // equivalent: it is what actually changes when the compiler and GPU
+    // back end change underneath us.
     return std::string(getMetalVersion()) + " " + getOSBuild();
   case kDeviceFamily:
     if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, macCatalyst 13.1, *)) {

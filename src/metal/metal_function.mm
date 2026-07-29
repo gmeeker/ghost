@@ -15,17 +15,12 @@
 #if WITH_METAL
 
 #include <ghost/argument_buffer.h>
-#include <ghost/binary_cache.h>
 #include <ghost/device.h>
-#include <ghost/digest.h>
 #include <ghost/function.h>
 #include <ghost/metal/impl_device.h>
 #include <ghost/metal/impl_function.h>
 
-#include <unistd.h>
-
 #include <algorithm>
-#include <filesystem>
 #include <stdexcept>
 #include <string>
 
@@ -162,155 +157,6 @@ FunctionMetal::FunctionMetal(
   pipeline = [library.device newComputePipelineStateWithFunction:function.get()
                                                            error:&error];
 }
-
-#if defined(MAC_OS_VERSION_11_0)
-FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name,
-                             id<MTLBinaryArchive> archive, bool &dirty) {
-  function = [library
-      newFunctionWithName:[NSString stringWithUTF8String:name.c_str()]];
-  if (!function.get()) {
-    throw std::runtime_error("Metal: function not found: " + name);
-  }
-  if (function.get().functionType != MTLFunctionTypeKernel) {
-    throw std::runtime_error("Metal: function is not a kernel: " + name);
-  }
-  if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
-    if (archive) {
-      NSError *error = nil;
-      MTLComputePipelineDescriptor *desc = [MTLComputePipelineDescriptor new];
-#if !__has_feature(objc_arc)
-      [desc autorelease];
-#endif
-      desc.computeFunction = function.get();
-      desc.binaryArchives = @[ archive ];
-      pipeline = [library.device newComputePipelineStateWithDescriptor:desc
-                                                               options:0
-                                                            reflection:nil
-                                                                 error:&error];
-      if (pipeline.get()) {
-        [archive addComputePipelineFunctionsWithDescriptor:desc error:nil];
-        dirty = true;
-        return;
-      }
-    }
-  }
-  NSError *error = nil;
-  pipeline = [library.device newComputePipelineStateWithFunction:function.get()
-                                                           error:&error];
-}
-
-FunctionMetal::FunctionMetal(id<MTLLibrary> library, const std::string &name,
-                             const std::vector<Attribute> &args,
-                             id<MTLBinaryArchive> archive, bool &dirty) {
-  NSError *error;
-  MTLFunctionConstantValues *constantValues = [MTLFunctionConstantValues new];
-#if !__has_feature(objc_arc)
-  [constantValues autorelease];
-#endif
-  size_t j = 0;
-  for (auto arg : args) {
-    if (arg.type() == Attribute::Type_Bool)
-      [constantValues setConstantValue:arg.boolArray()
-                                  type:MTLDataTypeBool
-                               atIndex:j++];
-    else if (arg.type() == Attribute::Type_Int)
-      [constantValues setConstantValue:arg.intArray()
-                                  type:MTLDataTypeInt
-                               atIndex:j++];
-    else if (arg.type() == Attribute::Type_UInt)
-      [constantValues setConstantValue:arg.uintArray()
-                                  type:MTLDataTypeUInt
-                               atIndex:j++];
-    else if (arg.type() == Attribute::Type_Float)
-      [constantValues setConstantValue:arg.floatArray()
-                                  type:MTLDataTypeFloat
-                               atIndex:j++];
-  }
-  function =
-      [library newFunctionWithName:[NSString stringWithUTF8String:name.c_str()]
-                    constantValues:constantValues
-                             error:&error];
-  if (!function.get()) {
-    std::string msg = "Metal: function not found: " + name;
-    if (error) {
-      msg +=
-          " (" + std::string([[error localizedDescription] UTF8String]) + ")";
-    }
-    throw std::runtime_error(msg);
-  }
-  if (function.get().functionType != MTLFunctionTypeKernel) {
-    throw std::runtime_error("Metal: function is not a kernel: " + name);
-  }
-  if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
-    if (archive) {
-      NSError *err = nil;
-      MTLComputePipelineDescriptor *desc = [MTLComputePipelineDescriptor new];
-#if !__has_feature(objc_arc)
-      [desc autorelease];
-#endif
-      desc.computeFunction = function.get();
-      desc.binaryArchives = @[ archive ];
-      pipeline = [library.device newComputePipelineStateWithDescriptor:desc
-                                                               options:0
-                                                            reflection:nil
-                                                                 error:&err];
-      if (pipeline.get()) {
-        [archive addComputePipelineFunctionsWithDescriptor:desc error:nil];
-        dirty = true;
-        return;
-      }
-    }
-  }
-  pipeline = [library.device newComputePipelineStateWithFunction:function.get()
-                                                           error:&error];
-}
-
-FunctionMetal::FunctionMetal(
-    id<MTLLibrary> library, const std::string &name,
-    const std::vector<std::pair<std::string, Attribute>> &namedConstants,
-    id<MTLBinaryArchive> archive, bool &dirty) {
-  NSError *error;
-  MTLFunctionConstantValues *constantValues =
-      buildNamedConstants(namedConstants);
-  function =
-      [library newFunctionWithName:[NSString stringWithUTF8String:name.c_str()]
-                    constantValues:constantValues
-                             error:&error];
-  if (!function.get()) {
-    std::string msg = "Metal: function not found: " + name;
-    if (error) {
-      msg +=
-          " (" + std::string([[error localizedDescription] UTF8String]) + ")";
-    }
-    throw std::runtime_error(msg);
-  }
-  if (function.get().functionType != MTLFunctionTypeKernel) {
-    throw std::runtime_error("Metal: function is not a kernel: " + name);
-  }
-  if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
-    if (archive) {
-      NSError *err = nil;
-      MTLComputePipelineDescriptor *desc = [MTLComputePipelineDescriptor new];
-#if !__has_feature(objc_arc)
-      [desc autorelease];
-#endif
-      desc.computeFunction = function.get();
-      desc.binaryArchives = @[ archive ];
-      pipeline = [library.device newComputePipelineStateWithDescriptor:desc
-                                                               options:0
-                                                            reflection:nil
-                                                                 error:&err];
-      if (pipeline.get()) {
-        [archive addComputePipelineFunctionsWithDescriptor:desc error:nil];
-        dirty = true;
-        return;
-      }
-    }
-  }
-  pipeline = [library.device newComputePipelineStateWithFunction:function.get()
-                                                           error:&error];
-}
-#endif
 
 void FunctionMetal::execute(const ghost::Encoder &s,
                             const LaunchArgs &launchArgs,
@@ -576,67 +422,6 @@ Attribute FunctionMetal::getAttribute(FunctionAttributeId what) const {
 LibraryMetal::LibraryMetal(const DeviceMetal &dev, bool retainBinary)
     : Library(retainBinary), _dev(dev) {}
 
-#if defined(MAC_OS_VERSION_11_0)
-void LibraryMetal::initArchive(const void *data, size_t len,
-                               const CompilerOptions &options) {
-  if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
-    if (!_dev.binaryCache().isEnabled())
-      return;
-    Digest d;
-    BinaryCache::makeDigest(d, _dev, 1, data, len, options);
-    _archivePath =
-        _dev.binaryCache().cachePath /
-        (d.get().substr(0, GHOST_DIGEST_FILENAME_LENGTH) + ".metalarchive");
-    NSError *err = nil;
-    MTLBinaryArchiveDescriptor *desc = [MTLBinaryArchiveDescriptor new];
-#if !__has_feature(objc_arc)
-    [desc autorelease];
-#endif
-    desc.url = [NSURL
-        fileURLWithPath:[NSString stringWithUTF8String:_archivePath.string()
-                                                           .c_str()]];
-    _archive = [_dev.dev.get() newBinaryArchiveWithDescriptor:desc error:&err];
-    if (!_archive.get()) {
-      // No cached archive yet — create an empty one
-      desc.url = nil;
-      _archive = [_dev.dev.get() newBinaryArchiveWithDescriptor:desc
-                                                          error:&err];
-    }
-    _archiveDirty = false;
-  }
-}
-
-void LibraryMetal::saveArchive() const {
-  if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
-    if (!_archiveDirty || !_archive.get())
-      return;
-    // serializeToURL won't create intermediate directories; mirror the
-    // generic on-disk cache which create_directories() before writing.
-    std::error_code ec;
-    std::filesystem::create_directories(_archivePath.parent_path(), ec);
-    // Serialize to a staging file and rename into place. serializeToURL
-    // merge-reads any existing file at the destination URL, and parsing a
-    // torn or stale archive throws on Metal's private dispatch queue where
-    // nothing can catch it. The rename also keeps concurrent writers
-    // (aerender + GUI sharing a cache dir) from exposing partial files.
-    std::filesystem::path tmpPath = _archivePath;
-    tmpPath += ".tmp-" + std::to_string(getpid());
-    NSError *err = nil;
-    NSURL *url = [NSURL
-        fileURLWithPath:[NSString
-                            stringWithUTF8String:tmpPath.string().c_str()]];
-    if ([_archive.get() serializeToURL:url error:&err]) {
-      std::filesystem::rename(tmpPath, _archivePath, ec);
-      if (ec)
-        std::filesystem::remove(tmpPath, ec);
-    } else {
-      std::filesystem::remove(tmpPath, ec);
-    }
-    _archiveDirty = false;
-  }
-}
-#endif
-
 void LibraryMetal::loadFromText(const std::string &source,
                                 const CompilerOptions &options) {
   NSError *err = nil;
@@ -664,9 +449,6 @@ void LibraryMetal::loadFromText(const std::string &source,
     }
     throw std::runtime_error(msg);
   }
-#if defined(MAC_OS_VERSION_11_0)
-  initArchive(source.c_str(), source.size(), options);
-#endif
 }
 
 void LibraryMetal::loadFromData(const void *data, size_t len,
@@ -686,21 +468,10 @@ void LibraryMetal::loadFromData(const void *data, size_t len,
       auto bytes = reinterpret_cast<const uint8_t *>(data);
       _binaryData.assign(bytes, bytes + len);
     }
-#if defined(MAC_OS_VERSION_11_0)
-    initArchive(data, len, options);
-#endif
   }
 }
 
 ghost::Function LibraryMetal::lookupFunction(const std::string &name) const {
-#if defined(MAC_OS_VERSION_11_0)
-  if (_archive.get()) {
-    auto f = std::make_shared<FunctionMetal>(library.get(), name,
-                                             _archive.get(), _archiveDirty);
-    saveArchive();
-    return ghost::Function(f);
-  }
-#endif
   auto f = std::make_shared<FunctionMetal>(library.get(), name);
   return ghost::Function(f);
 }
@@ -708,14 +479,6 @@ ghost::Function LibraryMetal::lookupFunction(const std::string &name) const {
 ghost::Function
 LibraryMetal::specializeFunction(const std::string &name,
                                  const std::vector<Attribute> &args) const {
-#if defined(MAC_OS_VERSION_11_0)
-  if (_archive.get()) {
-    auto f = std::make_shared<FunctionMetal>(library.get(), name, args,
-                                             _archive.get(), _archiveDirty);
-    saveArchive();
-    return ghost::Function(f);
-  }
-#endif
   auto f = std::make_shared<FunctionMetal>(library.get(), name, args);
   return ghost::Function(f);
 }
@@ -723,14 +486,6 @@ LibraryMetal::specializeFunction(const std::string &name,
 ghost::Function LibraryMetal::specializeFunctionNamed(
     const std::string &name,
     const std::vector<std::pair<std::string, Attribute>> &constants) const {
-#if defined(MAC_OS_VERSION_11_0)
-  if (_archive.get()) {
-    auto f = std::make_shared<FunctionMetal>(library.get(), name, constants,
-                                             _archive.get(), _archiveDirty);
-    saveArchive();
-    return ghost::Function(f);
-  }
-#endif
   auto f = std::make_shared<FunctionMetal>(library.get(), name, constants);
   return ghost::Function(f);
 }

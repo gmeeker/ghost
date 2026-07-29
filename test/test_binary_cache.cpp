@@ -32,8 +32,8 @@ namespace fs = std::filesystem;
 //
 // These exercise BinaryCache::saveBinaries() / loadBinaries() — the disk
 // cache used by every binary backend (CUDA cubin, OpenCL device binary,
-// Vulkan SPIR-V, DirectX DXIL). Metal does not use this path; it serializes
-// an MTLBinaryArchive into cachePath instead (covered separately below).
+// Vulkan SPIR-V, DirectX DXIL). Metal does not use this path at all: pipeline
+// compilation goes through the OS shader cache, so it writes nothing here.
 //
 // Regression coverage for two historical bugs in binary_cache.cpp:
 //   * saveBinaries hashed/wrote &binaries[i] (address of an 8-byte pointer
@@ -192,8 +192,7 @@ GHOST_INSTANTIATE_BACKEND_TESTS(BinaryCacheTest);
 
 // ---------------------------------------------------------------------------
 // End-to-end: compiling with the cache enabled creates files and the second
-// compile produces a working kernel. Covers the full wiring including Metal's
-// MTLBinaryArchive path (which writes a .metalarchive into cachePath).
+// compile produces a working kernel.
 // ---------------------------------------------------------------------------
 
 class BinaryCacheKernelTest : public GhostKernelTest {};
@@ -207,14 +206,20 @@ TEST_P(BinaryCacheKernelTest, CompilePopulatesCacheAndReuses) {
   ScopedCachePath guard(cache, dir.path());
   ASSERT_TRUE(cache.isEnabled());
 
-  // First compile: should write a cache entry to disk.
+  // First compile: should write a cache entry to disk. Metal is the exception
+  // -- it compiles pipelines through the OS shader cache and keeps nothing of
+  // its own in cachePath.
   {
     auto lib = device().loadLibraryFromText(src);
     auto fn = lib.lookupFunction("mult_const_f");
     EXPECT_NE(fn.impl().get(), nullptr);
   }
-  EXPECT_GT(dir.fileCount(), 0u)
-      << "first compile should populate the on-disk cache";
+  if (backend() == Backend::Metal) {
+    EXPECT_EQ(dir.fileCount(), 0u) << "Metal should not write a binary cache";
+  } else {
+    EXPECT_GT(dir.fileCount(), 0u)
+        << "first compile should populate the on-disk cache";
+  }
 
   // Second compile of the same source hits the cache path; verify the kernel
   // it produces actually runs correctly (i.e. the cached binary is valid).
@@ -239,11 +244,15 @@ TEST_P(BinaryCacheKernelTest, CompilePopulatesCacheAndReuses) {
   for (size_t i = 0; i < N; i++)
     EXPECT_FLOAT_EQ(output[i], static_cast<float>(i) * 3.0f) << "index " << i;
 
-  // Metal publishes archives via a staging file + rename; nothing with a
-  // .tmp- suffix may survive a save.
-  for (const auto& e : fs::directory_iterator(dir.path())) {
-    EXPECT_EQ(e.path().filename().string().find(".tmp-"), std::string::npos)
-        << "staging file left behind: " << e.path();
+  // A save publishes via a staging file + rename; nothing with a .tmp-
+  // suffix may survive one. A backend that caches nothing never creates the
+  // directory at all, which is equally fine.
+  std::error_code ec;
+  if (fs::is_directory(dir.path(), ec)) {
+    for (const auto& e : fs::directory_iterator(dir.path())) {
+      EXPECT_EQ(e.path().filename().string().find(".tmp-"), std::string::npos)
+          << "staging file left behind: " << e.path();
+    }
   }
 
   device().purgeBinaries(0);

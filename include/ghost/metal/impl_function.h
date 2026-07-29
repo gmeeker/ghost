@@ -19,8 +19,6 @@
 #include <ghost/implementation/impl_function.h>
 #include <ghost/objc/ptr.h>
 
-#include <filesystem>
-
 namespace ghost {
 namespace implementation {
 class DeviceMetal;
@@ -36,17 +34,6 @@ class FunctionMetal : public Function {
   FunctionMetal(
       id<MTLLibrary> library, const std::string& name,
       const std::vector<std::pair<std::string, Attribute>>& namedConstants);
-#if defined(MAC_OS_VERSION_11_0)
-  FunctionMetal(id<MTLLibrary> library, const std::string& name,
-                id<MTLBinaryArchive> archive, bool& dirty);
-  FunctionMetal(id<MTLLibrary> library, const std::string& name,
-                const std::vector<Attribute>& args,
-                id<MTLBinaryArchive> archive, bool& dirty);
-  FunctionMetal(
-      id<MTLLibrary> library, const std::string& name,
-      const std::vector<std::pair<std::string, Attribute>>& namedConstants,
-      id<MTLBinaryArchive> archive, bool& dirty);
-#endif
 
   virtual void execute(const ghost::Encoder& s, const LaunchArgs& launchArgs,
                        const std::vector<Attribute>& args) override;
@@ -86,15 +73,6 @@ class LibraryMetal : public Library {
  private:
   const DeviceMetal& _dev;
   std::vector<uint8_t> _binaryData;
-#if defined(MAC_OS_VERSION_11_0)
-  objc::ptr<id<MTLBinaryArchive>> _archive;
-  std::filesystem::path _archivePath;
-  mutable bool _archiveDirty = false;
-
-  void initArchive(const void* data, size_t len,
-                   const CompilerOptions& options);
-  void saveArchive() const;
-#endif
 };
 }  // namespace implementation
 }  // namespace ghost
