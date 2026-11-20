@@ -81,6 +81,11 @@ class GhostConan(ConanFile):
         else:
             return None
 
+    def _cuda_windows_libdir(self, cuda_toolkit):
+        # arm64ec links against the x64 import libs.
+        sub = "arm64" if self.settings.get_safe("arch") == "armv8" else "x64"
+        return os.path.join(cuda_toolkit, "lib", sub)
+
     def configure(self):
         if not self._supports_cuda() or not self.options.get_safe("with_cuda", False):
             self.settings.rm_safe("cuda")
@@ -211,7 +216,7 @@ class GhostConan(ConanFile):
             cuda_toolkit = self.cuda_toolkit_path
             if cuda_toolkit:
                 self.cpp_info.libdirs.append(
-                    os.path.join(cuda_toolkit, "lib", "x64"))
+                    self._cuda_windows_libdir(cuda_toolkit))
             if self.options.with_cuda_link == "delaylib":
                 self.cpp_info.system_libs.append("delayimp")
                 self.cpp_info.sharedlinkflags.append("/DELAYLOAD:nvcuda.dll")
@@ -224,7 +229,7 @@ class GhostConan(ConanFile):
             cuda_toolkit = self.cuda_toolkit_path
             if cuda_toolkit:
                 if self.settings.os == "Windows":
-                    libpath = os.path.join(cuda_toolkit, 'lib', 'x64')
+                    libpath = self._cuda_windows_libdir(cuda_toolkit)
                 else:
                     libpath = os.path.join(cuda_toolkit, 'lib64')
                 self.cpp_info.libdirs += [libpath]
