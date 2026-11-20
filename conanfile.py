@@ -11,7 +11,7 @@ required_conan_version = ">=1.54.0"
 
 class GhostConan(ConanFile):
     name = "ghost"
-    version = "2.0"
+    version = "2.1"
     license = "BSD-3-Clause"
     author = "Digital Anarchy"
     description = "Compute engine"
