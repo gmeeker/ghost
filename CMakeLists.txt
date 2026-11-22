@@ -545,6 +545,7 @@ if(GTest_FOUND)
   if(WITH_VULKAN)
     set(VULKAN_SPV_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel_vulkan.spv)
     set(VULKAN_SPV_HEADER ${GHOST_TEST_GENERATED_DIR}/ghost_test_vulkan_spirv.h)
+    set(_vulkan_spv_rule FALSE)
     if(WITH_SPIRV_ASM)
       find_program(SPIRV_AS_EXECUTABLE spirv-as)
       if(SPIRV_AS_EXECUTABLE)
@@ -555,6 +556,7 @@ if(GTest_FOUND)
                     ${VULKAN_SPVASM_SOURCE} -o ${VULKAN_SPV_OUTPUT}
             DEPENDS ${VULKAN_SPVASM_SOURCE}
             COMMENT "Assembling Vulkan SPIR-V from .spvasm")
+        set(_vulkan_spv_rule TRUE)
       endif()
     else()
       ghost_find_dxc_spirv()
@@ -566,9 +568,12 @@ if(GTest_FOUND)
                     -fspv-target-env=vulkan1.1 ${HLSL_SOURCE} -Fo ${VULKAN_SPV_OUTPUT}
             DEPENDS ${HLSL_SOURCE}
             COMMENT "Compiling HLSL to Vulkan SPIR-V")
+        set(_vulkan_spv_rule TRUE)
       endif()
     endif()
-    if(EXISTS ${VULKAN_SPV_OUTPUT} OR TRUE)
+    # Only wire the header if a tool above produced a rule for the .spv;
+    # otherwise make fails with "No rule to make target" (e.g. spirv-as missing).
+    if(_vulkan_spv_rule)
       add_custom_command(
           OUTPUT ${VULKAN_SPV_HEADER}
           COMMAND ${CMAKE_COMMAND}
@@ -582,6 +587,8 @@ if(GTest_FOUND)
       add_dependencies(TestGhostGTest ghost_test_vulkan_spirv)
       target_compile_definitions(TestGhostGTest PRIVATE
           GHOST_TEST_VULKAN_SPIRV="ghost_test_vulkan_spirv.h")
+    else()
+      message(STATUS "Ghost: no SPIR-V tool found; skipping Vulkan SPIR-V binary-load test")
     endif()
 
     # Additional opportunistic build: compile the HLSL kernel through a
@@ -658,6 +665,7 @@ if(GTest_FOUND)
   if(WITH_OPENCL)
     set(OCL_SPV_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test/shaders/test_kernel_opencl.spv)
     set(OCL_SPV_HEADER ${GHOST_TEST_GENERATED_DIR}/ghost_test_opencl_spirv.h)
+    set(_ocl_spv_rule FALSE)
     if(WITH_SPIRV_ASM)
       find_program(SPIRV_AS_EXECUTABLE spirv-as)
       if(SPIRV_AS_EXECUTABLE)
@@ -668,6 +676,7 @@ if(GTest_FOUND)
                     ${OCL_SPVASM_SOURCE} -o ${OCL_SPV_OUTPUT}
             DEPENDS ${OCL_SPVASM_SOURCE}
             COMMENT "Assembling OpenCL SPIR-V from .spvasm")
+        set(_ocl_spv_rule TRUE)
       endif()
     else()
       find_program(CLANG_EXECUTABLE clang)
@@ -686,9 +695,12 @@ if(GTest_FOUND)
             COMMAND ${LLVM_SPIRV_EXECUTABLE} ${OCL_BC} -o ${OCL_SPV_OUTPUT}
             DEPENDS ${OCL_BC}
             COMMENT "Converting LLVM bitcode to SPIR-V")
+        set(_ocl_spv_rule TRUE)
       endif()
     endif()
-    if(EXISTS ${OCL_SPV_OUTPUT} OR TRUE)
+    # Only wire the header if a tool above produced a rule for the .spv;
+    # otherwise make fails with "No rule to make target" (e.g. spirv-as missing).
+    if(_ocl_spv_rule)
       add_custom_command(
           OUTPUT ${OCL_SPV_HEADER}
           COMMAND ${CMAKE_COMMAND}
@@ -702,6 +714,8 @@ if(GTest_FOUND)
       add_dependencies(TestGhostGTest ghost_test_opencl_spirv)
       target_compile_definitions(TestGhostGTest PRIVATE
           GHOST_TEST_OPENCL_SPIRV="ghost_test_opencl_spirv.h")
+    else()
+      message(STATUS "Ghost: no SPIR-V tool found; skipping OpenCL SPIR-V binary-load test")
     endif()
   endif()
 endif()
